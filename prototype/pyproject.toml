@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "awino-loop"
+version = "0.1.0"
+description = "A.W.I.N.O. rebuilt as the automatic per-turn loop owner (Phase 0 prototype)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+awino = "cli:main"
+
+[tool.setuptools]
+# Flat stdlib-only modules; kept in place so existing imports and the
+# test suite (run_tests.sh) keep working unchanged.
+py-modules = [
+    "backends",
+    "chat",
+    "cli",
+    "contract",
+    "demo",
+    "loop",
+    "state",
+    "stances",
+    "tools",
+]
