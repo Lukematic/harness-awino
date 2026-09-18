@@ -28,7 +28,7 @@ model acts. Stances never widen it.
 |---|---|---|---|---|
 | steel-man | "i think / we should" | plan | reads only (mode) | fair restatement (≥2 shared terms); substantive counter-case in assumptions |
 | feynman | "teach me / how does / learn" | observe | **no tool calls at all** | analogy → example → snapshot in order; one gap question |
-| planning-grill | new task / raw idea | plan | no acting while questions open | asks a question or advances plan; no tool calls in a question turn |
+| planning-grill | new task / raw idea | plan | no acting while questions open | exactly one question per turn; ask XOR advance (PLAN_RUSH fails); no tool calls in a question turn |
 | first-principles | "fix / bug / patch" | build | scoped writes only | non-empty derived plan; hypothesized cause in assumptions |
 | premortem | "ship it" / advise chain | ship/plan | reads only (mode) | failure scenarios named; plan survives them |
 | devil's-advocate | VERIFY floor default | verify | test commands only | substantive attack on results in assumptions |
@@ -57,7 +57,7 @@ model this rebuild replaces. Mapping to the loop-owner:
 
 | Repo skill | Loop-owner counterpart | Status |
 |---|---|---|
-| awino-discover | discovery skill + planning-grill stance | partial (prototype body is 2 lines; repo has the full interview method) |
+| awino-discover | discovery skill + planning-grill stance | **done (ported via template, 2026-09-18)** — full interview procedure (detect-before-ask, frontier mission→user→goals→tenets→expectations→metric, diverge/converge, adaptive grill, confirm intent, 7 failure modes) in the discovery skill body; new-task routes mission-definition+discovery; grill enforces one-question-at-a-time and ask-XOR-advance |
 | awino-debug | fix intent + first-principles | partial (no debug procedure yet) |
 | awino-consult | advisor chain | partial |
 | awino-evidence | verification skill + VERIFY floor | partial |
@@ -76,9 +76,9 @@ model this rebuild replaces. Mapping to the loop-owner:
 
 ## Gaps (prioritized)
 
-1. **discover is thin** — the DEFINE floor routes the `discovery` skill but its
-   body is 2 lines; the repo's awino-discover has the full one-question-at-a-
-   time interview method. Port it via the template.
+1. **~~discover is thin~~ resolved 2026-09-18** — the discovery skill now carries
+   the full interview procedure and the grill enforces it (see awino-discover
+   row above).
 2. **debug procedure** — fix intent routes first-principles (cause in
    assumptions) but there's no reproduce→diagnose→fix procedure body.
 3. **rpi / delegate** — multi-file change workflow and parallel subagent

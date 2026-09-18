@@ -42,7 +42,7 @@ class TestTurnHeader(unittest.TestCase):
 
     def test_header_tracks_phase_and_stance_across_turns(self):
         backend = ScriptedBackend([
-            T(plan=["P"], progress_delta="planned",
+            T(plan=[], progress_delta="planned",
               assumptions=["Cause: the empty-password path."],
               questions=["Should the fix handle empty string too?"]),
             T(objective="Evaluate rewrite proposal", plan=["P"],

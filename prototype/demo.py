@@ -37,7 +37,7 @@ def main() -> None:
 
     # ---------------- Project A ----------------
     backend_a = ScriptedBackend([
-        T(plan=["Find login code", "Reproduce", "Patch", "Verify"],
+        T(plan=[],
           questions=["Which file holds the login form?"],
           progress_delta="Need to know which file holds the login form before acting."),
         T(tool_calls=[{"name": "list_dir", "args": {}},

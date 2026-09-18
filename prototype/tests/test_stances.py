@@ -38,7 +38,8 @@ class TestTripleRouting(unittest.TestCase):
             snap(), "Rebuild the sync engine", "new_objective")
         self.assertEqual(intent, "new-task")
         self.assertEqual(chain, ["planning-grill"])
-        self.assertEqual(skills, ["mission-definition"])
+        # The interview procedure must be injected on the new-task path.
+        self.assertEqual(skills, ["mission-definition", "discovery"])
 
     def test_raw_idea_routes_planning_grill(self):
         intent, mode, chain, skills, _ = route_triple(

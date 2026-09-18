@@ -128,7 +128,8 @@ def route_triple(snapshot: dict, text: str,
     """
     t = (text or "").lower()
     if kind == "new_objective":
-        return ("new-task", "plan", ["planning-grill"], ["mission-definition"],
+        return ("new-task", "plan", ["planning-grill"],
+                ["mission-definition", "discovery"],
                 "new objective")
     for intent, rx, mode, chain, skills in INTENT_TABLE:
         if rx.search(t):
@@ -136,7 +137,8 @@ def route_triple(snapshot: dict, text: str,
                     f"intent pattern: {intent}")
     if (not snapshot.get("mission") and kind == "info"
             and len(t.split()) > 8):
-        return ("new-task", "plan", ["planning-grill"], ["mission-definition"],
+        return ("new-task", "plan", ["planning-grill"],
+                ["mission-definition", "discovery"],
                 "raw idea without mission")
     floor = FLOORS.get(snapshot.get("phase") or "")
     if floor:
@@ -184,10 +186,14 @@ STANCES = {
         "procedure": (
             "PROCEDURE planning-grill:\n"
             "1. Ask ONE material question at a time (in `questions`) about scope, "
-            "constraints, or acceptance — or advance the draft plan.\n"
-            "2. A grill turn must either ask a question or carry a non-empty plan; "
-            "idle turns FAIL.\n"
-            "3. Do NOT call tools in a turn that asks questions."
+            "constraints, or acceptance — or advance the draft plan. Exactly "
+            "one of the two per turn: never both, never neither.\n"
+            "2. A grill turn must either ask a single question or carry a "
+            "non-empty plan; idle turns and plan-rush turns FAIL.\n"
+            "3. Do NOT call tools in a turn that asks questions.\n"
+            "4. While the discovery interview is open, the frontier is mission -> "
+            "primary user -> goals -> tenets -> expectations -> success metric; "
+            "never present a spec until it is resolved (PLAN_RUSH FAILS)."
         ),
     },
     "first-principles": {
@@ -297,6 +303,23 @@ def _rb_grill_no_tools_while_asking(turn: dict, user_text: str) -> str | None:
     return None
 
 
+def _rb_grill_one_question(turn: dict, user_text: str) -> str | None:
+    qs = turn.get("questions") or []
+    if len(qs) > 1:
+        return ("planning-grill: ask ONE question at a time "
+                f"({len(qs)} asked); later questions must build on settled "
+                "answers (QUESTION_DRIP)")
+    return None
+
+
+def _rb_grill_no_plan_while_asking(turn: dict, user_text: str) -> str | None:
+    if turn.get("questions") and turn.get("plan"):
+        return ("planning-grill: ask a question OR advance the plan in one "
+                "turn, not both (PLAN_RUSH: no spec until the interview "
+                "frontier is resolved)")
+    return None
+
+
 def _rb_fp_plan(turn: dict, user_text: str) -> str | None:
     if not turn.get("plan"):
         return "first-principles: plan must be derived (non-empty)"
@@ -373,7 +396,8 @@ def _rb_triage_readonly(turn: dict, user_text: str) -> str | None:
 RUBRICS = {
     "steel-man": [_rb_steel_restatement, _rb_steel_substance],
     "feynman": [_rb_feynman_steps, _rb_feynman_question, _rb_feynman_no_tools],
-    "planning-grill": [_rb_grill_advance, _rb_grill_no_tools_while_asking],
+    "planning-grill": [_rb_grill_advance, _rb_grill_no_tools_while_asking,
+                       _rb_grill_one_question, _rb_grill_no_plan_while_asking],
     "first-principles": [_rb_fp_plan, _rb_fp_cause],
     "premortem": [_rb_premortem_failures, _rb_premortem_plan],
     "devil's-advocate": [_rb_da_attacks],

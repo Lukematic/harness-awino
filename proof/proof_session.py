@@ -128,7 +128,7 @@ def main() -> None:
     # ---- 1: report ------------------------------------------------------
     step(1, "the human reports the bug; the harness interrogates before acting")
     run_turn("The login form crashes when the password is empty.",
-             [T(plan=["Find it", "Fix it", "Verify"],
+             [T(plan=[],
                 questions=["Which file holds the login form?"],
                 progress_delta="Need to know which file holds the login form before acting.")])
 
