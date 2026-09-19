@@ -50,6 +50,30 @@ plan/steel-man→premortem; **triage → plan/triage** (before fix: vague
 complaints must not fall through to the fixer); fix → build/first-principles;
 ship → ship/premortem; new-task → plan/planning-grill; else floor default.
 
+## The contract loop — prototype `contract_loop.py` (enforcement, not capability)
+
+Two nested loops (BUILD_SPEC §4). The outer loop is the mission elevator
+(DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP; phase gates in `loop.py`).
+The inner loop is per-turn compile → validate → execute: every turn compiles
+the objective→mission→tools→progress contract from code-owned state, checks
+it before the model acts (pre-turn) and re-checks the proposed turn before
+anything executes (pre-execute), and refuses broken contracts with NAMED
+reasons — never silently. Refusals are `contract_refused` events
+(stage + named breaks); the turn does not proceed and no tool executes.
+
+| Break reason | Detected | Refusal |
+|---|---|---|
+| MODE_UNKNOWN | pre-turn | turn refused; backend never called |
+| NO_PLAN | pre-turn | turn refused; backend never called |
+| CONTRACT_STALE | pre-turn | turn refused; backend never called |
+| SCOPE_INVALIDATED | pre-turn (BUILD w/o approved SCOPE) / pre-execute (write outside SCOPE) | turn refused; no execution |
+| TOOL_NOT_GRANTED | pre-execute | turn refused; no execution |
+| WRITE_WITHOUT_APPROVAL | pre-execute | execution refused; routed to the approval gate |
+| COMPLETION_WITHOUT_EVIDENCE | pre-execute | turn refused; no execution |
+
+Status: **done (2026-09-18)** — `tests/test_contract_loop.py` (12 tests),
+suite 113/113 green ×3.
+
 ## The old world: 16 repo skills (`~/workspace/awino-recovery/skills/`)
 
 These are SKILL.md files the model must voluntarily fetch — the advisory

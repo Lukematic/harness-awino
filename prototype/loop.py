@@ -24,6 +24,10 @@ from contract import (
 from stances import evaluate_chain, route_triple, FLOORS
 from tools import Sandbox, TOOL_DEFS
 from backends import ScriptedJudge
+from contract_loop import (
+    BREAK_WRITE_WITHOUT_APPROVAL, check_pre_execute, check_pre_turn,
+    compile_turn_contract,
+)
 
 
 SCOPE_CHANGE_RE = re.compile(
@@ -177,6 +181,9 @@ class Loop:
 
     # ------------------------------------------------------------------ loop
     # The per-turn pipeline (BUILD_SPEC section 3), executed in order, in code:
+    #   0. contract loop      — compile the typed turn contract from code-owned
+    #                          state; refuse the turn on a named break BEFORE
+    #                          the backend acts (contract_loop.py)
     #   1. contract ingestion — compile+inject the contract from code-owned state
     #   2. elevator sensor   — classify intent; route the (mode, stance, skills)
     #                          triple; scope changes drop the elevator here
@@ -185,6 +192,10 @@ class Loop:
     #   4. header emission & structured response — the backend echoes the
     #                          harness-rendered header; the harness validates
     #                          it, executes, and composes the response
+    #   4b. pre-execute check — the validated turn is re-checked against the
+    #                          compiled contract before anything executes;
+    #                          hard breaks refuse the turn, a missing approval
+    #                          refuses execution and routes to the approval gate
     # ------------------------------------------------------------------
     def _run_turn(self, user_text: str = "", input_kind: str = "info") -> dict:
         s = self.state.snapshot
@@ -204,11 +215,20 @@ class Loop:
         return self._pipeline(user_text, input_kind)
 
     def _pipeline(self, user_text: str, input_kind: str) -> dict:
-        """Stages 1-4 of the per-turn pipeline."""
+        """Stages 0-4b of the per-turn pipeline."""
         cfg = self.config
         s = self.state.snapshot
         turn_no = s["turn_count"] + 1
         turn_id = f"t{turn_no}"
+
+        # ---- Stage 0: per-turn contract loop (compile -> check -> refuse) ----
+        # The contract is compiled from code-owned state BEFORE the backend
+        # acts. A broken contract refuses the turn here: the backend is never
+        # called and no tool executes.
+        tcontract = compile_turn_contract(self.state)
+        breaks = check_pre_turn(self.state, tcontract)
+        if breaks:
+            return self._refuse_turn(breaks, stage="pre_turn")
 
         # ---- Stage 1: contract ingestion ----
         # The contract block is compiled from code-owned state. (It is
@@ -226,6 +246,10 @@ class Loop:
         # backend acts. Anything outside it is rejected at validation, even
         # if the backend proposes it.
         offered = self._permission_gate()
+        # Recompile the typed contract with the routed triple: the
+        # pre-execute check (stage 4b) authoritatively uses the mode the
+        # sensor routed for THIS turn.
+        tcontract = compile_turn_contract(self.state)
 
         # ---- Stage 4: header emission & structured response ----
         feedback = None
@@ -284,6 +308,26 @@ class Loop:
                         f"{'; '.join(errs)}. Fix and resubmit a valid TurnContract.")
 
         assert turn is not None
+        # ---- Stage 4b: contract pre-execute check ----
+        # The validated turn is checked against the compiled contract BEFORE
+        # anything executes. Hard breaks refuse the turn outright (no tool
+        # execution). A missing approval refuses execution and routes to the
+        # approval gate — the turn pauses, the write does not run.
+        xbreaks = check_pre_execute(
+            self.state, tcontract, turn,
+            has_valid_approval=self._has_valid_approval,
+            search_dirs=self._search_dirs())
+        hard = [b for b in xbreaks
+                if b.reason != BREAK_WRITE_WITHOUT_APPROVAL]
+        if hard:
+            return self._refuse_turn(hard, stage="pre_execute")
+        if xbreaks:
+            self.state.record(
+                "contract_refused",
+                {"stage": "pre_execute",
+                 "breaks": [{"reason": b.reason, "detail": b.detail}
+                            for b in xbreaks],
+                 "recourse": "approval_gate"})
         calls = turn.get("tool_calls", [])
         # Partition: non-consequential (or already approved) calls run now;
         # only consequential calls without approval pause the turn.
@@ -334,6 +378,21 @@ class Loop:
         validated against exactly this set.
         """
         return list(MODES[self.state.snapshot["mode"]]["tools"])
+
+    def _refuse_turn(self, breaks: list, stage: str) -> dict:
+        """Structured contract refusal: named breaks, recorded in the event
+        log, snapshot persisted. The turn does not proceed and no tool ran."""
+        self.state.record(
+            "contract_refused",
+            {"stage": stage,
+             "breaks": [{"reason": b.reason, "detail": b.detail}
+                        for b in breaks]})
+        self.state.persist_snapshot()
+        reasons = "; ".join(f"{b.reason}: {b.detail}" for b in breaks)
+        return {"status": "contract_refused",
+                "breaks": [b.reason for b in breaks],
+                "said": (f"Contract refused ({stage}) — the turn did not "
+                         f"proceed and no tools ran: {reasons}")}
 
     # ------------------------------------------------------------- validation
     def validate_semantics(self, turn: dict, expected_header: str,
