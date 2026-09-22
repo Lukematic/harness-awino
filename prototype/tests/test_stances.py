@@ -226,10 +226,14 @@ class TestRubricUnit(unittest.TestCase):
                                        "Advise me on the rewrite")
         self.assertFalse(ok)
 
-    def test_advisor_has_no_rubric(self):
-        ok, failures = evaluate_stance("advisor", {}, "")
+    def test_advisor_rubric_requires_progress(self):
+        ok, failures = evaluate_stance(
+            "advisor", {"progress_delta": "Did the thing."}, "")
         self.assertTrue(ok)
         self.assertEqual(failures, [])
+        ok, failures = evaluate_stance("advisor", {"progress_delta": ""}, "")
+        self.assertFalse(ok)
+        self.assertTrue(failures)
 
 
 class TestStanceToolDiscipline(unittest.TestCase):
@@ -373,6 +377,23 @@ class TestTriageStance(unittest.TestCase):
         self.assertIn("not offered in mode 'plan'", r["said"])
         self.assertFalse(any(e["type"] == "tool_called"
                              for e in loop.state.events))
+
+
+class TestStanceInvariants(unittest.TestCase):
+    """Phase C: every stance ships with a procedure AND a rubric.
+
+    A stance without both cannot be added without breaking this test.
+    """
+
+    def test_all_stances_have_procedure_and_rubric(self):
+        from stances import STANCES, RUBRICS
+        for name, stance in STANCES.items():
+            self.assertTrue(stance.get("procedure"),
+                            f"stance {name!r} has no procedure")
+            self.assertIn(name, RUBRICS,
+                          f"stance {name!r} has no rubric")
+            self.assertTrue(RUBRICS[name],
+                            f"stance {name!r} has empty rubric")
 
 
 if __name__ == "__main__":

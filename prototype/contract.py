@@ -357,7 +357,27 @@ def route_mode(snapshot: dict, input_kind: str = "info") -> str:
 # ---------------------------------------------------------------------------
 from skills import SkillStore
 
-SKILLS = SkillStore.default().as_dict()
+_STORE = SkillStore.default()
+SKILLS = _STORE.as_dict()
+
+# Phase C: mission kinds must map to at least one skill. A mission whose
+# kind has no skill in the store is refused at set_mission time.
+MISSION_KIND_SKILLS = {
+    "bugfix": ["repo", "code"],
+    "research": ["decision-analysis", "domain"],
+    "build": ["repo", "code"],
+    "general": ["domain"],
+}
+
+
+def skills_for_kind(kind: str) -> list[str]:
+    """Return the required skill names for a mission kind."""
+    return list(MISSION_KIND_SKILLS.get(kind, ["domain"]))
+
+
+def get_skill_store() -> SkillStore:
+    """Phase C: the verified skill store (singleton)."""
+    return _STORE
 
 
 # ---------------------------------------------------------------------------
@@ -507,10 +527,11 @@ def compile_contract(state, turn_no: int | None = None,
     A("  escalations pause for the operator. budgets are hard limits, never auto-raised.")
     A("")
     A("## SKILLS (routed by harness — full bodies, not fetched by model)")
+    # Phase C: mandatory loading — an unknown routed skill name raises
+    # (fail-closed) instead of silently skipping.
     for name in s.get("skills", []):
-        sk = SKILLS.get(name)
-        if sk:
-            A(f"### {sk['name']}\n{sk['body']}")
+        body = get_skill_store().get_verified(name)
+        A(f"### {name}\n{body}")
     if not s.get("skills"):
         A("(none routed)")
     A("")
@@ -532,6 +553,13 @@ def compile_contract(state, turn_no: int | None = None,
     A("")
     A("## KNOWN ASSUMPTIONS")
     A("\n".join(f"- {a}" for a in s.get("assumptions", [])) or "(none)")
+    A("")
+    A("## LEARNINGS (from this project — build on these)")
+    learnings = s.get("learnings", [])
+    for l in learnings[-5:]:
+        A(f"- [{l['kind']}] {l['text']}")
+    if not learnings:
+        A("(none yet)")
     A("")
     A("## PROGRESS (last 3)")
     for p in s.get("progress", [])[-3:]:

@@ -103,5 +103,54 @@ class TestSkillStore(unittest.TestCase):
         self.assertNotIn("PROCEDURE testing:", block)
 
 
+class TestMandatoryLoading(unittest.TestCase):
+    """Phase C: skill loading is mandatory, not best-effort."""
+
+    def test_unknown_routed_skill_raises(self):
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        from contract import compile_contract
+        from state import ProjectState
+        home = tempfile.mkdtemp(prefix="awino-skills-unknown-")
+        st = ProjectState(home, "sk")
+        st.record("skills_routed", {"skills": ["nonexistent-skill"],
+                                   "trigger": "test"})
+        with self.assertRaises(SkillIntegrityError):
+            compile_contract(st, turn_no=1)
+
+    def test_mission_kind_requires_skills(self):
+        from contract import skills_for_kind
+        from skills import SkillStore
+        store = SkillStore.default()
+        for kind in ("bugfix", "research", "build", "general"):
+            required = skills_for_kind(kind)
+            self.assertTrue(required, f"kind {kind} has no skills")
+            for name in required:
+                self.assertIn(name, store.names(),
+                              f"kind {kind} requires missing skill {name}")
+
+    def test_routed_skills_all_exist(self):
+        """Every skill name the router can emit exists in the store."""
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        from stances import INTENT_TABLE, FLOORS
+        from skills import SkillStore
+        store = SkillStore.default()
+        names = set()
+        for _, _, _, _, skills in INTENT_TABLE:
+            names.update(skills)
+        for floor in FLOORS.values():
+            names.update(floor["skills"])
+        for name in names:
+            self.assertIn(name, store.names(),
+                          f"routed skill {name!r} not in store")
+
+    def test_loop_startup_verifies_store(self):
+        from tests.common import make_loop
+        loop, _ = make_loop()
+        self.assertIsNotNone(loop.skill_store)
+        self.assertTrue(len(loop.skill_store.names()) >= 11)
+
+
 if __name__ == "__main__":
     unittest.main()

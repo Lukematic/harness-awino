@@ -55,6 +55,8 @@ def initial_snapshot(project_id: str, conversation_id: str) -> dict:
         "open_questions": [],
         "assumptions": [],
         "progress": [],  # [{turn, delta}]
+        "learnings": [],  # Phase C: append-only [{ts, kind, text}] — teaching
+                          # snapshots (feynman) and resolved Q/A pairs
         "approvals": [],  # [{id, call_id, tool, args, idem_key, revision, status}]
         "pending_calls": [],  # [{call_id, tool, args, idem_key, approval_id}]
         "active_turn": None,  # validated turn paused for approval
@@ -196,6 +198,10 @@ def apply_event(snap: dict, ev: dict) -> None:
         snap["pending_calls"] = [c for c in snap["pending_calls"] if c["call_id"] != cid]
     elif t == "progress_recorded":
         snap["progress"].append({"turn": d["turn_id"], "delta": d["delta"]})
+    elif t == "learning_recorded":
+        # Phase C: append-only learning record.
+        snap.setdefault("learnings", []).append(
+            {"ts": ev["ts"], "kind": d["kind"], "text": d["text"]})
     elif t == "mission_done":
         snap["done"] = True
         snap["phase"] = "SHIP"

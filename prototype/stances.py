@@ -157,7 +157,17 @@ def route_stance(snapshot: dict, text: str,
 
 STANCES = {
     "advisor": {
-        "procedure": None,
+        "procedure": (
+            "PROCEDURE advisor (the default stance — direct helpful answer):\n"
+            "1. Answer the user's question directly from the contract's GOAL, "
+            "MISSION, and KNOWLEDGE.\n"
+            "2. State what you did (progress_delta) in plain words; "
+            "cite files you wrote or read.\n"
+            "3. If blocked, say what you need — ask it in `questions`, "
+            "do not guess.\n"
+            "4. Never claim a done criterion is satisfied; the harness "
+            "computes that."
+        ),
     },
     "steel-man": {
         "procedure": (
@@ -393,6 +403,12 @@ def _rb_triage_readonly(turn: dict, user_text: str) -> str | None:
     return None
 
 
+def _rb_advisor_progress(turn: dict, user_text: str) -> str | None:
+    if not (turn.get("progress_delta") or "").strip():
+        return "advisor: progress_delta must say what was done"
+    return None
+
+
 RUBRICS = {
     "steel-man": [_rb_steel_restatement, _rb_steel_substance],
     "feynman": [_rb_feynman_steps, _rb_feynman_question, _rb_feynman_no_tools],
@@ -402,7 +418,7 @@ RUBRICS = {
     "premortem": [_rb_premortem_failures, _rb_premortem_plan],
     "devil's-advocate": [_rb_da_attacks],
     "triage": [_rb_triage_names_mode, _rb_triage_falsifier, _rb_triage_readonly],
-    "advisor": [],
+    "advisor": [_rb_advisor_progress],
 }
 
 

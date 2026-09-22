@@ -22,7 +22,9 @@ from contract import (
     knowledge_counts, next_action_line, parse_criteria, render_header,
     route_mode, validate_header, validate_schema, verify_done_criteria,
     coerce_turn_contract, ContractTypeError,
+    skills_for_kind, get_skill_store,
 )
+from skills import SkillIntegrityError
 from stances import evaluate_chain, route_triple, FLOORS
 from tools import Sandbox, TOOL_DEFS
 from backends import ScriptedJudge
@@ -83,6 +85,9 @@ class Loop:
     def __init__(self, home, project_id: str, backend, judge=None,
                  sandbox_dir=None, config: dict | None = None,
                  conversation_id: str | None = None):
+        # Phase C: mandatory skill loading — verify the pinned skill store
+        # at startup; a hash mismatch refuses to start the loop.
+        self.skill_store = get_skill_store()
         self.home = Path(home)
         self.state = ProjectState(home, project_id, conversation_id)
         self.backend = backend
@@ -137,8 +142,18 @@ class Loop:
     def set_mission(self, text: str, criteria: list) -> dict:
         snap = self.state.snapshot
         revision = (snap["mission"]["revision"] + 1) if snap["mission"] else 1
+        kind = detect_mission_kind(text)
+        # Phase C: mandatory skill loading — the mission kind must map to at
+        # least one skill present in the verified store.
+        required = skills_for_kind(kind)
+        store = get_skill_store()
+        missing = [n for n in required if n not in store.names()]
+        if missing:
+            raise SkillIntegrityError(
+                f"mission kind {kind!r} requires skills {required}, "
+                f"missing from store: {missing}; mission refused")
         mission = {"id": f"m-{_uid()[:8]}", "text": text,
-                   "kind": detect_mission_kind(text),
+                   "kind": kind,
                    "done_criteria": [parse_criteria(c) for c in criteria],
                    "revision": revision}
         self.state.record("mission_set", {"mission": mission})
@@ -193,8 +208,14 @@ class Loop:
             self.state.record("scope_changed", {"text": text})
         elif s["open_questions"] and kind in ("info", "question"):
             # Heuristic: user text while questions are open resolves them.
+            resolved = list(s["open_questions"])
             self.state.record("questions_resolved",
-                              {"resolved": list(s["open_questions"]), "answer": text})
+                              {"resolved": resolved, "answer": text})
+            # Phase C: resolved Q/A is a learning.
+            self.state.record("learning_recorded",
+                              {"kind": "qa",
+                               "text": f"Q: {' | '.join(resolved)[:200]} -- "
+                                       f"A: {text[:300]}"})
         return self._run_turn(user_text=text, input_kind=kind)
 
     # ------------------------------------------------------------------ loop
@@ -308,6 +329,12 @@ class Loop:
                     self.state.record("stance_rubric_passed",
                                       {"turn_id": turn_id,
                                        "stance": "->".join(routing["chain"])})
+                    # Phase C: feynman pass records a teaching snapshot as a
+                    # learning (the turn's progress delta is the snapshot).
+                    if "feynman" in routing["chain"]:
+                        self.state.record("learning_recorded",
+                                          {"kind": "feynman",
+                                           "text": raw.get("progress_delta", "")[:500]})
                     if "premortem" in routing["chain"]:
                         self.state.record("premortem_completed",
                                           {"turn_id": turn_id})
@@ -980,6 +1007,7 @@ class Loop:
             "pending_approvals": [a["id"] for a in s["approvals"]
                                   if a["status"] == "pending"],
             "turns": s["turn_count"], "tokens": s["tokens_used"],
+            "learnings": s.get("learnings", [])[-5:],
             "flags": s["flags"][-5:], "done": s["done"],
             "next_action": next_action_line(s),
         }

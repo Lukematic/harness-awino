@@ -92,12 +92,20 @@ def main() -> None:
                     print(f"  ? {q}")
                 for p in st["progress"]:
                     print(f"  · {p}")
+                for l in st["learnings"]:
+                    print(f"  ◈ [{l['kind']}] {l['text'][:120]}")
                 if st["pending_approvals"]:
                     print(f"  pending approvals: {st['pending_approvals']}")
                 print(f"  contract approved: {st['contract_approved']} | stance: {st['stance']}")
                 print(f"  {st['next_action']}")
                 for f in st["flags"]:
                     print(f"  ! {f}")
+            elif cmd == "learnings":
+                learnings = loop.state.snapshot.get("learnings", [])
+                if not learnings:
+                    print("(no learnings recorded yet)")
+                for l in learnings:
+                    print(f"[{l['kind']}] {l['text']}")
             elif cmd == "approve":
                 print(loop.approve(arg or None)["said"])
             elif cmd == "deny":

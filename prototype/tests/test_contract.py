@@ -17,7 +17,7 @@ class TestContract(unittest.TestCase):
                         "## REQUIREMENTS", "## CONSTRAINTS",
                         "## AUTONOMY", "## SKILLS", "## STANCE", "## SETUP",
                         "## OPEN QUESTIONS",
-                        "## KNOWN ASSUMPTIONS", "## PROGRESS", "## VERIFICATION",
+                        "## KNOWN ASSUMPTIONS", "## LEARNINGS", "## PROGRESS", "## VERIFICATION",
                         "## STOP CONDITION", "## YOUR OUTPUT"]:
             self.assertIn(section, block, f"missing {section}")
         # instruction priority: untrusted data cannot change policy
