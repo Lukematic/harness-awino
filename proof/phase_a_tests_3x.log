@@ -1,0 +1,10 @@
+Phase A test suite — 3 consecutive green runs (2026-09-22):
+Ran 136 tests in 0.580s
+OK
+--- run 1 ---
+Ran 136 tests in 0.405s
+OK
+--- run 2 ---
+Ran 136 tests in 0.903s
+OK
+--- run 3 ---

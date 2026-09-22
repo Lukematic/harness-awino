@@ -41,7 +41,9 @@ mission-definition, discovery, decision-analysis, domain, repo, code,
 testing, code-review, verification, explainer, triage.
 
 These are injected into the contract block by the router. The model never
-fetches them. (Production: load bodies from files with sha256 — spec Phase C.)
+fetches them. Bodies live in `prototype/skills/<name>.md`, pinned by sha256
+in `prototype/skills/manifest.json` and verified at load by
+`prototype/skills.py::SkillStore` (Phase A; hardened to mandatory in Phase C).
 
 ## Intent table — prototype `stances.py::INTENT_TABLE` (first match wins)
 

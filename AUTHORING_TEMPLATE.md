@@ -58,7 +58,8 @@ def _rb_<name>_tools(turn, user_text):
 # }
 # Routed when: add "<kebab-name>" to the INTENT_TABLE entry's skill list
 # and/or the FLOORS["<FLOOR>"]["skills"] list.
-# Production: body loads from <path> with sha256 pin (spec Phase C).
+# Production: body loads from <path> with sha256 pin (done in Phase A via
+# prototype/skills.py::SkillStore; add the file + manifest entry).
 ```
 
 ## Template: new MODE

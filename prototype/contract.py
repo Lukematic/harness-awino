@@ -230,147 +230,16 @@ def route_mode(snapshot: dict, input_kind: str = "info") -> str:
 
 
 # ---------------------------------------------------------------------------
-# Skills: code-side retrieval. The harness loads full skill bodies into the
-# contract; the model never fetches skills voluntarily. Routed per turn by
-# the triple router and stored on state["skills"].
+# Skills: code-side retrieval via the pinned SkillStore (skills.py). The
+# harness loads full skill bodies into the contract; the model never
+# fetches skills voluntarily. Routed per turn by the triple router and
+# stored on state["skills"]. Bodies live in skills/<name>.md, pinned by
+# sha256 in skills/manifest.json -- a hash mismatch raises at import and
+# the harness refuses to start rather than deliver unverified content.
 # ---------------------------------------------------------------------------
-SKILLS = {
-    "mission-definition": {
-        "name": "mission-definition",
-        "body": (
-            "PROCEDURE mission-definition:\n"
-            "1. State the objective in one sentence.\n"
-            "2. List done criteria that are observable (artifact, event, or "
-            "explicit operator check).\n"
-            "3. Name what is OUT of scope."
-        ),
-    },
-    "discovery": {
-        "name": "discovery",
-        "body": (
-            "PROCEDURE discovery (mission-first interview; never rush to a spec):\n"
-            "1. DETECT BEFORE ASKING: never ask for facts already stated in the "
-            "mission, prior answers, or repo evidence. Reflect the draft and "
-            "its source/confidence.\n"
-            "2. RESOLVE THE FRONTIER one question at a time, in order: mission "
-            "(what outcome should this create?) -> primary user (who exactly, "
-            "what do they do today?) -> goals (smallest useful outcomes, not a "
-            "feature inventory) -> tenets (what must never be violated?) -> "
-            "expectations (cost, quality, privacy, deployment, usability) -> "
-            "observable success metric (what observation proves v1 is useful?). "
-            "Each question builds on settled answers; restate each decision "
-            "and allow correction. 'I don't know' is valid.\n"
-            "3. DIVERGE BRIEFLY: once the mission is understood, present exactly "
-            "three directions — Minimal (smallest thing that proves the mission), "
-            "Bold (higher upside, name its hardest assumption), Adjacent (same "
-            "pain from another angle) — each naming the current workaround it "
-            "competes with. No technology unless technology is itself a constraint.\n"
-            "4. CONVERGE: evaluate directions on user value, feasibility, "
-            "differentiation from the workaround, minimum proving evidence, and "
-            "failure behavior; the user chooses, combines, or rejects. Never "
-            "choose silently.\n"
-            "5. GRILL ADAPTIVELY before any spec: one question per turn across "
-            "desired behavior+example, current behavior/failure, edge cases, "
-            "affected users/systems/data, constraints, acceptance checks, and "
-            "explicit non-goals. Skip a category only when evidence settles it; "
-            "summarize decisions every 3-4 answers.\n"
-            "6. CONFIRM INTENT: mission, primary user, >=1 goal, >=1 tenet, "
-            "success metric, chosen direction, and explicit non-goals recorded; "
-            "no implementation file changed.\n"
-            "WATCH FOR: MISSION_FABRICATION (inferred purpose treated as "
-            "confirmed); QUESTION_DRIP (a questionnaire instead of one frontier "
-            "question); PLAN_RUSH (a spec before intent is settled); "
-            "TECHNOLOGY_FIRST (frameworks before user outcome); "
-            "PASSIVE_AGREEMENT (no pushback because alternatives were never "
-            "exposed); UNDER_INTERVIEWED_PLAN (planning after one or two "
-            "questions while material decisions remain); VITAMIN_BUILD "
-            "(low-frequency nice-to-have with no stated why)."
-        ),
-    },
-    "decision-analysis": {
-        "name": "decision-analysis",
-        "body": (
-            "PROCEDURE decision-analysis:\n"
-            "1. List the real options (at least two).\n"
-            "2. Score each on reversibility, cost, and fit to the objective.\n"
-            "3. Recommend one and name what would change your mind."
-        ),
-    },
-    "domain": {
-        "name": "domain",
-        "body": (
-            "PROCEDURE domain:\n"
-            "1. Ground every claim in the mission's own context.\n"
-            "2. Flag domain assumptions explicitly instead of smuggling them in."
-        ),
-    },
-    "repo": {
-        "name": "repo",
-        "body": (
-            "PROCEDURE repo:\n"
-            "1. Read the relevant files before changing them.\n"
-            "2. Keep edits inside the approved SCOPE file list.\n"
-            "3. Leave the tree cleaner than you found it (no dead code)."
-        ),
-    },
-    "code": {
-        "name": "code",
-        "body": (
-            "PROCEDURE code:\n"
-            "1. State the hypothesized cause BEFORE writing any fix.\n"
-            "2. Write the smallest patch that addresses the cause.\n"
-            "3. Verify: the fix must be observable — never claim fixed "
-            "without evidence."
-        ),
-    },
-    "testing": {
-        "name": "testing",
-        "body": (
-            "PROCEDURE testing:\n"
-            "1. Run the relevant test command and show the raw output.\n"
-            "2. The exit code is the verdict; exit 0 advances the elevator.\n"
-            "3. Never modify tests to force a pass."
-        ),
-    },
-    "code-review": {
-        "name": "code-review",
-        "body": (
-            "PROCEDURE code-review:\n"
-            "1. Inspect the diff: every changed line must be intentional.\n"
-            "2. Check for regressions, dead code, and side effects.\n"
-            "3. Approve only what the evidence supports."
-        ),
-    },
-    "verification": {
-        "name": "verification",
-        "body": (
-            "PROCEDURE verification:\n"
-            "1. Match each done criterion to its evidence.\n"
-            "2. Completion is claimed only on evidence, never on prose."
-        ),
-    },
-    "explainer": {
-        "name": "explainer",
-        "body": (
-            "PROCEDURE explainer:\n"
-            "1. One analogy, one example, one snapshot.\n"
-            "2. Ask the gap question that finds what the learner is missing."
-        ),
-    },
-    "triage": {
-        "name": "triage",
-        "body": (
-            "PROCEDURE triage (failure-mode catalog — name the mode, never guess):\n"
-            "1. silent misroute — the wrong intent pattern fired; check the stance trigger line.\n"
-            "2. rubric false-positive — a valid turn rejected; read the rejection feedback.\n"
-            "3. approval stall — waiting on an approval nobody will give; surface it.\n"
-            "4. scope drift — the objective moved mid-mission; re-DEFINE.\n"
-            "5. forged completion — done claimed without evidence; the judge blocked it.\n"
-            "6. tool outside mode — the turn tried a tool its mode does not grant.\n"
-            "If none fits, coin a precise name. Then state the falsifier."
-        ),
-    },
-}
+from skills import SkillStore
+
+SKILLS = SkillStore.default().as_dict()
 
 
 # ---------------------------------------------------------------------------
