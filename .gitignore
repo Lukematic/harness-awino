@@ -4,3 +4,7 @@ __pycache__/
 .DS_Store
 chat-loop/
 .tmp/
+
+build/
+dist/
+*.egg-info/
