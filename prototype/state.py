@@ -44,6 +44,10 @@ def initial_snapshot(project_id: str, conversation_id: str) -> dict:
         "scope": None,  # approved SCOPE file list (None = no scoped approval)
         "scope_epoch": 0,  # bumps on every scope change; approvals bind to it
         "mission_revision": 0,  # bumps on every set_mission; evidence binds to it
+        "mission_start_ts": None,  # Phase B: wall-clock budget anchor (set on mission_set)
+        "revision_history": [],  # append-only: [{revision, mission_id, text,
+                                #   kind, done_criteria, ts}]; past entries
+                                # are never mutated (Phase B)
         "premortem_completed": False,
         "ship_requested": False,
         "contract_approved": False,  # PLAN -> BUILD elevator gate
@@ -78,6 +82,13 @@ def apply_event(snap: dict, ev: dict) -> None:
     elif t == "mission_set":
         snap["mission"] = d["mission"]
         snap["mission_revision"] = snap.get("mission_revision", 0) + 1
+        # Phase B: append-only revision history; past entries are immutable.
+        hist = snap.setdefault("revision_history", [])
+        m = d["mission"]
+        hist.append({"revision": m["revision"], "mission_id": m["id"],
+                     "text": m["text"], "kind": m["kind"],
+                     "done_criteria": m["done_criteria"], "ts": ev["ts"]})
+        snap["mission_start_ts"] = ev["ts"]  # Phase B: wall-clock budget anchor
         snap["phase"] = "DEFINE"
         snap["plan"] = []
         snap["open_questions"] = []

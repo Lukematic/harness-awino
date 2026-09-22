@@ -220,5 +220,42 @@ class TestRefusalWiring(unittest.TestCase):
                              for e in loop.state.events))
 
 
+class TestPhaseTransitions(unittest.TestCase):
+    """Phase B: explicit transition table; illegal jumps are refused."""
+
+    def test_legal_path(self):
+        loop, _ = make_loop()
+        loop.set_mission("M", ["manual"])
+        self.assertEqual(loop.state.snapshot["phase"], "DEFINE")
+        r = loop.request_phase("PLAN", reason="test")
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(loop.state.snapshot["phase"], "PLAN")
+        r = loop.request_phase("BUILD", reason="test")
+        self.assertEqual(r["status"], "ok")
+
+    def test_illegal_jump_refused(self):
+        loop, _ = make_loop()
+        loop.set_mission("M", ["manual"])
+        # DEFINE -> REVIEW skips PLAN/BUILD: refused
+        r = loop.request_phase("REVIEW", reason="test jump")
+        self.assertEqual(r["status"], "refused")
+        self.assertEqual(loop.state.snapshot["phase"], "DEFINE")
+        # refusal is recorded in the log and flagged
+        self.assertTrue(any(e["type"] == "transition_refused"
+                            for e in loop.state.events))
+        self.assertTrue(any("transition refused" in f
+                            for f in loop.state.snapshot["flags"]))
+
+    def test_rework_edges_allowed(self):
+        loop, _ = make_loop()
+        loop.set_mission("M", ["manual"])
+        loop.request_phase("PLAN", reason="t")
+        loop.request_phase("BUILD", reason="t")
+        # BUILD -> PLAN (re-plan) is a legal rework edge
+        r = loop.request_phase("PLAN", reason="re-plan")
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(loop.state.snapshot["phase"], "PLAN")
+
+
 if __name__ == "__main__":
     unittest.main()

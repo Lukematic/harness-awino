@@ -1,4 +1,5 @@
 """Budgets: max turns is terminal; stall detection escalates."""
+import time
 import unittest
 
 from tests.common import make_loop, T
@@ -33,6 +34,32 @@ class TestBudgets(unittest.TestCase):
         loop, _ = make_loop(backend=backend)
         loop.run_user_turn("hi")
         self.assertGreater(loop.state.snapshot["tokens_used"], 0)
+
+    def test_time_budget_is_terminal(self):
+        """Phase B: wall-clock budget exhaustion is terminal."""
+        backend = ScriptedBackend([T(progress_delta="x")])
+        loop, _ = make_loop(backend=backend, config={"max_seconds": 3600})
+        loop.set_mission("M", ["manual"])
+        # backdate the mission start to force exhaustion
+        loop.state.snapshot["mission_start_ts"] = time.time() - 7200
+        # persist the backdated ts via a record so reload sees it
+        r = loop.run_user_turn("hi")
+        self.assertEqual(r["status"], "budget_exhausted")
+        self.assertTrue(any(e["type"] == "budget_exhausted"
+                            for e in loop.state.events))
+
+    def test_budgets_view(self):
+        """Phase B: budgets() reports used/limit/remaining."""
+        backend = ScriptedBackend([T(progress_delta="x")])
+        loop, _ = make_loop(backend=backend)
+        loop.set_mission("M", ["manual"])
+        loop.run_user_turn("hi")
+        b = loop.budgets()
+        self.assertEqual(b["turns"]["used"], 1)
+        self.assertEqual(b["turns"]["limit"], 50)
+        self.assertEqual(b["turns"]["remaining"], 49)
+        self.assertGreater(b["tokens"]["used"], 0)
+        self.assertGreaterEqual(b["seconds"]["remaining"], 0)
 
 
 if __name__ == "__main__":

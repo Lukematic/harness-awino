@@ -203,6 +203,124 @@ def validate_schema(raw) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Typed contract (Phase B). After validate_schema passes, the raw dict is
+# coerced into an immutable TurnContract. The execution path consumes the
+# typed object; type violations raise ContractTypeError instead of flowing
+# downstream as dicts.
+# ---------------------------------------------------------------------------
+class ContractTypeError(Exception):
+    """A validated-schema turn failed typed coercion."""
+
+
+class ToolCall:
+    """An immutable, hashable tool call."""
+    __slots__ = ("name", "args")
+
+    def __init__(self, name: str, args: tuple[tuple[str, str], ...]):
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "args", args)
+
+    def __setattr__(self, name, value):
+        raise ContractTypeError("ToolCall is immutable")
+
+    def __repr__(self):
+        return f"ToolCall(name={self.name!r}, args={dict(self.args)!r})"
+
+    def __eq__(self, other):
+        return (isinstance(other, ToolCall) and self.name == other.name
+                and self.args == other.args)
+
+    def __hash__(self):
+        return hash((self.name, self.args))
+
+
+class TurnContract:
+    """The typed, immutable per-turn contract."""
+    __slots__ = ("header", "objective", "plan", "tool_calls", "questions",
+                 "assumptions", "progress_delta", "done_claim")
+
+    def __init__(self, header: str, objective: str, plan: tuple[str, ...],
+                 tool_calls: tuple[ToolCall, ...], questions: tuple[str, ...],
+                 assumptions: tuple[str, ...], progress_delta: str,
+                 done_claim: bool):
+        for k, v in (("header", header), ("objective", objective),
+                     ("plan", plan), ("tool_calls", tool_calls),
+                     ("questions", questions), ("assumptions", assumptions),
+                     ("progress_delta", progress_delta),
+                     ("done_claim", done_claim)):
+            object.__setattr__(self, k, v)
+
+    def __setattr__(self, name, value):
+        raise ContractTypeError("TurnContract is immutable")
+
+    def as_dict(self) -> dict:
+        return {
+            "header": self.header,
+            "objective": self.objective,
+            "plan": list(self.plan),
+            "tool_calls": [{"name": c.name, "args": dict(c.args)}
+                           for c in self.tool_calls],
+            "questions": list(self.questions),
+            "assumptions": list(self.assumptions),
+            "progress_delta": self.progress_delta,
+            "done_claim": self.done_claim,
+        }
+
+
+def coerce_turn_contract(raw: dict) -> TurnContract:
+    """Coerce a schema-valid raw turn into a TurnContract.
+
+    Raises ContractTypeError on any type violation. Call only after
+    validate_schema(raw) returns [].
+    """
+    def bad(msg):
+        raise ContractTypeError(msg)
+
+    if not isinstance(raw, dict):
+        bad("turn must be a JSON object")
+    for field, typ in (("header", str), ("objective", str),
+                       ("progress_delta", str), ("done_claim", bool)):
+        v = raw.get(field)
+        if not isinstance(v, typ):
+            bad(f"field '{field}' must be {typ.__name__}, "
+                f"got {type(v).__name__}")
+    # bool is a subclass of int; done_claim=True/False only (already typed).
+    plan = raw.get("plan")
+    if not isinstance(plan, list) or any(not isinstance(x, str) for x in plan):
+        bad("plan must be a list of strings")
+    questions = raw.get("questions")
+    if not isinstance(questions, list) or any(not isinstance(x, str) for x in questions):
+        bad("questions must be a list of strings")
+    assumptions = raw.get("assumptions")
+    if not isinstance(assumptions, list) or any(not isinstance(x, str) for x in assumptions):
+        bad("assumptions must be a list of strings")
+    calls = raw.get("tool_calls")
+    if not isinstance(calls, list):
+        bad("tool_calls must be a list")
+    typed_calls = []
+    for c in calls:
+        if (not isinstance(c, dict) or not isinstance(c.get("name"), str)
+                or not isinstance(c.get("args"), dict)):
+            bad("tool_calls entries must be {name: str, args: dict}")
+        for k, v in c["args"].items():
+            if not isinstance(k, str) or not isinstance(v, str):
+                bad("tool_call args must be {str: str}")
+        typed_calls.append(ToolCall(c["name"], tuple(sorted(c["args"].items()))))
+    if not raw["progress_delta"].strip():
+        bad("progress_delta is required and must be non-empty")
+    return TurnContract(
+        header=raw["header"],
+        objective=raw["objective"],
+        plan=tuple(plan),
+        tool_calls=tuple(typed_calls),
+        questions=tuple(questions),
+        assumptions=tuple(assumptions),
+        progress_delta=raw["progress_delta"],
+        done_claim=raw["done_claim"],
+    )
+
+
+# ---------------------------------------------------------------------------
 # Mission kinds + code-routed mode selection (fallback; the per-turn triple
 # router is authoritative when input is present).
 # ---------------------------------------------------------------------------

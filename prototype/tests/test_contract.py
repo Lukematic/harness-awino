@@ -3,7 +3,8 @@ import unittest
 
 from tests.common import make_loop, T
 from backends import ScriptedBackend
-from contract import compile_contract, route_mode
+from contract import (compile_contract, route_mode, coerce_turn_contract,
+                      ContractTypeError, TurnContract, ToolCall)
 
 
 class TestContract(unittest.TestCase):
@@ -76,6 +77,63 @@ class TestContract(unittest.TestCase):
             # fresh compilation each turn: turn counter advances
         self.assertIn("turn: 1", backend.calls[0]["contract"])
         self.assertIn("turn: 2", backend.calls[1]["contract"])
+
+
+class TestTypedContract(unittest.TestCase):
+    """Phase B: the validated turn coerces to an immutable typed contract."""
+
+    def good_raw(self):
+        return {
+            "header": "h", "objective": "o", "plan": ["p1"],
+            "tool_calls": [{"name": "list_dir", "args": {"path": "."}}],
+            "questions": ["q?"], "assumptions": ["a"],
+            "progress_delta": "did a thing", "done_claim": False,
+        }
+
+    def test_coerce_ok(self):
+        t = coerce_turn_contract(self.good_raw())
+        self.assertIsInstance(t, TurnContract)
+        self.assertEqual(t.header, "h")
+        self.assertEqual(t.plan, ("p1",))
+        self.assertEqual(len(t.tool_calls), 1)
+        self.assertIsInstance(t.tool_calls[0], ToolCall)
+        self.assertEqual(t.tool_calls[0].name, "list_dir")
+        # args normalized to sorted tuple pairs
+        self.assertEqual(t.tool_calls[0].args, (("path", "."),))
+
+    def test_coerce_rejects_wrong_types(self):
+        bad = self.good_raw()
+        bad["plan"] = "not a list"
+        self.assertRaises(ContractTypeError, coerce_turn_contract, bad)
+        bad = self.good_raw()
+        bad["tool_calls"] = [{"name": "x", "args": ["not", "a", "dict"]}]
+        self.assertRaises(ContractTypeError, coerce_turn_contract, bad)
+        bad = self.good_raw()
+        bad["done_claim"] = "yes"
+        self.assertRaises(ContractTypeError, coerce_turn_contract, bad)
+        bad = self.good_raw()
+        bad["tool_calls"] = [{"name": "x", "args": {"k": 123}}]
+        self.assertRaises(ContractTypeError, coerce_turn_contract, bad)
+
+    def test_immutable(self):
+        t = coerce_turn_contract(self.good_raw())
+        self.assertRaises(ContractTypeError, setattr, t, "header", "changed")
+        self.assertRaises(ContractTypeError, setattr, t.tool_calls[0], "name", "x")
+
+    def test_as_dict_roundtrip(self):
+        raw = self.good_raw()
+        d = coerce_turn_contract(raw).as_dict()
+        self.assertEqual(d["header"], raw["header"])
+        self.assertEqual(d["plan"], raw["plan"])
+        self.assertEqual(d["tool_calls"], raw["tool_calls"])
+
+    def test_pipeline_uses_typed_contract(self):
+        # a turn that passes validation flows through coercion; the loop
+        # still completes the turn with the type-guaranteed dict.
+        backend = ScriptedBackend([T(progress_delta="typed ok")])
+        loop, _ = make_loop(backend=backend)
+        r = loop.run_user_turn("hi")
+        self.assertEqual(r["status"], "ok")
 
 
 if __name__ == "__main__":

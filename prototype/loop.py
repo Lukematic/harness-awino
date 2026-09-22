@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from pathlib import Path
 
 from state import ProjectState, _uid
@@ -20,6 +21,7 @@ from contract import (
     MODES, compile_contract, criterion_status, detect_mission_kind,
     knowledge_counts, next_action_line, parse_criteria, render_header,
     route_mode, validate_header, validate_schema, verify_done_criteria,
+    coerce_turn_contract, ContractTypeError,
 )
 from stances import evaluate_chain, route_triple, FLOORS
 from tools import Sandbox, TOOL_DEFS
@@ -33,6 +35,22 @@ from contract_loop import (
 SCOPE_CHANGE_RE = re.compile(
     r"\bnow let'?s add\b|\bcan we also\b|\blet'?s also\b|\badditionally\b"
     r"|\bscope change\b|\bnew requirement\b|\bactually,?\s+let'?s\b")
+
+
+# ---------------------------------------------------------------------------
+# Phase B: explicit phase transition table. All phase changes go through
+# Loop.request_phase, which refuses illegal jumps (recording
+# transition_refused) instead of silently allowing them.
+# ---------------------------------------------------------------------------
+ALLOWED_TRANSITIONS = {
+    "IDLE": ("DEFINE",),
+    "DEFINE": ("PLAN", "DEFINE"),  # DEFINE->DEFINE: mission re-set
+    "PLAN": ("BUILD", "DEFINE"),
+    "BUILD": ("VERIFY", "PLAN", "DEFINE"),
+    "VERIFY": ("REVIEW", "BUILD", "DEFINE"),
+    "REVIEW": ("SHIP", "BUILD", "DEFINE"),
+    "SHIP": ("DEFINE",),  # new mission after ship
+}
 
 
 def classify_user_input(text: str) -> tuple[str, str]:
@@ -71,7 +89,7 @@ class Loop:
         self.judge = judge or ScriptedJudge()
         self.sandbox = Sandbox(sandbox_dir or (self.state.dir / "sandbox"))
         cfg = {"max_retries": 3, "max_turns": 50, "stall_limit": 5,
-               "token_budget": 200_000}
+               "token_budget": 200_000, "max_seconds": 3600}
         cfg.update(config or {})
         self.config = cfg
         self.history: list[dict] = []
@@ -205,6 +223,14 @@ class Loop:
             self.state.persist_snapshot()
             return {"status": "budget_exhausted",
                     "said": f"Turn budget exhausted ({cfg['max_turns']}). Terminal."}
+        # Phase B: wall-clock budget. Never auto-increased; exhaustion is terminal.
+        start_ts = s.get("mission_start_ts")
+        if start_ts and (time.time() - start_ts) >= cfg["max_seconds"]:
+            self.state.record("budget_exhausted",
+                              {"reason": f"max_seconds={cfg['max_seconds']}"})
+            self.state.persist_snapshot()
+            return {"status": "budget_exhausted",
+                    "said": f"Time budget exhausted ({cfg['max_seconds']}s). Terminal."}
 
         setup_errs = self.check_setup()
         if setup_errs:
@@ -308,6 +334,19 @@ class Loop:
                         f"{'; '.join(errs)}. Fix and resubmit a valid TurnContract.")
 
         assert turn is not None
+        # Phase B: coerce the validated dict into the immutable typed contract.
+        # From here on the pipeline consumes the type-guaranteed form.
+        try:
+            typed_turn = coerce_turn_contract(turn)
+        except ContractTypeError as e:
+            self.state.record("turn_rejected",
+                              {"turn_id": turn_id, "attempt": "coerce",
+                               "errors": [str(e)]})
+            self.state.persist_snapshot()
+            return {"status": "escalated",
+                    "said": "Turn failed typed coercion: " + str(e),
+                    "errors": [str(e)]}
+        turn = typed_turn.as_dict()
         # ---- Stage 4b: contract pre-execute check ----
         # The validated turn is checked against the compiled contract BEFORE
         # anything executes. Hard breaks refuse the turn outright (no tool
@@ -617,6 +656,29 @@ class Loop:
                    and e["data"].get("mission_rev") == rev
                    for e in self.state.events)
 
+    def request_phase(self, target: str, reason: str = "") -> dict:
+        """Request a phase transition through the ALLOWED_TRANSITIONS table.
+
+        Legal: records phase_changed and returns ok. Illegal: records
+        transition_refused, leaves the phase unchanged, returns refused.
+        """
+        s = self.state.snapshot
+        frm = s["phase"]
+        if target == frm:
+            return {"status": "ok", "phase": frm, "note": "already there"}
+        allowed = ALLOWED_TRANSITIONS.get(frm, ())
+        if target not in allowed:
+            self.state.record("transition_refused",
+                              {"from": frm, "to": target,
+                               "reason": reason or "not in ALLOWED_TRANSITIONS"})
+            self.state.persist_snapshot()
+            return {"status": "refused",
+                    "said": f"Transition refused: {frm} -> {target} is not "
+                            f"allowed ({reason or 'illegal jump'})."}
+        self.state.record("phase_changed", {"phase": target, "reason": reason})
+        self.state.persist_snapshot()
+        return {"status": "ok", "phase": target}
+
     def approve_contract(self, scope: list[str] | None = None) -> dict:
         """Operator approves the contract (elevator gate, code-enforced).
 
@@ -632,7 +694,7 @@ class Loop:
             self.state.record("contract_approved",
                               {"revision": self._revision(), "phase": "DEFINE",
                                "scope": None})
-            self.state.record("phase_changed", {"phase": "PLAN"})
+            self.request_phase("PLAN", reason="contract approved (DEFINE)")
             self.state.persist_snapshot()
             return {"status": "ok",
                     "said": f"Contract approved (mission revision {self._revision()}). "
@@ -643,7 +705,7 @@ class Loop:
             self.state.record("contract_approved",
                               {"revision": self._revision(), "phase": "PLAN",
                                "scope": sc})
-            self.state.record("phase_changed", {"phase": "BUILD"})
+            self.request_phase("BUILD", reason="contract approved with SCOPE")
             self.state.persist_snapshot()
             return {"status": "ok",
                     "said": f"Contract approved with SCOPE {sc} "
@@ -734,10 +796,10 @@ class Loop:
         if s["phase"] == "BUILD" and self._has_write_effects():
             # BUILD exit gate: diff produced -> VERIFY. Done criteria are
             # checked at the done claim, not here.
-            self.state.record("phase_changed", {"phase": "VERIFY"})
+            self.request_phase("VERIFY", reason="write effects produced")
             s = self.state.snapshot
         if s["phase"] == "VERIFY" and self._has_exit_zero():
-            self.state.record("phase_changed", {"phase": "REVIEW"})
+            self.request_phase("REVIEW", reason="verify exit 0")
             s = self.state.snapshot
         if s["phase"] == "REVIEW" and turn.get("done_claim"):
             # Semantic validation already proved every criterion in code, and
@@ -809,7 +871,7 @@ class Loop:
         ok, gaps = verify_done_criteria(s, self.state.events,
                                         self._search_dirs(), manual_ok=True)
         if ok:
-            self.state.record("phase_changed", {"phase": "REVIEW"})
+            self.request_phase("REVIEW", reason="done criteria verified")
             self.state.record("mission_done", {"via": "operator"})
             self.state.persist_snapshot()
             return {"status": "done",
@@ -820,6 +882,82 @@ class Loop:
                 "said": "Not done. Gaps: " + "; ".join(gaps), "gaps": gaps}
 
     # ---------------------------------------------------------------- status
+    def budgets(self) -> dict:
+        """Phase B: remaining budgets (turns, tokens, wall-clock seconds)."""
+        s = self.state.snapshot
+        cfg = self.config
+        start_ts = s.get("mission_start_ts")
+        elapsed = (time.time() - start_ts) if start_ts else 0.0
+        return {
+            "turns": {"used": s["turn_count"], "limit": cfg["max_turns"],
+                      "remaining": max(0, cfg["max_turns"] - s["turn_count"])},
+            "tokens": {"used": s["tokens_used"], "limit": cfg["token_budget"],
+                       "remaining": max(0, cfg["token_budget"] - s["tokens_used"])},
+            "seconds": {"used": round(elapsed, 1), "limit": cfg["max_seconds"],
+                        "remaining": max(0.0, round(cfg["max_seconds"] - elapsed, 1))},
+        }
+
+    def effect_journal(self) -> list[dict]:
+        """Phase B: ordered journal of effects (tool executions).
+
+        Each entry: {seq, call_id, tool, args, idem_key, result_summary,
+        digest, reused, mission_rev, resolved_via}. Derived from the event
+        log; the log is the source of truth.
+        """
+        journal = []
+        called = {}  # call_id -> tool_called event
+        for e in self.state.events:
+            if e["type"] == "tool_called":
+                called[e["data"]["call_id"]] = e
+            elif e["type"] == "tool_result":
+                d = e["data"]
+                c = called.get(d["call_id"], {})
+                cd = c.get("data", {}) if c else {}
+                result = d.get("result", {})
+                # digest may live in the result payload (e.g. write_file)
+                digest = d.get("digest") or result.get("digest")
+                journal.append({
+                    "seq": e["seq"],
+                    "call_id": d["call_id"],
+                    "tool": d["tool"],
+                    "args": cd.get("args", d.get("args", {})),
+                    "idem_key": d.get("idem_key", cd.get("idem_key")),
+                    "result_summary": str(result)[:200],
+                    "digest": digest,
+                    "reused": bool(d.get("reused")),
+                    "mission_rev": d.get("mission_rev"),
+                    "resolved_via": d.get("resolved_via"),
+                })
+        return journal
+
+    def verify_journal(self) -> tuple[bool, list[str]]:
+        """Phase B: integrity check on the effect journal.
+
+        Returns (ok, problems). Checks: every tool_result has a matching
+        tool_called; no duplicate non-reused executions share an idem_key.
+        """
+        problems = []
+        called_ids = {e["data"]["call_id"] for e in self.state.events
+                      if e["type"] == "tool_called"}
+        seen_idem = {}  # idem_key -> call_id (non-reused only)
+        for e in self.state.events:
+            if e["type"] != "tool_result":
+                continue
+            d = e["data"]
+            cid = d["call_id"]
+            if cid not in called_ids:
+                problems.append(f"tool_result {cid} has no tool_called")
+            if not d.get("reused"):
+                key = d.get("idem_key")
+                if key:
+                    if key in seen_idem:
+                        problems.append(
+                            f"duplicate execution for idem_key {key}: "
+                            f"{seen_idem[key]} and {cid}")
+                    else:
+                        seen_idem[key] = cid
+        return (not problems, problems)
+
     def status(self) -> dict:
         s = self.state.snapshot
         crit = []

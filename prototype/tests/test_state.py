@@ -40,6 +40,25 @@ class TestEventSourcing(unittest.TestCase):
         reloaded.record("progress_recorded", {"turn_id": "t9", "delta": "ok"})
         self.assertEqual(reloaded.snapshot["progress"][-1]["delta"], "ok")
 
+    def test_revision_history_append_only(self):
+        """Phase B: mission revisions are immutable history."""
+        loop, home = make_loop()
+        loop.set_mission("First mission", ["manual"])
+        loop.set_mission("Second mission", ["manual"])
+        hist = loop.state.snapshot["revision_history"]
+        self.assertEqual(len(hist), 2)
+        self.assertEqual(hist[0]["revision"], 1)
+        self.assertEqual(hist[0]["text"], "First mission")
+        self.assertEqual(hist[1]["revision"], 2)
+        self.assertEqual(hist[1]["text"], "Second mission")
+        # past revision text is unchanged by the new mission
+        self.assertNotEqual(hist[0]["text"], hist[1]["text"])
+        # history survives reload from disk
+        reloaded = ProjectState(home, "p1")
+        self.assertEqual(len(reloaded.snapshot["revision_history"]), 2)
+        self.assertEqual(reloaded.snapshot["revision_history"][0]["text"],
+                         "First mission")
+
 
 if __name__ == "__main__":
     unittest.main()

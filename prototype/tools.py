@@ -21,6 +21,7 @@ class Sandbox:
     def __init__(self, root: str | Path):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
+        self._manifest: dict[str, str] = {}  # Phase B: path -> sha256 of writes
 
     def _resolve(self, path: str) -> Path:
         p = (self.root / path).resolve()
@@ -39,7 +40,30 @@ class Sandbox:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content)
         digest = hashlib.sha256(content.encode()).hexdigest()[:16]
+        # Phase B: record the write in the manifest for tamper detection.
+        self._manifest[path] = hashlib.sha256(content.encode()).hexdigest()
         return {"path": path, "digest": digest, "bytes": len(content)}
+
+    def manifest(self) -> dict[str, str]:
+        """Phase B: {path: sha256} for every file this sandbox wrote."""
+        return dict(self._manifest)
+
+    def verify_manifest(self) -> tuple[bool, list[str]]:
+        """Phase B: re-hash files on disk; report external tampering.
+
+        Returns (ok, problems). A file the sandbox wrote whose on-disk
+        hash differs was modified outside the sandbox.
+        """
+        problems = []
+        for path, expected in self._manifest.items():
+            p = self._resolve(path)
+            if not p.is_file():
+                problems.append(f"{path}: missing on disk")
+                continue
+            actual = hashlib.sha256(p.read_bytes()).hexdigest()
+            if actual != expected:
+                problems.append(f"{path}: hash mismatch (modified externally)")
+        return (not problems, problems)
 
     def run_command(self, cmd: str, timeout: int = 30) -> dict:
         """Run a shell command with cwd confined to the sandbox.

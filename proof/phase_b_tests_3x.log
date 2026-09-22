@@ -1,0 +1,10 @@
+Phase B test suite — 3 consecutive green runs (2026-09-22):
+Ran 157 tests in 0.945s
+OK
+--- run 1 ---
+Ran 157 tests in 1.004s
+OK
+--- run 2 ---
+Ran 157 tests in 0.763s
+OK
+--- run 3 ---
