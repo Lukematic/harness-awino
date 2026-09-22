@@ -543,6 +543,27 @@ class Loop:
 
     def _execute_single(self, call_id: str, tool_name: str, args: dict,
                         idem_key: str) -> dict:
+        # Phase D: worker file ownership — a worker Loop (has worker_id in
+        # its snapshot) may only touch files within its owned_files scope.
+        scope = self.state.snapshot.get("scope")
+        worker_id = self.state.snapshot.get("worker_id")
+        if worker_id and scope and tool_name in ("write_file", "read_file"):
+            path = (args.get("path") or "")
+            # owned_files are prefixes like "docs/"; path must start with one
+            if not any(path == p.rstrip("/") or path.startswith(p)
+                       for p in scope):
+                self.state.record("tool_called",
+                                  {"call_id": call_id, "tool": tool_name,
+                                   "args": args, "idem_key": idem_key,
+                                   "mission_rev": self.state.snapshot["mission_revision"]})
+                result = {"error": f"ScopeViolation: worker {worker_id} "
+                                   f"cannot access '{path}' (owned: {scope})"}
+                self.state.record("tool_result",
+                                  {"call_id": call_id, "tool": tool_name,
+                                   "args": args, "idem_key": idem_key,
+                                   "result": result,
+                                   "mission_rev": self.state.snapshot["mission_revision"]})
+                return {"tool": tool_name, "result": result}
         # Idempotency: never re-execute an effect we already have a result for.
         for e in reversed(self.state.events):
             if e["type"] == "tool_result" and e["data"].get("idem_key") == idem_key:
@@ -1011,3 +1032,65 @@ class Loop:
             "flags": s["flags"][-5:], "done": s["done"],
             "next_action": next_action_line(s),
         }
+
+    # ------------------------------------------------------- Phase D: workers
+    def spawn_worker(self, objective: str, owned_files: list[str],
+                     budget_share: dict) -> dict:
+        """Phase D: spawn a worker with fixed file ownership and a budget share.
+
+        The worker gets its own project dir and Loop. Its SCOPE is fixed to
+        owned_files — the worker cannot change its own scope. The budget_share
+        (e.g. {"max_turns": 2}) is drawn from the parent's shared pool; if the
+        pool is exhausted, spawning raises.
+        """
+        s = self.state.snapshot
+        # shared budget: track allocated turns
+        allocated = s.get("worker_budget_allocated", 0)
+        requested = budget_share.get("max_turns", 0)
+        limit = self.config.get("max_turns", 50)
+        if allocated + requested > limit:
+            raise RuntimeError(
+                f"worker budget exhausted: allocated {allocated}, "
+                f"requested {requested}, parent limit {limit}")
+        wid = f"w-{_uid()[:8]}"
+        worker_dir = (self.state.dir / "workers" / wid)
+        worker_dir.mkdir(parents=True, exist_ok=True)
+        # worker Loop with its own project id
+        wloop = Loop(self.home, f"{s['project_id']}/{wid}",
+                     self.backend, self.judge,
+                     sandbox_dir=str(worker_dir / "sandbox"),
+                     config={"max_turns": requested,
+                             "max_seconds": budget_share.get("max_seconds", 3600)},
+                     conversation_id=f"{wid}")
+        # fix the worker's scope to owned_files (file ownership)
+        wloop.state.snapshot["scope"] = list(owned_files)
+        wloop.state.snapshot["worker_id"] = wid
+        wloop.state.record("worker_scoped",
+                           {"worker_id": wid, "owned_files": owned_files,
+                            "objective": objective})
+        # record the allocation on the parent (reducer updates the counter)
+        self.state.record("worker_spawned",
+                          {"worker_id": wid, "objective": objective,
+                           "owned_files": owned_files,
+                           "budget_share": budget_share})
+        return {"worker_id": wid, "loop": wloop,
+                "project_dir": str(worker_dir),
+                "owned_files": owned_files,
+                "budget_share": budget_share}
+
+    def collect_worker(self, worker_id: str) -> dict:
+        """Phase D: collect a worker's journal and artifacts into the parent."""
+        worker_dir = self.state.dir / "workers" / worker_id
+        if not worker_dir.exists():
+            raise ValueError(f"unknown worker {worker_id}")
+        # read the worker's artifacts (files in its sandbox)
+        artifacts = []
+        sandbox = worker_dir / "sandbox"
+        if sandbox.exists():
+            for p in sandbox.rglob("*"):
+                if p.is_file():
+                    artifacts.append(str(p.relative_to(sandbox)))
+        self.state.record("worker_completed",
+                          {"worker_id": worker_id, "artifacts": artifacts})
+        return {"status": "collected", "worker_id": worker_id,
+                "artifacts": artifacts}

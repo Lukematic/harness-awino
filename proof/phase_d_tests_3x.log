@@ -1,0 +1,10 @@
+Phase D test suite — 3 consecutive green runs (2026-09-22):
+Ran 172 tests in 0.728s
+OK
+--- run 1 ---
+Ran 172 tests in 0.807s
+OK
+--- run 2 ---
+Ran 172 tests in 1.191s
+OK
+--- run 3 ---

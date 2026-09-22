@@ -64,6 +64,9 @@ def initial_snapshot(project_id: str, conversation_id: str) -> dict:
         "done": False,
         "terminal": False,
         "terminal_reason": None,
+        "worker_budget_allocated": 0,  # Phase D: turns allocated to workers
+        "worker_id": None,  # Phase D: set on worker Loops
+        "scope": [],  # Phase D: worker file ownership (list of path prefixes)
         "awaiting_approval": False,
         "awaiting_inspection": None,  # call_id or None
         "awaiting_operator": False,
@@ -202,6 +205,15 @@ def apply_event(snap: dict, ev: dict) -> None:
         # Phase C: append-only learning record.
         snap.setdefault("learnings", []).append(
             {"ts": ev["ts"], "kind": d["kind"], "text": d["text"]})
+    elif t == "worker_spawned":
+        # Phase D: track allocated worker budget.
+        snap["worker_budget_allocated"] = (
+            snap.get("worker_budget_allocated", 0)
+            + d.get("budget_share", {}).get("max_turns", 0))
+    elif t == "worker_scoped":
+        # Phase D: worker file ownership (fixed scope).
+        snap["worker_id"] = d["worker_id"]
+        snap["scope"] = list(d["owned_files"])
     elif t == "mission_done":
         snap["done"] = True
         snap["phase"] = "SHIP"
