@@ -1,0 +1,1 @@
+recursive-include prototype/skills *.md manifest.json

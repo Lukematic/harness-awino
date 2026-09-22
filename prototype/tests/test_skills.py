@@ -50,7 +50,8 @@ class TestSkillStore(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp(prefix="awino-skills-tamper-"))
         try:
             for p in STORE_DIR.iterdir():
-                shutil.copy(p, tmp / p.name)
+                if p.suffix in (".md", ".json") and p.is_file():
+                    shutil.copy(p, tmp / p.name)
             victim = tmp / "repo.md"
             victim.write_text(victim.read_text() + "\nEXTRA INJECTED LINE\n")
             with self.assertRaises(SkillIntegrityError) as cm:
@@ -63,7 +64,8 @@ class TestSkillStore(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp(prefix="awino-skills-manifest-"))
         try:
             for p in STORE_DIR.iterdir():
-                shutil.copy(p, tmp / p.name)
+                if p.suffix in (".md", ".json") and p.is_file():
+                    shutil.copy(p, tmp / p.name)
             man = json.loads((tmp / "manifest.json").read_text())
             man["repo"] = "0" * 64
             (tmp / "manifest.json").write_text(json.dumps(man))
@@ -75,8 +77,10 @@ class TestSkillStore(unittest.TestCase):
     def test_missing_skill_file_refuses_to_load(self):
         tmp = Path(tempfile.mkdtemp(prefix="awino-skills-missing-"))
         try:
+            # Copy only skill data files (.md + manifest), not the package code
             for p in STORE_DIR.iterdir():
-                shutil.copy(p, tmp / p.name)
+                if p.suffix in (".md", ".json") and p.is_file():
+                    shutil.copy(p, tmp / p.name)
             (tmp / "code.md").unlink()
             with self.assertRaises(SkillIntegrityError):
                 SkillStore(tmp)

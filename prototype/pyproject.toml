@@ -28,3 +28,7 @@ py-modules = [
     "stances",
     "tools",
 ]
+packages = ["skills"]
+
+[tool.setuptools.package-data]
+skills = ["*.md", "manifest.json"]

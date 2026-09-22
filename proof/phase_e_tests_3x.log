@@ -1,0 +1,10 @@
+Phase E test suite — 3 consecutive green runs (2026-09-22):
+Ran 174 tests in 0.950s
+OK
+--- run 1 ---
+Ran 174 tests in 1.356s
+OK
+--- run 2 ---
+Ran 174 tests in 1.055s
+OK
+--- run 3 ---
