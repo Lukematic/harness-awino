@@ -12,7 +12,10 @@ TurnContract schema. JudgeBackend.judge(turn, contract_block, summary) ->
 from __future__ import annotations
 
 import copy
+import json
+import os
 import re
+import urllib.request
 
 
 class ModelBackend:
@@ -223,3 +226,145 @@ class EchoBackend(ModelBackend):
                 contract_block)
         return _fill_echo(_base_turn(progress_delta="Ready. What's next?"),
                           contract_block)
+
+
+# ---------------------------------------------------------------------------
+# OllamaBackend: a REAL model backend (local LLM via Ollama). stdlib only.
+# ---------------------------------------------------------------------------
+
+_OLLAMA_SYSTEM = """You are the model inside the A.W.I.N.O. turn loop. The harness owns the turn: it compiled the contract below from its own state. Reply with ONLY a JSON object — no prose, no markdown fences — with exactly these fields:
+- "header": echo the FIRST LINE of the contract block below EXACTLY,
+  character for character. It is shown again here in a code block — copy
+  it exactly, do NOT paraphrase it, do NOT turn it into a title, do NOT
+  shorten it. Even one changed character gets the turn rejected.
+  ```
+  {header}
+  ```
+- "objective": the current objective, in your own words.
+- "plan": list of step strings. Use [] when there is no plan.
+- "tool_calls": list of {"name": ..., "args": {...}}. Call ONLY tools the contract lists as offered for the current mode. Available tools: read_file {"path"}, list_dir {} (takes no arguments), run_command {"cmd"}, write_file {"path", "content"} (consequential: propose only when a plan exists and was approved).
+- "questions": list of question strings when you are blocked; otherwise [].
+- "assumptions": list of assumption strings; otherwise [].
+- "progress_delta": non-empty string describing what this turn does.
+- "done_claim": true only when every done criterion is met with evidence; otherwise false.
+Rules: never invent approvals or evidence; never claim done without evidence; if you cannot comply, return a valid JSON turn carrying a question instead of acting.
+Format traps that WILL get the turn rejected — avoid them:
+- "args" must ALWAYS be a JSON object, never an array. list_dir takes "args": {}.
+- "done_claim" MUST be false unless the contract's DONE CRITERIA section shows every criterion already satisfied. When in doubt, false. Claiming done early is forgery and the turn is rejected.
+- On a retry after a harness rejection, keep the "header" byte-identical to the previous attempt. Never rephrase it.
+- Stance procedure: if the contract block contains a PROCEDURE section, follow it exactly. E.g. a first-principles procedure requires you to state the hypothesized cause / decomposition in "assumptions" BEFORE acting — so put a real cause hypothesis in "assumptions", never leave it empty when the procedure demands it."""
+
+
+def _extract_json(text: str):
+    """Pull a JSON object out of model output, tolerating markdown fences."""
+    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S)
+    if m:
+        candidate = m.group(1)
+    else:
+        start, end = text.find("{"), text.rfind("}")
+        if start < 0 or end <= start:
+            return None
+        candidate = text[start:end + 1]
+    try:
+        return json.loads(candidate)
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
+class OllamaBackend(ModelBackend):
+    """Real model backend: talks to a local LLM server over HTTP.
+
+    Host from OLLAMA_HOST (default http://localhost:11434), model from
+    OLLAMA_MODEL (default qwen2.5:1.5b). stdlib urllib only.
+
+    Speaks the OpenAI-compatible ``/v1/chat/completions`` endpoint, which
+    is served by both Ollama and llama.cpp's server — so the same backend
+    works against either local runtime.
+
+    The model's header is passed through verbatim — the pipeline's header
+    sensor genuinely tests whether the model echoes it. If the model output
+    is unparseable or the server is unreachable, a safe fallback turn is
+    returned (a clarifying question, zero tool calls): never a crash, and
+    never a tool call the harness did not see validated.
+    """
+
+    def __init__(self, model=None, host=None, timeout=180, num_predict=512):
+        self.model = model or os.environ.get("OLLAMA_MODEL", "qwen2.5:1.5b")
+        self.host = (host or os.environ.get("OLLAMA_HOST",
+                                            "http://localhost:11434")).rstrip("/")
+        self.timeout = timeout
+        self.num_predict = num_predict
+        self.calls: list[dict] = []
+
+    def generate(self, contract_block, history, feedback=None):
+        self.calls.append({"contract": contract_block[:200], "feedback": feedback,
+                           "history_len": len(history)})
+        expected_header = contract_block.split("\n", 1)[0]
+        system = _OLLAMA_SYSTEM.replace("{header}", expected_header)
+        try:
+            text = self._chat(self._user_prompt(contract_block, history, feedback),
+                              system)
+        except Exception as e:  # server down, timeout, bad payload: safe fallback
+            return self._fallback(expected_header, f"backend error: {type(e).__name__}")
+        turn = _extract_json(text)
+        if not isinstance(turn, dict):
+            return self._fallback(expected_header, "model output was not a JSON object")
+        return self._normalize(turn, expected_header)
+
+    def _user_prompt(self, contract_block, history, feedback):
+        lines = [contract_block, "", "--- recent history ---"]
+        for h in (history or [])[-6:]:
+            lines.append(f"[{h.get('role', '?')}] {str(h.get('text', ''))[:300]}")
+        lines += ["", "--- harness feedback (fix and resubmit) ---",
+                  feedback or "(none)", "",
+                  "Reply with ONLY the JSON turn object."]
+        return "\n".join(lines)
+
+    def _chat(self, prompt: str, system: str) -> str:
+        body = json.dumps({
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+            "stream": False,
+            "temperature": 0.2,
+            "max_tokens": self.num_predict,
+        }).encode()
+        req = urllib.request.Request(
+            self.host + "/v1/chat/completions", data=body,
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            payload = json.loads(resp.read().decode())
+        return payload["choices"][0]["message"]["content"]
+
+    @staticmethod
+    def _fallback(expected_header: str, why: str) -> dict:
+        return {
+            "header": expected_header,
+            "objective": "(awaiting direction)",
+            "plan": [],
+            "tool_calls": [],
+            "questions": [f"I could not produce a valid turn ({why}). "
+                          "What should I do next?"],
+            "assumptions": [],
+            "progress_delta": f"Safe fallback: no valid model output ({why}); "
+                              "asking for direction instead of acting.",
+            "done_claim": False,
+        }
+
+    @staticmethod
+    def _normalize(turn: dict, expected_header: str) -> dict:
+        """Fill missing non-header fields with safe defaults. The header is
+        passed through verbatim so the pipeline's position sensor genuinely
+        tests the model; a missing/falsified header is a pipeline rejection,
+        not something the backend papers over."""
+        out = dict(turn)
+        out.setdefault("objective", "(unspecified)")
+        out.setdefault("plan", [])
+        out.setdefault("tool_calls", [])
+        out.setdefault("questions", [])
+        out.setdefault("assumptions", [])
+        out.setdefault("progress_delta", "Model produced a turn.")
+        out.setdefault("done_claim", False)
+        return out

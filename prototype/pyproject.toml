@@ -21,6 +21,7 @@ py-modules = [
     "chat",
     "cli",
     "contract",
+    "contract_loop",
     "demo",
     "loop",
     "state",
