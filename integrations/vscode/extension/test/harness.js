@@ -23,6 +23,10 @@ const { SidecarClient } = require("../out/sidecar.js");
 const REPO = path.resolve(__dirname, "..", "..", "..", "..", "prototype");
 const SIDECAR = path.join(REPO, "awino_sidecar.py");
 
+// Step 3 streaming fixtures: >4096 chars so the 4KB payload split is exercised.
+const BIG_THINK = "THINK-" + "t".repeat(5000);
+const BIG_SAID = "SAID-" + "s".repeat(5000);
+
 function turn(kw) {
   const t = {
     header: "echo",
@@ -70,6 +74,30 @@ async function main() {
       tool_calls: [{ name: "run_command", args: { cmd: "touch ran-check.txt" } }],
       assumptions: ["Attack: the command could fail silently, so its absence afterwards is the falsifier."],
       progress_delta: "Running the check command.",
+    }),
+    // --- Step 3 (sidecar streaming protocol) scripted turns ---
+    turn({
+      tool_calls: [{ name: "list_dir", args: {} }],
+      chunks: [
+        ["thinking", BIG_THINK],
+        ["said", BIG_SAID],
+      ],
+      assumptions: ["Hypothesis: the workspace root lists the project files; reading it addresses the objective."],
+      progress_delta: "Inspected the workspace.",
+    }),
+    turn({
+      plan: ["Confirm the workspace state", "Report back"],
+      assumptions: ["Hypothesis: the directory listing from the previous turn is sufficient context."],
+      progress_delta: "Confirming workspace state.",
+    }),
+    turn({
+      tool_calls: [{ name: "run_command", args: { cmd: "touch streamed-run.txt" } }],
+      chunks: [
+        ["thinking", "The command needs approval; I will present it."],
+        ["said", "Preparing the check command for approval."],
+      ],
+      assumptions: ["Attack: the command could fail silently, so its absence afterwards is the falsifier."],
+      progress_delta: "Running the streamed check command.",
     }),
   ];
 
@@ -156,6 +184,128 @@ async function main() {
   assert.ok(okEv.ok, "sidecar alive after unknown command");
   console.log("ok 4 - unknown command fails closed, sidecar survives");
 
+  // 6. streamed turn: turn_start -> deltas/checks/tool_progress -> turn_result
+  // (phase is VERIFY by now: the approved write in 3b advanced BUILD -> VERIFY)
+  const stBefore = await commandResult(client, "status", {});
+  const streamed = [];
+  const collectStreamed = (e) => streamed.push(e);
+  client.on("event", collectStreamed);
+  p = client.waitFor((e) => e.event === "turn_result", 60000);
+  client.send({ cmd: "user_message", text: "list the workspace directory contents", stream: true });
+  tr = await p;
+  client.off("event", collectStreamed);
+
+  const stypes = streamed.map((e) => e.event);
+  assert.strictEqual(stypes[0], "turn_start", "first event is turn_start");
+  assert.strictEqual(stypes[stypes.length - 1], "turn_result", "last event is turn_result");
+  const ts = streamed[0];
+  assert.ok(/^t\d+$/.test(ts.turn_id), "turn_start carries turn_id");
+  assert.strictEqual(ts.phase, stBefore.result.status.phase,
+    "turn_start phase matches the live phase");
+  assert.ok(typeof ts.mode.id === "string" && ts.mode.id.length > 0,
+    "turn_start carries the routed mode id");
+  assert.strictEqual(ts.mode.source, "stage", "turn_start mode source is stage");
+  assert.strictEqual(ts.persona, null, "turn_start persona null");
+
+  // payload cap: every emitted text payload is at most 4096 chars
+  for (const e of streamed) {
+    if (typeof e.text === "string") {
+      assert.ok(e.text.length <= 4096,
+        `payload cap respected for ${e.event} (got ${e.text.length})`);
+    }
+  }
+
+  // big thinking chunk (>4096) split into 2 deltas, reassembles exactly
+  const thinkDeltas = streamed.filter((e) => e.event === "thinking_delta");
+  assert.strictEqual(thinkDeltas.length, 2, "5006-char thinking chunk split into 2 deltas");
+  assert.strictEqual(thinkDeltas.map((e) => e.text).join(""), BIG_THINK,
+    "thinking deltas reassemble exactly");
+
+  // said deltas: the scripted said chunk (>4096) split in 2, reassembles exactly.
+  // (With explicit chunks, only the chunks stream — they are the simulated
+  // token stream; progress_delta streams only on the no-chunks fallback path.)
+  const saidDeltas = streamed.filter((e) => e.event === "said_delta");
+  assert.strictEqual(saidDeltas.length, 2, "5006-char said chunk split into 2 deltas");
+  assert.strictEqual(saidDeltas.map((e) => e.text).join(""), BIG_SAID,
+    "said deltas reassemble exactly");
+
+  // harness checks parallel the journal records: contract, judge votes, validation
+  const checks = streamed.filter((e) => e.event === "harness_check");
+  const checkNames = checks.map((e) => e.check);
+  assert.ok(checkNames.includes("contract"), "contract check emitted");
+  assert.ok(checkNames.includes("validation"), "validation check emitted");
+  assert.ok(checkNames.some((n) => n.startsWith("judge:")),
+    "per-vote judge check(s) emitted: " + JSON.stringify(checkNames));
+  assert.ok(checks.every((e) => e.verdict === "pass"), "all streamed checks pass");
+  assert.ok(checks.every((e) => e.turn_id === ts.turn_id), "checks carry the turn_id");
+
+  // tool_progress wraps the list_dir execution with timing
+  const tp = streamed.filter((e) => e.event === "tool_progress" && e.tool === "list_dir");
+  assert.deepStrictEqual(tp.map((e) => e.phase), ["start", "done"],
+    "tool_progress start -> done");
+  assert.ok(tp.every((e) => e.turn_id === ts.turn_id), "tool_progress carries turn_id");
+  assert.ok(typeof tp[1].ms === "number" && tp[1].ms >= 0, "tool_progress done carries ms");
+  assert.ok(tp[0].summary.length > 0, "tool_progress start carries a summary");
+
+  // ordering invariant: turn_start < deltas < turn_result
+  const firstDelta = streamed.findIndex(
+    (e) => e.event === "thinking_delta" || e.event === "said_delta");
+  assert.ok(firstDelta > 0, "deltas were emitted");
+  assert.ok(firstDelta < stypes.lastIndexOf("turn_result"), "deltas precede turn_result");
+
+  // turn_result is enriched with the full thinking trace and finalized checks
+  assert.strictEqual(tr.result.status, "ok", "streamed turn ok");
+  assert.strictEqual(tr.result.thinking, BIG_THINK, "turn_result.thinking is the full trace");
+  assert.ok(Array.isArray(tr.result.checks), "turn_result.checks present");
+  assert.deepStrictEqual(tr.result.checks.map((c) => c.check).sort(),
+    checkNames.slice().sort(), "turn_result.checks match the emitted harness checks");
+  console.log("ok 6 - streamed turn: turn_start -> deltas/checks/tool_progress -> enriched turn_result");
+
+  // 7. non-streamed turn: exactly the legacy event set, no new result keys
+  const legacy = [];
+  const collectLegacy = (e) => legacy.push(e);
+  client.on("event", collectLegacy);
+  p = client.waitFor((e) => e.event === "turn_result", 60000);
+  client.userMessage("confirm the workspace state");
+  tr = await p;
+  client.off("event", collectLegacy);
+  assert.deepStrictEqual(legacy.map((e) => e.event), ["turn_result"],
+    "non-streamed turn emits only turn_result");
+  assert.ok(!("thinking" in tr.result), "no thinking key on legacy turn_result");
+  assert.ok(!("checks" in tr.result), "no checks key on legacy turn_result");
+  console.log("ok 7 - non-streamed turn: legacy event set only, no thinking/checks keys");
+
+  // 8. streamed approval round-trip: pause card carries thinking/checks,
+  //    resume emits approval_gate + tool_progress and enriches the result
+  const appr = [];
+  const collectAppr = (e) => appr.push(e);
+  client.on("event", collectAppr);
+  p = client.waitFor((e) => e.event === "turn_result", 60000);
+  const pap3 = client.waitFor((e) => e.event === "approval_requested", 60000);
+  client.send({ cmd: "user_message", text: "run the streamed check", stream: true });
+  tr = await p;
+  const ap3 = await pap3;
+  assert.strictEqual(tr.result.status, "awaiting_approval", "streamed turn pauses for approval");
+  assert.strictEqual(tr.result.thinking, "The command needs approval; I will present it.",
+    "paused card carries the thinking trace");
+  assert.ok(tr.result.checks.some((c) => c.check === "validation" && c.verdict === "pass"),
+    "paused card carries the checks so far");
+  const item3 = ap3.approvals[0];
+  assert.strictEqual(item3.tool, "run_command", "approval is for run_command");
+  p = client.waitFor((e) => e.event === "turn_result", 60000);
+  client.approve(item3.id, "approve");
+  tr = await p;
+  client.off("event", collectAppr);
+  assert.strictEqual(tr.result.status, "ok", "resumed streamed turn ok");
+  const gate = tr.result.checks.find((c) => c.check === "approval_gate");
+  assert.ok(gate && gate.verdict === "pass", "approval_gate pass in final checks");
+  const wtp = appr
+    .filter((e) => e.event === "tool_progress" && e.tool === "run_command")
+    .map((e) => e.phase);
+  assert.deepStrictEqual(wtp, ["start", "done"], "run_command tool_progress emitted after resume");
+  assert.ok(fs.existsSync(path.join(ws, "streamed-run.txt")), "approved command executed");
+  console.log("ok 8 - streamed approval round-trip: pause card + resume enrichment");
+
   await client.close();
   await sleep(500);
   assert.ok(!client.running, "client closed cleanly");
@@ -163,7 +313,7 @@ async function main() {
 
   fs.rmSync(ws, { recursive: true, force: true });
   fs.rmSync(home, { recursive: true, force: true });
-  console.log("\nALL HARNESS TESTS PASSED");
+  console.log("\nALL 10 HARNESS TESTS PASSED");
 }
 
 main().catch((e) => {
