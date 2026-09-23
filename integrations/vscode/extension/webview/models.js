@@ -13,8 +13,11 @@
     $("model").value = cfg.model || "";
     $("timeout").value = cfg.timeout || 180;
     $("openaiKeyState").textContent = keys.openai ? "(stored)" : "(not set)";
+    $("openaiKeyState").className = keys.openai ? "key-stored" : "key-unset";
     $("anthropicKeyState").textContent = keys.anthropic ? "(stored)" : "(not set)";
+    $("anthropicKeyState").className = keys.anthropic ? "key-stored" : "key-unset";
     $("bedrockKeyState").textContent = keys.bedrock ? "(stored)" : "(not set)";
+    $("bedrockKeyState").className = keys.bedrock ? "key-stored" : "key-unset";
 
     var regionSel = $("bedrockRegion");
     regionSel.innerHTML = "";

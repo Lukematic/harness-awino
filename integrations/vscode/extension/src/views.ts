@@ -70,7 +70,7 @@ export class ContractView extends BaseView {
     const out: vscode.TreeItem[] = [];
     const mission = status["mission"];
     out.push(new Leaf("Mission", mission ? esc(mission) : "(none — open a mission to start)"));
-    out.push(new Leaf("Phase", esc(status["phase"] ?? "?")));
+    out.push(new Leaf("Phase", esc(status["phase"] ?? "?").toUpperCase()));
     const mode = (status["active_mode"] ?? {}) as Record<string, unknown>;
     out.push(new Leaf("Mode", `${esc(mode["id"] ?? "?")} (${esc(mode["source"] ?? "?")})`));
     const persona = status["persona"] as Record<string, unknown> | null;
@@ -120,7 +120,11 @@ export class JournalView extends BaseView {
             .join(" ")
         : "";
       const reused = e["reused"] ? " (reused)" : "";
-      return new Leaf(`#${esc(e["seq"])} ${esc(e["tool"])}`, `${summary}${reused}`);
+      const tool = esc(e["tool"]);
+      const denied = tool === "deny" || tool === "approval_denied" || tool === "error";
+      const approved = tool.indexOf("approv") === 0;
+      const mark = denied ? "✕ " : approved ? "✓ " : "";
+      return new Leaf(`${mark}#${esc(e["seq"])} ${tool}`, `${summary}${reused}`);
     });
   }
 }
@@ -252,7 +256,7 @@ export class ModesView extends BaseView {
       const isActive = m.id === active.id;
       const item = new Leaf(
         `${isActive ? "● " : "○ "}${m.label}`,
-        `${m.id}${m.custom ? " (custom)" : ""} · ${m.stages.join("/")}`
+        `${m.id}${m.custom ? " (custom)" : ""}${isActive ? " (active)" : ""} · ${m.stages.join("/")}`
       );
       item.tooltip = `Stages: ${m.stages.join(", ")}. Temperature: ${
         (m.sampling ?? {})["temperature"] ?? "?"

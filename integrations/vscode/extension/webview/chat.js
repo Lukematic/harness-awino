@@ -264,7 +264,7 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     d.className = "msg " + cls;
     d.innerHTML = html;
     messages.appendChild(d);
-    messages.scrollTop = messages.scrollHeight;
+    pinScroll();
     return d;
   }
 
@@ -279,44 +279,325 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     return out.length ? '<div class="chips">' + out.join("") + "</div>" : "";
   }
 
+  // ---------- streaming state machine (§4.1) ----------
+  const streams = new Map(); // turn_id -> stream state
+  const THINK_CAP = 8000;
+  const SAID_MD_LIMIT = 50000; // beyond: append-only plain text (documented degradation)
+
+  function mk(tag, cls, html) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (html != null) e.innerHTML = html;
+    return e;
+  }
+  function tnode(s) { return document.createTextNode(s); }
+
+  // Kimoyo bead cluster in the statusline (§2.8)
+  const beadEls = {};
+  const slText = mk("span", "sl-text", "not connected");
+  (function bootBeads() {
+    const bar = mk("span", "beads");
+    ["link", "turn", "approval", "mode", "persona"].forEach(function (k) {
+      const b = mk("span", "bead");
+      b.title = k + ": \u2014";
+      bar.appendChild(b);
+      beadEls[k] = b;
+    });
+    statusline.innerHTML = "";
+    statusline.appendChild(bar);
+    statusline.appendChild(tnode(" "));
+    statusline.appendChild(slText);
+  })();
+  function setBead(which, state, title) {
+    const b = beadEls[which];
+    if (!b) return;
+    b.className = "bead" + (state ? " " + state : "");
+    b.title = title;
+  }
+  function setStatusText(t) { slText.textContent = t; }
+
+  // scroll pinning (Copilot behavior) + jump-to-latest pill
+  let pinned = true;
+  const jumpPill = document.getElementById("jump-latest");
+  function pinScroll() {
+    if (pinned) { messages.scrollTop = messages.scrollHeight; }
+    else if (jumpPill) { jumpPill.hidden = false; }
+  }
+  messages.addEventListener("scroll", function () {
+    pinned = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 40;
+    if (pinned && jumpPill) jumpPill.hidden = true;
+  });
+  if (jumpPill) jumpPill.addEventListener("click", function () {
+    pinned = true;
+    messages.scrollTop = messages.scrollHeight;
+    jumpPill.hidden = true;
+  });
+
+  function getOrCreateStream(turnId, seedEv) {
+    let st = streams.get(turnId);
+    if (st) return st;
+    const card = mk("div", "msg turn");
+    if (seedEv) {
+      const c = mk("div");
+      c.innerHTML = chips({ phase: seedEv.phase, active_mode: seedEv.mode, persona: seedEv.persona });
+      card.appendChild(c);
+      const customMode = seedEv.mode && seedEv.mode.source && seedEv.mode.source !== "stage";
+      setBead("mode", customMode ? "vdim" : "", customMode ? "mode: custom overlay" : "mode: stage default");
+      setBead("persona", seedEv.persona ? "gdim" : "", seedEv.persona ? "persona: assumed" : "persona: none");
+    }
+    const thinkDetails = document.createElement("details");
+    thinkDetails.className = "thinking";
+    thinkDetails.open = true;
+    const thinkSummary = mk("summary", "");
+    thinkSummary.appendChild(mk("span", "bead working"));
+    thinkSummary.appendChild(tnode(" \u25C8 Thinking "));
+    thinkSummary.appendChild(mk("span", "thinking-status", "thinking\u2026"));
+    const thinkBody = mk("div", "thinking-body");
+    thinkDetails.appendChild(thinkSummary);
+    thinkDetails.appendChild(thinkBody);
+    const bodyEl = mk("div", "said md");
+    const toolsEl = mk("div", "tools-live");
+    const checksDetails = document.createElement("details");
+    checksDetails.className = "checks";
+    checksDetails.open = true;
+    const checksSummary = mk("summary", "");
+    checksSummary.appendChild(tnode("\u2B21 Harness checks "));
+    const checksCount = mk("span", "checks-count");
+    checksSummary.appendChild(checksCount);
+    const checksRows = mk("div", "checks-rows");
+    checksDetails.appendChild(checksSummary);
+    checksDetails.appendChild(checksRows);
+    card.appendChild(thinkDetails);
+    card.appendChild(bodyEl);
+    card.appendChild(toolsEl);
+    card.appendChild(checksDetails);
+    messages.appendChild(card);
+    st = {
+      turnId: turnId, card: card,
+      thinkDetails: thinkDetails, thinkSummary: thinkSummary, thinkBody: thinkBody,
+      bodyEl: bodyEl, toolsEl: toolsEl,
+      checksDetails: checksDetails, checksRows: checksRows, checksCount: checksCount,
+      thinkBuf: "", saidBuf: "", checks: [], toolRows: {},
+      finalized: false, cancelled: false, saidPlain: false, thinkCut: false
+    };
+    streams.set(turnId, st);
+    turnInFlight = true;
+    setBead("turn", "working", "turn: streaming");
+    refreshInput();
+    pinScroll();
+    return st;
+  }
+
+  function renderTurnStart(ev) {
+    getOrCreateStream(ev.turn_id || "t?", ev);
+  }
+
+  function renderThinkingDelta(ev) {
+    const st = getOrCreateStream(ev.turn_id || "t?", null);
+    if (st.finalized || st.cancelled) return;
+    let text = String(ev.text == null ? "" : ev.text);
+    if (st.thinkBuf.length + text.length > THINK_CAP) {
+      text = text.slice(0, THINK_CAP - st.thinkBuf.length);
+      st.thinkCut = true;
+    }
+    st.thinkBuf += text;
+    st.thinkBody.textContent = st.thinkBuf + (st.thinkCut ? "\u2026 [truncated]" : "");
+    pinScroll();
+  }
+
+  function renderSaidDelta(ev) {
+    const st = getOrCreateStream(ev.turn_id || "t?", null);
+    if (st.finalized || st.cancelled) return;
+    st.saidBuf += String(ev.text == null ? "" : ev.text);
+    if (!st.saidPlain && st.saidBuf.length > SAID_MD_LIMIT) st.saidPlain = true;
+    if (st.saidPlain) {
+      st.bodyEl.textContent = st.saidBuf;
+    } else {
+      st.bodyEl.innerHTML = AwinoMarkdown(st.saidBuf) + '<span class="streaming-caret"></span>';
+      AwinoMarkdown.wireCopyButtons(st.bodyEl);
+    }
+    pinScroll();
+  }
+
+  function renderToolProgress(ev) {
+    const st = getOrCreateStream(ev.turn_id || "t?", null);
+    if (st.finalized || st.cancelled) return;
+    const key = ev.tool || "?";
+    let row = st.toolRows[key];
+    if (!row) {
+      const elr = mk("div", "tool-row");
+      const bead = mk("span", "bead working");
+      const name = mk("span", "tname", esc(key));
+      const sum = mk("span", "tsummary");
+      const ms = mk("span", "tms");
+      elr.appendChild(bead); elr.appendChild(name); elr.appendChild(sum); elr.appendChild(ms);
+      st.toolsEl.appendChild(elr);
+      row = st.toolRows[key] = { el: elr, bead: bead, sum: sum, ms: ms };
+    }
+    if (ev.phase === "start") {
+      row.bead.className = "bead working";
+      row.sum.textContent = ev.summary || "";
+      row.ms.textContent = "";
+    } else if (ev.phase === "done" || ev.phase === "error") {
+      row.bead.className = "bead " + (ev.phase === "done" ? "done" : "alert");
+      row.sum.textContent = ev.summary || "";
+      row.ms.textContent = ev.ms != null ? ev.ms + " ms" : "";
+    }
+    pinScroll();
+  }
+
+  function checkRowHtml(c) {
+    const v = c.verdict || "pass";
+    return '<span class="verdict ' + esc(v) + '">' + esc(v) + "</span>" +
+      '<span class="check-name">' + esc(c.check || "?") + "</span>" +
+      '<span class="check-detail">' + esc(c.detail || "") + "</span>";
+  }
+  function updateChecksSummary(st) {
+    const n = st.checks.length;
+    const bad = st.checks.filter(function (c) { return c.verdict === "fail" || c.verdict === "warn"; }).length;
+    st.checksCount.textContent = n ? " \u00B7 " + n + (bad ? " checked \u2014 " + bad + " need attention" : " passed") : "";
+  }
+  function renderHarnessCheck(ev) {
+    const st = getOrCreateStream(ev.turn_id || "t?", null);
+    if (st.finalized || st.cancelled) return;
+    const c = { check: ev.check, verdict: ev.verdict, detail: ev.detail };
+    st.checks.push(c);
+    st.checksRows.appendChild(mk("div", "check-row", checkRowHtml(c)));
+    updateChecksSummary(st);
+    pinScroll();
+  }
+
+  // thinking trace behavior (§5)
+  function collapseThinking(st, thinking) {
+    st.thinkDetails.open = false;
+    st.thinkSummary.innerHTML = ""; // clears children in real DOM and in the shim
+    st.thinkSummary.appendChild(mk("span", thinking ? "bead done" : "bead"));
+    st.thinkSummary.appendChild(tnode(" \u25C8 Thinking "));
+    const lab = mk("span", "thinking-status");
+    if (thinking) {
+      st.thinkBody.textContent = thinking;
+      lab.textContent = thinking.slice(0, 80) + (thinking.length > 80 ? "\u2026" : "") +
+        " (" + thinking.length + " chars)";
+    } else {
+      st.thinkBody.textContent = "";
+      lab.textContent = "not exposed by this provider";
+    }
+    st.thinkSummary.appendChild(lab);
+  }
+
+  function finalizeStream(st, r) {
+    if (st.finalized) return;
+    st.finalized = true;
+    collapseThinking(st, st.thinkBuf || r.thinking || null);
+    st.saidBuf = r.said != null ? String(r.said) : st.saidBuf;
+    st.bodyEl.innerHTML = AwinoMarkdown(st.saidBuf);
+    AwinoMarkdown.wireCopyButtons(st.bodyEl);
+    if (Array.isArray(r.checks) && r.checks.length) {
+      st.checksRows.innerHTML = "";
+      st.checks = r.checks.map(function (c) { return { check: c.check, verdict: c.verdict, detail: c.detail }; });
+      st.checks.forEach(function (c) { st.checksRows.appendChild(mk("div", "check-row", checkRowHtml(c))); });
+    }
+    const bad = st.checks.some(function (c) { return c.verdict === "fail" || c.verdict === "warn"; });
+    st.checksDetails.open = bad; // stay expanded on fail/warn, else collapse
+    updateChecksSummary(st);
+    Object.keys(st.toolRows).forEach(function (k) {
+      const row = st.toolRows[k];
+      if (row.bead.className.indexOf("working") >= 0) row.bead.className = "bead done";
+    });
+    if (r.status === "awaiting_approval") {
+      st.card.appendChild(mk("div", "", "<i>Awaiting your approval \u2014 see the approval card(s) below and the VS Code dialog.</i>"));
+    }
+    turnInFlight = false;
+    setBead("turn", "", "turn: idle");
+    refreshInput();
+    pinScroll();
+  }
+
   function renderTurnResult(ev) {
     const r = ev.result || {};
-    let html = chips(r);
-    if (r.said) html += '<div class="said">' + esc(r.said) + "</div>";
+    const tid = ev.turn_id || r.turn_id || null;
+    let st = tid ? streams.get(tid) : null;
+    if (!st) {
+      // fall back to the single in-flight stream (missed turn_start / untagged turn_result)
+      streams.forEach(function (s) { if (!s.finalized && !s.cancelled && !st) st = s; });
+    }
+    if (st) {
+      finalizeStream(st, r);
+      return;
+    }
+    // legacy block path: same look, no streaming history
+    const card = mk("div", "msg turn");
+    const c = mk("div"); c.innerHTML = chips(r); card.appendChild(c);
+    const thinkDetails = document.createElement("details");
+    thinkDetails.className = "thinking";
+    const thinkSummary = mk("summary", "");
+    const thinkBody = mk("div", "thinking-body");
+    thinkDetails.appendChild(thinkSummary);
+    thinkDetails.appendChild(thinkBody);
+    card.appendChild(thinkDetails);
+    collapseThinking({ thinkDetails: thinkDetails, thinkSummary: thinkSummary, thinkBody: thinkBody },
+      r.thinking || null);
+    const body = mk("div", "said md", AwinoMarkdown(r.said || ""));
+    card.appendChild(body);
+    AwinoMarkdown.wireCopyButtons(card);
     const results = r.results || r.tool_results || [];
     if (Array.isArray(results) && results.length) {
-      html += '<table class="tools"><tr><th>tool</th><th>result</th></tr>' +
+      const tw = mk("div");
+      tw.innerHTML = '<table class="tools"><tr><th>tool</th><th>result</th></tr>' +
         results.map(function (t) {
           const name = esc(t.tool || t.name || "?");
-          const body = esc(JSON.stringify(t.result != null ? t.result : t).slice(0, 400));
-          return "<tr><td>" + name + "</td><td><code>" + body + "</code></td></tr>";
+          const tbd = esc(JSON.stringify(t.result != null ? t.result : t).slice(0, 400));
+          return "<tr><td>" + name + "</td><td><code>" + tbd + "</code></td></tr>";
         }).join("") + "</table>";
+      card.appendChild(tw);
+    }
+    const checks = Array.isArray(r.checks) ? r.checks : [];
+    if (checks.length) {
+      const cd = document.createElement("details");
+      cd.className = "checks";
+      const bad = checks.some(function (x) { return x.verdict === "fail" || x.verdict === "warn"; });
+      cd.open = bad;
+      const cs = mk("summary", "");
+      cs.appendChild(tnode("\u2B21 Harness checks "));
+      cs.appendChild(mk("span", "checks-count",
+        " \u00B7 " + checks.length + (bad ? " checked" : " passed")));
+      const cr = mk("div", "checks-rows");
+      checks.forEach(function (x) { cr.appendChild(mk("div", "check-row", checkRowHtml(x))); });
+      cd.appendChild(cs); cd.appendChild(cr);
+      card.appendChild(cd);
     }
     if (r.status === "awaiting_approval") {
-      html += "<div><i>Awaiting your approval — see the approval card(s) below and the VS Code dialog.</i></div>";
+      card.appendChild(mk("div", "", "<i>Awaiting your approval \u2014 see the approval card(s) below and the VS Code dialog.</i>"));
     }
-    addMsg("turn", html);
+    messages.appendChild(card);
     turnInFlight = false;
     refreshInput();
+    pinScroll();
   }
 
   function renderApprovalRequested(ev) {
     const approvals = ev.approvals || [];
+    setBead("approval", "alert", "approval: pending");
     approvals.forEach(function (a) {
       const d = addMsg("warn", "");
       let html = '<div class="approval"><h4>Approval requested: <code>' + esc(a.tool) + "</code></h4>";
       html += "<pre class=\"diff\">" + esc(JSON.stringify(a.args, null, 2)) + "</pre>";
       if (a.diff) {
-        html += '<div>Diff preview:</div><pre class="diff">' + esc(a.diff) + "</pre>";
+        html += '<div>Diff preview:</div>' + AwinoMarkdown("```diff\n" + String(a.diff) + "\n```");
       }
       html += '<div class="btnrow">' +
         '<button data-act="approve">Approve</button>' +
         '<button data-act="deny" class="secondary">Deny</button></div></div>';
       d.innerHTML = html;
+      AwinoMarkdown.wireCopyButtons(d);
       d.querySelectorAll("button").forEach(function (b) {
         b.addEventListener("click", function () {
           vscode.postMessage({ type: "approve", id: a.id, decision: b.getAttribute("data-act") });
           b.disabled = true;
+          const spin = mk("span", "bead working");
+          spin.title = "waiting for sidecar";
+          b.parentNode.appendChild(spin);
+          setBead("approval", "", "approval: none");
         });
       });
     });
@@ -345,14 +626,30 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     switch (ev.event) {
       case "ready": {
         const b = ev.binding || {};
-        statusline.textContent =
+        setStatusText(
           "connected · " + (b.provider || ev.provider) + " · env " + (b.environment || "(global)") +
-          " · model " + (b.model || ev.model || "?");
+          " · model " + (b.model || ev.model || "?"));
+        setBead("link", "on", "link: connected");
         addMsg("", "<i>Sidecar ready — project <b>" + esc(ev.project) + "</b>, provider <b>" +
           esc(b.provider || ev.provider) + "</b>. MCP: " +
           esc(JSON.stringify((ev.mcp || []).map(function (m) { return m.name + ":" + (m.ok ? "ok" : "error"); }))) + "</i>");
         break;
       }
+      case "turn_start":
+        renderTurnStart(ev);
+        break;
+      case "thinking_delta":
+        renderThinkingDelta(ev);
+        break;
+      case "said_delta":
+        renderSaidDelta(ev);
+        break;
+      case "tool_progress":
+        renderToolProgress(ev);
+        break;
+      case "harness_check":
+        renderHarnessCheck(ev);
+        break;
       case "turn_result":
         renderTurnResult(ev);
         break;
@@ -367,11 +664,27 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
           (ev.ok ? "ok" : "<b>failed</b>") + " — <code>" +
           esc(JSON.stringify(ev.result).slice(0, 500)) + "</code></i>");
         break;
-      case "cancel_ack":
+      case "cancel_ack": {
+        let frozen = false;
+        streams.forEach(function (st) {
+          if (!st.finalized && !st.cancelled) {
+            st.cancelled = true;
+            st.thinkDetails.open = false;
+            Object.keys(st.toolRows).forEach(function (k) {
+              st.toolRows[k].bead.className = "bead";
+            });
+            st.card.appendChild(mk("div", "cancelled-note",
+              '<i class="dm">turn cancelled \u2014 effects already executed remain in the journal</i>'));
+            frozen = true;
+          }
+        });
+        if (frozen) pinScroll();
+        setBead("turn", "", "turn: idle");
         addMsg("warn", "<i>Turn cancelled: " + esc(ev.note) + "</i>");
         turnInFlight = false;
         refreshInput();
         break;
+      }
       case "warning":
         addMsg("warn", esc(ev.message));
         break;
@@ -381,7 +694,8 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
         refreshInput();
         break;
       case "bye":
-        statusline.textContent = "disconnected";
+        setStatusText("disconnected");
+        setBead("link", "", "link: disconnected");
         break;
       default:
         addMsg("", "<i>[" + esc(ev.event) + "]</i> <code>" + esc(JSON.stringify(ev).slice(0, 300)) + "</code>");
@@ -418,7 +732,8 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
       renderEvent(m.payload);
     } else if (m.type === "state") {
       if (m.connected === false) {
-        statusline.textContent = "not connected";
+        setStatusText("not connected");
+        setBead("link", "", "link: not connected");
       } else if (m.ready) {
         renderEvent(m.ready);
       }

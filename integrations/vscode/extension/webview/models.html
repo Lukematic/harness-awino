@@ -5,22 +5,52 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Awino: Models &amp; Providers</title>
 <style>
-  :root { color-scheme: dark; }
+  /* Awino Wakandan tokens (§1.1) — scoped to this panel */
+  :root {
+    --awino-vibranium: #00C6FF; --awino-vibranium-deep: #0B7FA6;
+    --awino-vibranium-dim: rgba(0,198,255,.12);
+    --awino-gold: #D4A937; --awino-gold-bright: #F0C94A;
+    --awino-ok: #4EC9B0;
+    --awino-text: #DCE7F7; --awino-muted: #8B98B0;
+  }
+  body.vscode-light {
+    --awino-vibranium: #0B7FA6; --awino-vibranium-deep: #0B5A78;
+    --awino-vibranium-dim: rgba(11,127,166,.10);
+    --awino-gold: #8A6D1F; --awino-gold-bright: #8A6D1F;
+    --awino-ok: #1E7E5A;
+    --awino-text: var(--vscode-foreground); --awino-muted: var(--vscode-descriptionForeground);
+  }
   body { font-family: var(--vscode-font-family, system-ui); font-size: 13px;
-    color: var(--vscode-foreground); background: var(--vscode-editor-background);
+    color: var(--awino-text, var(--vscode-foreground));
+    background: var(--vscode-editor-background);
     margin: 0; padding: 16px; max-width: 640px; }
-  h2 { margin-top: 0; }
+  h2 { margin-top: 0; padding-bottom: 8px; position: relative; }
+  h2::after { /* 3px gold chevron band (§1.2) */
+    content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+    background: repeating-linear-gradient(135deg,
+      var(--awino-gold, #D4A937) 0 2px, transparent 2px 9px);
+  }
+  h3 { color: var(--awino-gold, #D4A937); font-size: 12px; text-transform: uppercase;
+    letter-spacing: .06em; margin: 20px 0 8px 0; }
   .row { margin-bottom: 12px; }
-  label { display: block; margin-bottom: 4px; color: var(--vscode-descriptionForeground); }
+  label { display: block; margin-bottom: 4px; color: var(--awino-muted, var(--vscode-descriptionForeground)); }
   input, select { width: 100%; box-sizing: border-box; padding: 8px;
     background: var(--vscode-input-background); color: var(--vscode-input-foreground);
     border: 1px solid var(--vscode-input-border); border-radius: 4px; font: inherit; }
-  button { background: var(--vscode-button-background); color: var(--vscode-button-foreground);
+  input:focus, select:focus { outline: none;
+    box-shadow: 0 0 0 1px var(--awino-vibranium, #00C6FF); }
+  button { background: linear-gradient(180deg,
+      var(--awino-vibranium, #00C6FF), var(--awino-vibranium-deep, #0B7FA6));
+    color: #04222E;
     border: none; padding: 8px 18px; border-radius: 4px; cursor: pointer; margin-right: 8px; }
-  button.secondary { background: var(--vscode-button-secondaryBackground); }
-  .note { font-size: 12px; color: var(--vscode-descriptionForeground); margin: 8px 0; }
+  button.secondary { background: var(--vscode-button-secondaryBackground);
+    color: var(--vscode-button-secondaryForeground); }
+  .note { font-size: 12px; color: var(--awino-muted, var(--vscode-descriptionForeground)); margin: 8px 0; }
+  .note code { color: var(--awino-vibranium, #00C6FF); }
   #status { margin: 12px 0; padding: 10px; border: 1px solid var(--vscode-panel-border); border-radius: 6px; }
   .warn { color: var(--vscode-testing-iconFailed, #f14c4c); }
+  .key-stored { color: var(--awino-ok, #4EC9B0); }
+  .key-unset { color: var(--awino-muted, var(--vscode-descriptionForeground)); }
 </style>
 </head>
 <body>
