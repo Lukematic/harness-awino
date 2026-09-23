@@ -384,6 +384,12 @@
   #jump-latest[hidden] { display: none; }
 
   /* ---------- markdown content (§4.2–4.4) ---------- */
+  code {
+    font-family: var(--vscode-editor-font-family, monospace); font-size: 11px;
+    background: var(--awino-bg, var(--vscode-editor-background, #0B101B));
+    color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+    padding: 1px 4px; border-radius: 3px;
+  }
   .md { line-height: 1.5; word-break: break-word; }
   .md p { margin: 6px 0; }
   .md p:first-child { margin-top: 0; }
