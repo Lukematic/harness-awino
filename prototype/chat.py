@@ -49,6 +49,12 @@ HELP = """\
 /synthesize [n]          synthesize learning n into a verified skill
                          (refused unless sandbox-verified; latest if n omitted)
 /rollback <seq>          rollback to sequence number (operator only)
+/story-start <type> <title>
+                         start a story (type: story|spike|chore) — creates the
+                         registry entry, renders STORY.md, opens a git branch
+/story-close <id> <outcome>
+                         close a story — stamps the outcome on the brag board
+                         (close authority stays with you; the harness only asks)
 /help                    this text
 /quit                    exit (state is saved; restart resumes)
 Anything else is a chat turn through the owned loop.
@@ -81,13 +87,40 @@ def session_start(project_dir=None) -> dict | None:
         for line in result["summary"]:
             print(line)
         print()
+        # Story ledger (mandatory, no bypass): present the open stories
+        # BEFORE new work — the user picks what to work on / close.
+        review = result.get("stories_review")
+        if review:
+            for line in review["lines"]:
+                print(line)
+            print("Which story do we work on, and is there one to close?")
+            print()
     return result
+
+
+def _attach_registry(loop) -> None:
+    """Attach the cwd project's registry to the loop (story planning gate).
+
+    Best-effort: the REPL works without it, but with it the ->BUILD gate
+    (story spine required) is enforced here too, not just in the sidecar.
+    """
+    try:
+        from registry import Registry  # lazy
+        awd = Path.cwd() / ".awino"
+        if (awd / "registry" / "meta.json").is_file() \
+                or (awd / "project.yaml").is_file():
+            reg = Registry(awd)
+            reg.ensure()
+            loop.registry = reg
+    except Exception:
+        pass
 
 
 def main() -> None:
     project = "inbox"
     session_start()  # auto-init: the primary path; `awino init` is the override
     loop = Loop(HOME, project, make_backend(), build_judge_panel())
+    _attach_registry(loop)
     print(f"awino chat — home={HOME} project={project}")
     print("Type /help for commands. Ctrl-C/D exits safely; restart resumes.\n")
     while True:
@@ -113,6 +146,7 @@ def main() -> None:
                     continue
                 project = arg
                 loop = Loop(HOME, project, make_backend(), build_judge_panel())
+                _attach_registry(loop)
                 st = loop.status()
                 print(f"switched to project '{project}' "
                       f"(phase={st['phase']}, mission={st['mission']!r})")
@@ -127,6 +161,8 @@ def main() -> None:
                     print(f"bad criteria: {e}")
                     continue
                 print(f"mission set (kind={m['kind']}, revision={m['revision']}): {text}")
+                if m.get("stale_warning"):
+                    print(f"  STALE STORIES: {m['stale_warning']}")
             elif cmd == "status":
                 st = loop.status()
                 print(f"project={st['project']} phase={st['phase']} mode={st['mode']} "
@@ -213,6 +249,46 @@ def main() -> None:
                     continue
                 r = loop.rollback(int(arg))
                 print(r["said"])
+            elif cmd == "story-start":
+                # Story ledger: start a story — registry entry + STORY.md
+                # + git branch. The planning gate then requires the
+                # story's spine (problem/approach/done criteria) before
+                # BUILD.
+                parts = arg.split(None, 1)
+                if len(parts) != 2 or parts[0] not in (
+                        "story", "spike", "chore"):
+                    print("usage: /story-start <story|spike|chore> <title>")
+                    continue
+                try:
+                    from story import story_start  # lazy
+                    st = story_start(Path.cwd() / ".awino", parts[1],
+                                     type=parts[0])
+                    print(f"story started: '{st['title']}' ({st['id']}, "
+                          f"{st['type']})")
+                    print(f"  {st.get('branch_note', '')}")
+                    if st.get("stale_warning"):
+                        print(f"  STALE STORIES: {st['stale_warning']}")
+                    print("  next: fill in problem/approach/done criteria "
+                          "(story_update), then plan — BUILD is refused "
+                          "without the spine.")
+                except Exception as e:  # noqa: BLE001 — plain language
+                    print(f"story-start failed: {type(e).__name__}: {e}")
+            elif cmd == "story-close":
+                # Story ledger: close a story — stamps closed date + outcome
+                # on the brag board. Close authority stays with the human.
+                parts = arg.split(None, 1)
+                if len(parts) != 2:
+                    print("usage: /story-close <id> <outcome>")
+                    continue
+                try:
+                    from story import story_close  # lazy
+                    st = story_close(Path.cwd() / ".awino", parts[0],
+                                     parts[1])
+                    print(f"story closed: '{st['title']}' ({st['id']})")
+                    print(f"  outcome: {st['outcome']}")
+                    print(f"  git: {st.get('push_note', '')}")
+                except Exception as e:  # noqa: BLE001 — plain language
+                    print(f"story-close failed: {type(e).__name__}: {e}")
             else:
                 print(f"unknown command /{cmd} — /help")
             continue

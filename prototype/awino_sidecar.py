@@ -1189,6 +1189,7 @@ class Sidecar:
         # (First-message mission start re-runs the idempotent checklist
         # anyway via _bootstrap_and_registry.) Never breaks hello.
         auto_init_summary = None
+        stories_review_lines = None
         try:
             from bootstrap import session_start_auto_init
             auto_init = session_start_auto_init(wsp)
@@ -1196,6 +1197,14 @@ class Sidecar:
                 auto_init_summary = auto_init["summary"]
                 self.loop.state.record("auto_init", {
                     "ok": auto_init["ok"], "summary": auto_init_summary})
+                # Story ledger: the session-start review is mandatory —
+                # journal the event and carry the lines in the ready event
+                # so the session presents open stories before new work.
+                sr = auto_init.get("stories_review")
+                if sr:
+                    stories_review_lines = sr["lines"]
+                    self.loop.state.record("stories_review", {
+                        "stories": sr["stories"]})
         except Exception:  # noqa: BLE001 — session start must proceed
             auto_init_summary = None
         _emit({"event": "ready", "protocol": PROTOCOL, "project": project,
@@ -1204,7 +1213,8 @@ class Sidecar:
                "binding": {k: v for k, v in self._binding.items()},
                "modes": self._modes_summary(),
                "active_mode": self._active_mode_info(),
-               "auto_init": auto_init_summary})
+               "auto_init": auto_init_summary,
+               "stories_review": stories_review_lines})
 
     # --------------------------------------------- scoped provider bindings
     def _read_providers_file(self) -> dict | None:
@@ -2587,6 +2597,25 @@ class Sidecar:
         # mission start. Bootstrap is idempotent and never raises; registry
         # continuity survives persona/mode changes (it lives on the project).
         self._bootstrap_and_registry(text, criteria)
+        # Story ledger: the registry attaches above (after set_mission), so
+        # the stale-story rule runs here — a new mission arriving while
+        # stories are doing/open journals `stale_stories` and the session
+        # surfaces "we started this new thing, but X is still open —
+        # what's up?" before proceeding. Skipped when loop.set_mission
+        # already fired it (registry was attached from a previous mission).
+        stale_warning = m.get("stale_warning") or ""
+        if not stale_warning:
+            try:
+                from story import check_stale_on_mission
+                reg = getattr(self.loop, "registry", None)
+                if reg is not None:
+                    stale_warning = check_stale_on_mission(reg.awino_dir)
+                    if stale_warning:
+                        self.loop.state.record("stale_stories",
+                                               {"mission_id": m["id"],
+                                                "warning": stale_warning})
+            except Exception:
+                pass
         # A new mission clears mission-scoped mode overlays and any active
         # persona: both were invoked for the previous mission's context.
         if self._mode_overlay and self._mode_overlay.get("scope") == "mission":
@@ -2601,8 +2630,12 @@ class Sidecar:
                 "sha256": self._persona["sha256"],
                 "reason": "new mission"})
             self._persona = None
-        return {"status": "ok", "mission": {"id": m["id"], "kind": m["kind"],
+        result = {"status": "ok", "mission": {"id": m["id"], "kind": m["kind"],
                                             "revision": m["revision"]}}
+        if stale_warning:
+            result["stale_warning"] = stale_warning
+            result["said"] = (f"Mission set. STALE STORIES: {stale_warning}")
+        return result
 
     def _bootstrap_and_registry(self, text: str, criteria: list) -> None:
         """Track A + B: run the startup checklist, attach the venv and the
@@ -2631,6 +2664,14 @@ class Sidecar:
             n = reg.import_seed_tasks(report.get("seed_tasks", []))
         except Exception:
             n = 0
+        # Story ledger: file every seed under its story (`story:`
+        # frontmatter, or the Inbox story) — never orphaned. Mirrors
+        # full_init_flow so the chat path and the CLI path cannot drift.
+        try:
+            from story import file_seeds
+            file_seeds(ws / ".awino", report.get("seed_tasks", []))
+        except Exception:
+            pass
         # Track D: route the role lens from the mission text + the
         # configured profile (project.yaml). Surfaced in the contract with
         # its reason; the user can override with the `mode` command.

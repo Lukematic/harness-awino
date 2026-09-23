@@ -604,20 +604,54 @@ def parse_seed_checklist(seed_body: str) -> list[dict]:
     return tasks
 
 
+def _parse_seed_frontmatter(text: str) -> dict:
+    """Parse a seed file's --- frontmatter block into {key: value}.
+
+    Line-based, never raises: malformed frontmatter is ignored, not fatal.
+    Keys are lowercased. Used for the optional `story:` link.
+    """
+    try:
+        if not text.startswith("---"):
+            return {}
+        parts = text.split("---")
+        if len(parts) < 3:
+            return {}
+        fm: dict[str, str] = {}
+        for line in parts[1].splitlines():
+            if ":" not in line:
+                continue
+            k, _, v = line.partition(":")
+            k = k.strip().lower()
+            if k and k not in fm:
+                fm[k] = v.strip().strip("'\"")
+        return fm
+    except Exception:
+        return {}
+
+
 def collect_seed_tasks(seeds_dir: Path) -> tuple[dict, list[dict]]:
-    """Parse .awino/seeds/*.md checklists into task dicts."""
+    """Parse .awino/seeds/*.md checklists into task dicts.
+
+    Each task also carries `seed_file` (the seed's stem) and `story`
+    (the seed's `story:` frontmatter value, or None) so the story
+    ledger can file every seed under its story — never orphaned.
+    """
     tasks: list[dict] = []
     files = 0
     if seeds_dir.is_dir():
         for p in sorted(seeds_dir.glob("*.md")):
             files += 1
             try:
-                body = p.read_text().split("---")
-                text = body[-1] if len(body) >= 3 else p.read_text()
+                full = p.read_text()
+                fm = _parse_seed_frontmatter(full)
+                body = full.split("---")
+                text = body[-1] if len(body) >= 3 else full
             except OSError:
                 continue
             for t in parse_seed_checklist(text):
                 t["source"] = f"seed:{p.stem}"
+                t["seed_file"] = p.stem
+                t["story"] = fm.get("story") or None
                 tasks.append(t)
     detail = (f"{len(tasks)} checklist tasks from {files} seed file(s)"
               if files else "no seed files — registry starts empty")
@@ -712,13 +746,21 @@ def full_init_flow(target: str | Path) -> dict:
     root = Path(target)
     report = run_startup_checklist(root)
     seeds_imported = 0
+    seeds_filed = 0
     try:
         reg = Registry(root / ".awino")
         reg.ensure()
         seeds_imported = reg.import_seed_tasks(report.get("seed_tasks", []))
+        # Story ledger: file every seed under its story (`story:`
+        # frontmatter, or the Inbox story) — never orphaned.
+        from story import file_seeds  # local: keep bootstrap import-light
+        seeds_filed = file_seeds(root / ".awino",
+                                 report.get("seed_tasks", []))
     except Exception:  # noqa: BLE001 — init degrades, never crashes
         seeds_imported = 0
+        seeds_filed = 0
     report["seeds_imported"] = seeds_imported
+    report["seeds_filed"] = seeds_filed
     return report
 
 
@@ -763,14 +805,71 @@ def _init_summary(report: dict) -> list[str]:
     return lines
 
 
+def _collect_stories_review(root: Path) -> dict | None:
+    """Load open/doing/blocked stories for the session-start review.
+
+    Returns None when there is nothing to review (no registry, no open
+    stories) — then the session stays silent. Otherwise journals a
+    `stories_review` breadcrumb (durable proof the session presented
+    the review) and returns {"stories": [...], "lines": [...]} with
+    plain-language lines the session MUST present before new work:
+    "these are the open stories — which do we work on / close?"
+    Never raises.
+    """
+    try:
+        from story import open_stories_summary, parked_due_summary  # local
+        summaries = open_stories_summary(root / ".awino")
+        parked_due = parked_due_summary(root / ".awino")
+        if not summaries and not parked_due:
+            return None
+        from registry import Registry  # local: import-light
+        reg = Registry(root / ".awino")
+        reg.ensure()
+        crumb_bits = [
+            f"{s['id']} '{s['title']}' [{s['status']}]" for s in summaries]
+        crumb_bits += [f"{s['id']} '{s['title']}' [parked, due "
+                       f"{s.get('revisit_on')}]" for s in parked_due]
+        reg.add_breadcrumb(
+            "session-start",
+            "Stories review presented: " + "; ".join(crumb_bits),
+            stop_point="user picks which story to work on / close")
+        lines = ["Open stories in this project:"]
+        for s in summaries:
+            flag = " — READY TO CLOSE (passed verification)" \
+                if s["ready_to_close"] else ""
+            blk = (f" — blocked by: {'; '.join(s['blockers'][:2])}"
+                   if s["blockers"] else "")
+            lines.append(f"  - {s['title']} [{s['type']}, {s['status']}]"
+                         f"{flag}{blk} (id: {s['id']})")
+        if parked_due:
+            lines.append("Parked ideas due for revisit:")
+            for s in parked_due:
+                lines.append(
+                    f"  - you tabled '{s['title']}' "
+                    f"(revisit date {s.get('revisit_on')} arrived) — "
+                    f"revisit, discard, or keep parked? (id: {s['id']})")
+        return {"stories": summaries, "parked_due": parked_due,
+                "lines": lines}
+    except Exception:
+        return None
+
+
 def session_start_auto_init(project_dir: str | Path) -> dict | None:
     """Auto-init on chat session start (Track A/H).
 
     The user never has to type `awino init` by hand: when a session starts
     in a directory, the harness checks for `.awino/project.yaml`. Present
-    -> return None (already a project; nothing to do, nothing to report).
-    Absent -> run the full init flow automatically and return
-    {"ok": bool, "summary": [brief plain-language lines], "report": report}.
+    and healthy -> no init; absent -> run the full init flow automatically.
+
+    Story ledger (mandatory, no bypass): after init — and on EVERY session
+    start in an existing project — open/doing/blocked stories are loaded
+    and a `stories_review` is emitted. The session MUST present "these are
+    the open stories — which do we work on / close?" before new work.
+
+    Returns None only when the directory was already a project AND there
+    are no stories to review (silent). Otherwise returns
+    {"ok", "summary", "report", "initialized", "stories_review"} where
+    "stories_review" is None when there is nothing to review.
 
     Never raises — failures degrade to a summary carrying one next action,
     so session start always proceeds.
@@ -784,11 +883,18 @@ def session_start_auto_init(project_dir: str | Path) -> dict | None:
                     "summary": [f"Couldn't set up this project: {e}.",
                                 "Next action: pick a writable directory and "
                                 "start the chat again — nothing was changed."],
-                    "report": None}
+                    "report": None, "initialized": False,
+                    "stories_review": None}
         proj_yaml = root / ".awino" / "project.yaml"
         try:
             if proj_yaml.is_file() and proj_yaml.stat().st_size > 0:
-                return None  # already a project: silent, nothing to report
+                # Already a project: no init — but the stories review is
+                # still mandatory on every session start.
+                review = _collect_stories_review(root)
+                if review is None:
+                    return None  # silent: nothing to set up, nothing open
+                return {"ok": True, "summary": [], "report": None,
+                        "initialized": False, "stories_review": review}
             if proj_yaml.is_file():
                 # 0-byte stub left by a failed init (e.g. full disk): the
                 # harness wrote it, it holds no user data, so remove it and
@@ -798,13 +904,17 @@ def session_start_auto_init(project_dir: str | Path) -> dict | None:
         except OSError:
             return None  # cannot inspect/repair: don't loop, don't crash
         report = full_init_flow(root)
+        review = _collect_stories_review(root)
         return {"ok": report["ok"],
                 "summary": _init_summary(report),
-                "report": report}
+                "report": report,
+                "initialized": True,
+                "stories_review": review}
     except Exception as e:  # noqa: BLE001 — absolute last resort
         return {"ok": False,
                 "summary": [f"Couldn't finish setting up this project "
                             f"({type(e).__name__}: {e}).",
                             "Next action: run `awino init` here and follow "
                             "its guidance — nothing was left half-written."],
-                "report": None}
+                "report": None, "initialized": False,
+                "stories_review": None}

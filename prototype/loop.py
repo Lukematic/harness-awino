@@ -104,6 +104,14 @@ class Loop:
         # Track B (memory registry): the sidecar attaches a Registry here on
         # mission start. None in unit tests — every use is guarded.
         self.registry = None
+        # Story ledger: the wall-clock start of THIS session. The 25-turn
+        # review nudge treats a story as "untouched this session" when it
+        # has no session-log entry at/after this timestamp.
+        self._session_start_ts = time.time()
+        # Turn boundaries the stories_nudge already fired on (early-return
+        # turns don't advance turn_count — without this the same boundary
+        # could fire twice).
+        self._stories_nudged_at = set()
         self._rebuild_history()
 
     # ------------------------------------------------------------------ setup
@@ -162,7 +170,83 @@ class Loop:
                    "done_criteria": [parse_criteria(c) for c in criteria],
                    "revision": revision}
         self.state.record("mission_set", {"mission": mission})
+        # Story ledger: a new mission arriving while stories are still
+        # doing/open journals `stale_stories` — the session must surface
+        # "we started this new thing, but X is still open — what's up?"
+        # before proceeding. Best-effort; never blocks the mission.
+        try:
+            from story import check_stale_on_mission  # local: import-light
+            reg = getattr(self, "registry", None)
+            awino_dir = getattr(reg, "awino_dir", None) if reg is not None else None
+            if awino_dir is None:
+                awino_dir = getattr(self, "awino_dir", None)
+            if awino_dir is not None:
+                warning = check_stale_on_mission(awino_dir)
+                if warning:
+                    self.state.record("stale_stories",
+                                      {"mission_id": mission["id"],
+                                       "warning": warning})
+                    mission["stale_warning"] = warning
+        except Exception:
+            pass
         return mission
+
+    # ------------------------------------------------- story planning (PLAN)
+    def plan_story(self, story_id: str, *, breakdown: str, surveyed: str,
+                   user_guidance: str, proposal: str,
+                   steps: list[dict] | None, bugatti_brief: str,
+                   stances: list[str] | None = None) -> dict:
+        """PLAN-phase advisory cycle for a story.
+
+        Writes the approach with the required six-part shape (enforced
+        at write time by story.plan_story): (a)-(d) the pitch — A/B/C
+        options + Bugatti brief, Honda first; (e) ordered steps with
+        success/failure criteria, which seed the task DAG; (f) the
+        Bugatti proposal in brief form (expanded only on request —
+        IRON RULE: pitched, never built unasked). Deliberately cycles
+        the PLAN-affine stances — architect for the breakdown,
+        researcher for existing approaches, engineer for feasibility and
+        the pitch — journaling each contribution into the mission event
+        stream as well as the registry. `stances` overrides the cycle;
+        the user can override at any point. Returns a plain-language
+        result dict — no exceptions escape.
+        """
+        try:
+            from story import plan_story as _plan  # local: import-light
+            reg = getattr(self, "registry", None)
+            awino_dir = (getattr(reg, "awino_dir", None)
+                         if reg is not None else None)
+            if awino_dir is None:
+                awino_dir = getattr(self, "awino_dir", None)
+            if awino_dir is None:
+                return {"status": "error",
+                        "said": ("No story ledger attached to this loop — "
+                                 "plan_story needs a project registry.")}
+            res = _plan(awino_dir, story_id, breakdown=breakdown,
+                        surveyed=surveyed, user_guidance=user_guidance,
+                        proposal=proposal, steps=steps,
+                        bugatti_brief=bugatti_brief, stances=stances)
+            for stance in res["planned_stances"]:
+                self.state.record("story_plan_stance",
+                                  {"story_id": story_id, "stance": stance})
+            self.state.persist_snapshot()
+            return {"status": "ok", "story_id": story_id,
+                    "stances": res["planned_stances"],
+                    "dag_seeded": res.get("dag_seeded", 0),
+                    "said": (f"Story '{res['title']}' planned through "
+                             f"{len(res['planned_stances'])} stances "
+                             f"({', '.join(res['planned_stances'])}): the "
+                             f"six-part spine is written, each contribution "
+                             f"is journaled, and "
+                             f"{res.get('dag_seeded', 0)} DAG task(s) were "
+                             f"seeded from the ordered steps.")}
+        except (KeyError, ValueError) as e:
+            return {"status": "error",
+                    "said": f"Story planning refused: {e}"}
+        except Exception as e:  # noqa: BLE001 — plain-language, never raise
+            return {"status": "error",
+                    "said": (f"Story planning failed "
+                             f"({type(e).__name__}: {e}).")}
 
     # ------------------------------------------------- Track D: role modes
     # A role mode is a LENS: it routes skill bodies and evidence checklists
@@ -247,6 +331,66 @@ class Loop:
 
     # -------------------------------------------------------------- user turn
     def run_user_turn(self, text: str) -> dict:
+        """One user turn, plus the story-ledger turn-boundary checks.
+
+        The nudge check runs after the turn completes: every
+        STORIES_NUDGE_EVERY turns, untouched open stories journal a
+        `stories_nudge` event and the reminder is appended to the reply.
+        """
+        result = self._run_user_turn_inner(text)
+        try:
+            self._stories_nudge_check(result)
+        except Exception:
+            pass  # the nudge is advisory; never break a turn
+        return result
+
+    def _stories_nudge_check(self, result: dict) -> None:
+        """Periodic review nudge: every STORIES_NUDGE_EVERY user turns, if
+        open (non-blocked) stories have no session-log entry since this
+        session began, journal `stories_nudge` and append the reminder to
+        the turn's reply. Fires exactly once per boundary."""
+        from story import STORIES_NUDGE_EVERY, StoryStore  # local: import-light
+        s = self.state.snapshot
+        turn_count = s.get("turn_count", 0)
+        if (turn_count <= 0 or turn_count % STORIES_NUDGE_EVERY != 0
+                or turn_count in self._stories_nudged_at):
+            return
+        reg = getattr(self, "registry", None)
+        awino_dir = (getattr(reg, "awino_dir", None)
+                     if reg is not None else None)
+        if awino_dir is None:
+            awino_dir = getattr(self, "awino_dir", None)
+        if awino_dir is None:
+            return
+        store = StoryStore(awino_dir)
+        if not store.exists:
+            return
+        untouched = []
+        for st in store.open_stories():
+            if st.get("status") not in ("open", "doing"):
+                continue
+            sessions = st.get("sessions") or []
+            worked = any((e.get("started_ts") or e.get("ts") or 0)
+                         >= self._session_start_ts for e in sessions)
+            if not worked:
+                untouched.append(st)
+        if not untouched:
+            return
+        names = ", ".join(f"'{st['title']}' ({st['id']})"
+                          for st in untouched)
+        self.state.record("stories_nudge",
+                          {"turn": turn_count,
+                           "untouched": [st["id"] for st in untouched]})
+        self._stories_nudged_at.add(turn_count)
+        nudge = (f"Story review nudge ({turn_count} turns in): {names} "
+                 f"{'has' if len(untouched) == 1 else 'have'} not been "
+                 f"touched this session. Still the right stories to have "
+                 f"open, or should we work on / close "
+                 f"{'it' if len(untouched) == 1 else 'them'}?")
+        if isinstance(result, dict) and "said" in result:
+            result["said"] = f"{result['said']}\n\n{nudge}"
+
+    def _run_user_turn_inner(self, text: str) -> dict:
         s = self.state.snapshot
         if s["done"]:
             return {"status": "closed", "said": "Mission already complete (SHIP)."}
@@ -828,6 +972,18 @@ class Loop:
                              "word doesn't count. Next action: run "
                              "verification (begin_verification), fix any "
                              "findings it reports, then retry.")}
+        # Story ledger (planning gate): entering BUILD requires the active
+        # story's spine — problem, approach, done criteria. The approach is
+        # defined during planning; BUILD without it is refused, plainly.
+        # Same hard-refuse pattern as the VERIFY gate above.
+        if target == "BUILD" and target != frm:
+            gate_said = self._story_planning_gate(frm, target)
+            if gate_said is not None:
+                self.state.record("transition_refused",
+                                  {"from": frm, "to": target,
+                                   "reason": "story spine incomplete"})
+                self.state.persist_snapshot()
+                return {"status": "refused", "said": gate_said}
         allowed = ALLOWED_TRANSITIONS.get(frm, ())
         if target not in allowed:
             self.state.record("transition_refused",
@@ -863,6 +1019,41 @@ class Loop:
         self.state.persist_snapshot()
         return {"status": "ok", "phase": target}
 
+    def _story_planning_gate(self, frm: str, target: str) -> str | None:
+        """Refuse ->BUILD when the active story lacks its spine.
+
+        The active story is the one with status "doing". Its problem,
+        approach, and done criteria must all be non-empty — the approach
+        is defined during planning, so BUILD without it is illegal.
+        Returns the plain-language refusal, or None when the gate passes
+        (no registry attached, no doing story, or spine complete).
+        """
+        reg = getattr(self, "registry", None)
+        if reg is None:
+            return None
+        try:
+            from story import doing_stories  # local: keep loop import-light
+            stories = doing_stories(reg.awino_dir)
+        except Exception:
+            return None
+        need = {"problem": "the problem",
+                "approach": "the approach (the spine)",
+                "done_criteria": "done criteria (how we'll know it's done)"}
+        for st in stories:
+            missing = [m for m in need if not st.get(m)]
+            if missing:
+                return (
+                    f"Transition refused: {frm} -> {target} needs the "
+                    f"story's spine. What happened: story "
+                    f"'{st['title']}' ({st['id']}) is missing "
+                    f"{', '.join(need[m] for m in missing)}. What it "
+                    f"means: the approach is defined during planning — "
+                    f"BUILD without it is illegal, the mission would run "
+                    f"without knowing how it will be solved or when it's "
+                    f"done. Next action: fill in the missing fields "
+                    f"(story_update), then retry.")
+        return None
+
     def approve_contract(self, scope: list[str] | None = None) -> dict:
         """Operator approves the contract (elevator gate, code-enforced).
 
@@ -889,8 +1080,14 @@ class Loop:
             self.state.record("contract_approved",
                               {"revision": self._revision(), "phase": "PLAN",
                                "scope": sc})
-            self.request_phase("BUILD", reason="contract approved with SCOPE")
+            r = self.request_phase("BUILD",
+                                   reason="contract approved with SCOPE")
             self.state.persist_snapshot()
+            if r["status"] == "refused":
+                # A hard gate (e.g. the story planning gate) refused the
+                # transition — propagate the refusal plainly instead of
+                # claiming BUILD was entered.
+                return r
             return {"status": "ok",
                     "said": f"Contract approved with SCOPE {sc} "
                             f"(mission revision {self._revision()}). Phase: BUILD."}
@@ -1454,11 +1651,34 @@ class Loop:
         if passed:
             self.state.record("verify_passed",
                               {"worker_id": worker_id, "verdict": entries})
+            # Story ledger (finish ritual): a passing verdict proves the
+            # active story's done criteria — journal story_ready_to_close
+            # and ASK the user to close it. Close authority stays human;
+            # the harness never closes a story by itself.
+            said_extra = ""
+            if reg is not None:
+                try:
+                    from story import doing_stories, mark_ready_to_close
+                    stories = doing_stories(reg.awino_dir)
+                    if stories:
+                        st = stories[0]
+                        mark_ready_to_close(reg.awino_dir, st["id"])
+                        self.state.record(
+                            "story_ready_to_close",
+                            {"story_id": st["id"], "title": st["title"],
+                             "worker_id": worker_id})
+                        said_extra = (
+                            f" Story '{st['title']}' ({st['id']}) is ready "
+                            f"to close — its done criteria are proven. "
+                            f"Next action: review it, then close it with "
+                            f"story_close (the close is yours to make).")
+                except Exception:
+                    pass
             self.state.persist_snapshot()
             return {"status": "ok", "passed": True,
                     "said": (f"Verification PASSED ({len(entries)} criteria, "
                              f"all evidenced). Next action: request_phase "
-                             f"('REVIEW') is now unlocked.")}
+                             f"('REVIEW') is now unlocked." + said_extra)}
         from verify import findings_as_tasks
         new_tasks = []
         if reg is not None:

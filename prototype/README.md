@@ -25,9 +25,38 @@ goes through `ModelBackend` with mock backends (scripted / hostile / echo).
   Auto-init runs on session start: in a directory without
   `.awino/project.yaml`, the harness sets the project up itself and
   prints a brief summary before the mission proceeds.
-- `cli.py` — `awino init|status|plan [dir]`: one-command project setup
-  (idempotent), a plain-language project dashboard, and the task DAG in
-  plain words.
+- `cli.py` — `awino init|status|plan|stories [dir]`: one-command project
+  setup (idempotent), a plain-language project dashboard, the task DAG in
+  plain words, and the story ledger in plain words.
+- `story.py` — the STORY.md story ledger: Jira-shaped stories (story |
+  spike | chore; open | doing | blocked | done) with problem, approach
+  (the spine, written during planning), done criteria, blockers, linked
+  seeds, branch, session log (with start/end timestamps — wall time
+  accumulates as "time dedicated"), closed date + outcome. The registry
+  (`.awino/registry/stories.json`) is the single source of truth;
+  `STORY.md` at the project root is RENDERED from it on every mutation
+  (generated-file header; hand-edits are overwritten): open sections
+  newest-on-top, done stories as the Brag board at the bottom with
+  closed date, outcome, and time dedicated. Session start mandatorily
+  presents open stories; `request_phase` refuses ->BUILD when the doing
+  story's spine (problem/approach/done criteria) is empty; a passing
+  verifier verdict journals `story_ready_to_close` and ASKS the user to
+  close (close authority stays human). Stale-story rule: a new mission
+  or `story_start` while stories are doing/open journals
+  `stale_stories`. Every 25 turns (`STORIES_NUDGE_EVERY`), untouched
+  open stories journal `stories_nudge`. `plan_story` writes the approach
+  with a required six-part shape — (a) breakdown, (b) existing
+  approaches, (c) user guidance, (d) A/B/C + Bugatti-brief pitch (Honda
+  first), (e) ordered steps with success/failure criteria that seed the
+  task DAG, (f) Bugatti proposal — and cycles the PLAN-affine stances
+  (architect -> researcher -> engineer), journaling each contribution;
+  the user can override stances. Brief-first: the Bugatti expands only
+  on request (`expand_bugatti`); IRON RULE — pitched, never built
+  unasked. Parked ideas resurface on their revisit date and convert to
+  spikes. Planning DNA: `docs/STORY_PLANNING.md`. Git lifecycle
+  (`docs/STORY_GIT_RULES.md`): branch per issue, commit early/often
+  locally, best-effort push + PR on close, offline-safe, never
+  published.
 - `bootstrap.py` — Track A/H: startup checklist (python, uv, venv,
   just/make, ruff, git, `.awino/`), venv creation/adoption, justfile
   scaffold, seed-checklist parsing, `.awino/project.yaml` source of

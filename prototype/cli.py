@@ -10,6 +10,9 @@ Commands:
                       mode + why, DAG progress, blockers, last breadcrumb.
   awino plan [dir]    the mission's task DAG, simply: what's next, what's
                       blocked, by what.
+  awino stories [dir] the story ledger, plainly: open/doing/blocked/done
+                      counts, blockers, last touch, and the brag board.
+                      (STORY.md at the project root is the generated view.)
 
 You never have to type `awino init` by hand: when a chat session starts in
 a directory without `.awino/project.yaml`, the harness runs this same init
@@ -29,7 +32,8 @@ USAGE = """usage:
   awino chat [home]    start the loop-owner REPL
   awino init [dir]     bootstrap a project (empty or existing)
   awino status [dir]  plain-language project dashboard
-  awino plan [dir]    task DAG: what's next, what's blocked"""
+  awino plan [dir]    task DAG: what's next, what's blocked
+  awino stories [dir] the story ledger: open/doing/blocked/done, blockers"""
 
 
 def _plain_error(context: str, exc: BaseException) -> int:
@@ -227,6 +231,97 @@ def cmd_plan(args: list[str]) -> int:
         return _plain_error("plan", e)
 
 
+def cmd_stories(args: list[str]) -> int:
+    """awino stories [dir] — the story ledger, plainly.
+
+    Counts open/doing/blocked/done, names blockers, shows the last touch
+    per story and the brag board. STORY.md at the project root is the
+    rendered (generated) view of the same data.
+    """
+    from datetime import datetime
+    target = _resolve_dir(args)
+    awino_dir = target / ".awino"
+    if not awino_dir.is_dir():
+        print(f"awino stories: {target} is not an awino project yet "
+              f"(no .awino/ folder).\n"
+              f"  next action: run `awino init` there first.",
+              file=sys.stderr)
+        return 1
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    try:
+        from story import StoryStore
+        store = StoryStore(awino_dir)
+        if not store.exists:
+            print("awino stories: no stories yet.\n"
+                  "  next action: start one — in `awino chat`, "
+                  "/story-start <story|spike|chore> <title>.")
+            return 0
+
+        def last_touch(s: dict) -> str:
+            ts = s.get("created_ts") or 0
+            for sess in s.get("sessions") or []:
+                ts = max(ts, sess.get("started_ts") or sess.get("ts") or 0)
+                ts = max(ts, sess.get("ended_ts") or 0)
+            if s.get("closed_ts"):
+                ts = max(ts, s["closed_ts"])
+            try:
+                return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+            except (OSError, OverflowError, ValueError):
+                return "?"
+
+        def time_dedicated(s: dict) -> str:
+            from story import format_duration
+            total = 0.0
+            for sess in s.get("sessions") or []:
+                start = sess.get("started_ts") or sess.get("ts")
+                end = sess.get("ended_ts")
+                if start and end:
+                    total += max(0.0, end - start)
+            return format_duration(total)
+
+        counts = {st: 0 for st in ("open", "doing", "blocked", "parked",
+                                   "done")}
+        for s in store.list():
+            counts[s["status"]] = counts.get(s["status"], 0) + 1
+        print(f"stories: {counts['doing']} doing, {counts['open']} open, "
+              f"{counts['blocked']} blocked, {counts['parked']} parked, "
+              f"{counts['done']} done")
+        live = [s for s in store.open_stories()]
+        if live:
+            print("needs attention:")
+            for s in live:
+                flag = " — READY TO CLOSE" if s.get("ready_to_close") else ""
+                print(f"  - {s['title']} [{s['type']}, {s['status']}]"
+                      f"{flag} — last touch {last_touch(s)}, "
+                      f"time dedicated {time_dedicated(s)} (id: {s['id']})")
+                for b in (s.get("blockers") or [])[:2]:
+                    print(f"      blocked by: {b[:70]}")
+        else:
+            print("needs attention: nothing open — all clear.")
+        parked = store.list(status="parked")
+        if parked:
+            from story import parked_due_summary
+            due_ids = {s["id"] for s in parked_due_summary(awino_dir)}
+            print("parked ideas:")
+            for s in sorted(parked,
+                            key=lambda s: s.get("revisit_on") or "9999"):
+                flag = (" — REVISIT DATE ARRIVED" if s["id"] in due_ids
+                        else "")
+                print(f"  - {s['title']} (revisit {s.get('revisit_on') or '—'}"
+                      f"{flag}) (id: {s['id']})")
+        done = store.list(status="done")
+        if done:
+            print("brag board (done):")
+            for s in done[-5:]:
+                print(f"  - {s['title']} — closed {last_touch(s)}, "
+                      f"time dedicated {time_dedicated(s)}: "
+                      f"{(s.get('outcome') or '')[:70]}")
+        print("full ledger: STORY.md at the project root (generated).")
+        return 0
+    except Exception as e:  # noqa: BLE001
+        return _plain_error("stories", e)
+
+
 def main() -> None:
     args = sys.argv[1:]
     if not args or args[0] in ("-h", "--help", "help"):
@@ -252,6 +347,8 @@ def main() -> None:
         raise SystemExit(cmd_status(rest))
     if cmd == "plan":
         raise SystemExit(cmd_plan(rest))
+    if cmd == "stories":
+        raise SystemExit(cmd_stories(rest))
     print(f"unknown command: {cmd}\n{USAGE}", file=sys.stderr)
     raise SystemExit(2)
 
