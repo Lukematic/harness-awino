@@ -8,3 +8,4 @@ chat-loop/
 build/
 dist/
 *.egg-info/
+*.egg-info/

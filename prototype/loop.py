@@ -25,6 +25,7 @@ from contract import (
     skills_for_kind, get_skill_store,
 )
 from skills import SkillIntegrityError
+from synthesis import synthesize_learning as _synthesize_learning
 from stances import evaluate_chain, route_triple, FLOORS
 from tools import Sandbox, TOOL_DEFS
 from backends import ScriptedJudge
@@ -1032,6 +1033,41 @@ class Loop:
             "flags": s["flags"][-5:], "done": s["done"],
             "next_action": next_action_line(s),
         }
+
+    # --------------------------------------------- skill synthesis (follow-on)
+    def synthesize_learning(self, index: int = -1) -> dict:
+        """Synthesize a recorded learning into a verified skill.
+
+        Pipeline (synthesis.py): injection screen -> deterministic draft ->
+        sandbox verification -> hash-pinned admission into the project's
+        skill registry. Refusal is the default: unverified prose, injected
+        instructions, and failed checks are NEVER admitted. Records
+        synthesis_admitted / synthesis_refused on the event log.
+        """
+        learnings = self.state.snapshot.get("learnings", [])
+        if not learnings:
+            return {"status": "refused", "code": "none",
+                    "detail": "no learnings recorded yet"}
+        try:
+            learning = learnings[index]
+        except IndexError:
+            return {"status": "refused", "code": "bad_index",
+                    "detail": f"no learning at index {index} "
+                              f"({len(learnings)} recorded)"}
+        registry = self.state.dir / "skills"
+        result = _synthesize_learning(learning, self.sandbox, registry,
+                                      packaged=self.skill_store)
+        if result["status"] == "admitted":
+            self.state.record("synthesis_admitted",
+                              {"name": result["name"],
+                               "sha256": result["sha256"],
+                               "kind": learning.get("kind")})
+        else:
+            self.state.record("synthesis_refused",
+                              {"code": result["code"],
+                               "detail": result["detail"],
+                               "kind": learning.get("kind")})
+        return result
 
     # ------------------------------------------------------- Phase D: workers
     def spawn_worker(self, objective: str, owned_files: list[str],

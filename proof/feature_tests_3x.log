@@ -1,0 +1,13 @@
+Feature tests — 3 consecutive green runs (2026-09-22):
+--- run 1 ---
+Ran 205 tests in 0.454s
+
+OK
+--- run 2 ---
+Ran 205 tests in 0.372s
+
+OK
+--- run 3 ---
+Ran 205 tests in 0.951s
+
+OK
