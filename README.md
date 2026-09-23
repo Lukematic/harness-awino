@@ -24,7 +24,7 @@ approvals bound to exact arguments, and completion computed from evidence
 ## Run it
 
 ```sh
-cd prototype && ./run_tests.sh        # 95 unit tests: routing, enforcement, judge, approvals, recovery
+cd prototype && ./run_tests.sh        # full suite: routing, enforcement, judge, approvals, recovery, plug-and-play
 cd proof && python3 proof_session.py  # adversarial session -> TRANSCRIPT.md (8/8 verdicts)
 ```
 
@@ -32,4 +32,17 @@ cd proof && python3 proof_session.py  # adversarial session -> TRANSCRIPT.md (8/
 
 Phase 0 (deterministic enforcement, mock backends): done and proven.
 Phase A (live model backend, human approval interrupt, kill/restart against
-a real provider): pending provider, spend ceiling, and explicit authorization.
+a real provider): done and proven (7B live turn, approval recovery after
+SIGKILL, mid-effect reconciliation).
+Phases B–E (immutable contracts, fail-closed skills, worker isolation,
+backend selection, rollback): done and proven.
+VS Code extension (`integrations/vscode/`): proven in a live GUI test
+(34/34 checks, real approval deny path) — not yet published.
+MCP server (`integrations/mcp-server/`): standalone, client-agnostic —
+contract compiler, turn validator, judge panel, skill synthesis.
+**Plug-and-play projects (unreleased)**: auto-init on session start,
+startup checklist with venv/just/ruff provisioning, `.awino/project.yaml`
+source of truth, memory registry, task DAG store, five intelligent role
+modes with a deterministic router, role environment profiles, skill egress
+audit, and a hard verification gate (separate verifier worker; no pass
+verdict, no REVIEW). See `CHANGELOG.md`.

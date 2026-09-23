@@ -24,6 +24,7 @@ from contract import (
     coerce_turn_contract, ContractTypeError,
     skills_for_kind, get_skill_store,
 )
+import modes as _modes
 from skills import SkillIntegrityError
 from synthesis import synthesize_learning as _synthesize_learning
 from stances import evaluate_chain, route_triple, FLOORS
@@ -100,6 +101,9 @@ class Loop:
         self.config = cfg
         self.history: list[dict] = []
         self.setup_checks = [self._check_sandbox_writable]
+        # Track B (memory registry): the sidecar attaches a Registry here on
+        # mission start. None in unit tests — every use is guarded.
+        self.registry = None
         self._rebuild_history()
 
     # ------------------------------------------------------------------ setup
@@ -160,6 +164,80 @@ class Loop:
         self.state.record("mission_set", {"mission": mission})
         return mission
 
+    # ------------------------------------------------- Track D: role modes
+    # A role mode is a LENS: it routes skill bodies and evidence checklists
+    # into the contract. It never changes offered tools or permissions —
+    # the floor mode (observe/plan/build/verify/ship) owns those alone.
+    def set_role_mode(self, role: str, reason: str = "",
+                      source: str = "override") -> dict:
+        """Activate a role lens. Validates, journals, mirrors to .awino/.
+
+        Returns a plain-language result dict — no exceptions escape.
+        """
+        if role not in _modes.ROLE_IDS:
+            return {"status": "error",
+                    "said": (f"Unknown role '{role}'. What happened: the role "
+                             f"name isn't one of the five lenses, so nothing "
+                             f"changed. What it means: the current lens "
+                             f"stays active. Next action: pick one of "
+                             f"{', '.join(_modes.ROLE_IDS)}.")}
+        self.state.record("role_mode",
+                          {"role": role, "reason": reason, "source": source})
+        reg = getattr(self, "registry", None)
+        awino_dir = getattr(reg, "awino_dir", None) if reg is not None else None
+        if awino_dir is None:
+            awino_dir = getattr(self, "awino_dir", None)
+        if awino_dir is not None:
+            try:
+                _modes.write_role_state(awino_dir, role, reason, source,
+                                        self.state.snapshot.get("phase", ""))
+            except Exception:
+                pass  # the mirror is a convenience; the journal is truth
+        self.state.persist_snapshot()
+        return {"status": "ok", "role": role,
+                "reason": reason, "source": source}
+
+    def active_role(self) -> dict | None:
+        """The active role lens snapshot, or None."""
+        return self.state.snapshot.get("role_mode")
+
+    def route_role(self, mission_text: str = "",
+                   registry_context: str = "",
+                   configured_profile: str | None = None,
+                   force: bool = False) -> dict:
+        """Deterministic role proposal; applies when it differs (or force).
+
+        Re-evaluated at mission start and phase boundaries. Never raises.
+        """
+        try:
+            s = self.state.snapshot
+            current = (s.get("role_mode") or {}).get("role")
+            proposal = _modes.propose_role(
+                mission_text, s.get("phase", ""), registry_context,
+                configured_profile=configured_profile, current_role=current)
+            if force or proposal["role"] != current:
+                return self.set_role_mode(proposal["role"], proposal["reason"],
+                                          proposal["source"])
+            return {"status": "unchanged", "role": current,
+                    "reason": proposal["reason"]}
+        except Exception as e:  # noqa: BLE001 — routing never breaks a turn
+            return {"status": "error",
+                    "said": f"role routing skipped ({type(e).__name__}): keeping current lens"}
+
+    def _check_role_trigger(self, text: str) -> None:
+        """Mid-mission triggers: secrets/security or experiments/results in
+        user text re-route the role lens immediately. Never raises."""
+        try:
+            s = self.state.snapshot
+            current = (s.get("role_mode") or {}).get("role")
+            proposal = _modes.propose_role(text or "", s.get("phase", ""),
+                                           current_role=current)
+            if proposal["source"] == "trigger" and proposal["role"] != current:
+                self.set_role_mode(proposal["role"], proposal["reason"],
+                                   "trigger")
+        except Exception:
+            pass
+
     def _revision(self) -> int:
         m = self.state.snapshot["mission"]
         return m["revision"] if m else 0
@@ -178,6 +256,9 @@ class Loop:
         kind, payload = classify_user_input(text)
         self.state.record("user_message", {"kind": kind, "text": text})
         self._hist("user", text)
+        # Track D: mid-mission triggers — secrets/security or
+        # experiments/results re-route the role lens before the turn runs.
+        self._check_role_trigger(text)
         s = self.state.snapshot
 
         if s["awaiting_inspection"]:
@@ -304,6 +385,10 @@ class Loop:
         turn = None
         for attempt in range(cfg["max_retries"] + 1):
             raw = self.backend.generate(contract_block, self.history, feedback=feedback)
+            # Track C (egress audit): if the backend performed network I/O for
+            # this turn, journal it — turn, routed skills, destination, bytes.
+            # A skill declaring network:none with egress is flagged undeclared.
+            self._record_egress(turn_id)
             self._charge_tokens(contract_block, raw)
             errs = validate_schema(raw)
             if not errs and ("mode_hint" in raw or "phase_hint" in raw):
@@ -419,6 +504,17 @@ class Loop:
         s = self.state.snapshot
         intent, mode, chain, skills, trigger = route_triple(s, user_text,
                                                            input_kind)
+        # Track D: the active role lens appends its skill body (perspective +
+        # evidence checklist) to the routed skills. It cannot change the
+        # offered tools — the contract's ROLE MODE section states this, and
+        # a test diffs the offered set with/without the lens.
+        rm = s.get("role_mode") or {}
+        lens = _modes.ROLE_SKILL_NAMES.get(rm.get("role", "")) if rm else None
+        if lens:
+            if lens in get_skill_store().names() and lens not in skills:
+                skills = [*skills, lens]
+            elif lens not in get_skill_store().names():
+                self.state.record("role_lens_missing", {"lens": lens})
         if chain != s["stance_chain"]:
             self.state.record("stance_routed",
                               {"stance": chain[0], "chain": chain,
@@ -715,6 +811,23 @@ class Loop:
         frm = s["phase"]
         if target == frm:
             return {"status": "ok", "phase": frm, "note": "already there"}
+        # Track G (hard gate): VERIFY -> REVIEW requires a journaled pass
+        # verdict from a verifier worker. The builder never grades its own
+        # work — without the verdict the transition is refused, plainly.
+        if frm == "VERIFY" and target == "REVIEW" and not s.get("verify_pass"):
+            self.state.record("transition_refused",
+                              {"from": frm, "to": target,
+                               "reason": "no journaled verification pass"})
+            self.state.persist_snapshot()
+            return {"status": "refused",
+                    "said": ("Transition refused: VERIFY -> REVIEW needs a "
+                             "passing verification first. What happened: no "
+                             "verifier worker has journaled a pass verdict "
+                             "for this mission. What it means: the done "
+                             "criteria are not proven yet — the builder's "
+                             "word doesn't count. Next action: run "
+                             "verification (begin_verification), fix any "
+                             "findings it reports, then retry.")}
         allowed = ALLOWED_TRANSITIONS.get(frm, ())
         if target not in allowed:
             self.state.record("transition_refused",
@@ -725,6 +838,28 @@ class Loop:
                     "said": f"Transition refused: {frm} -> {target} is not "
                             f"allowed ({reason or 'illegal jump'})."}
         self.state.record("phase_changed", {"phase": target, "reason": reason})
+        # Track B (memory registry): phase transitions append breadcrumbs;
+        # mission close (SHIP) runs the deterministic reflection pass and
+        # banks a milestone. Guarded: no-ops when no registry is attached.
+        reg = getattr(self, "registry", None)
+        if reg is not None:
+            try:
+                mission = self.state.snapshot.get("mission") or {}
+                mid = mission.get("id", "?")
+                reg.add_breadcrumb(mid,
+                                   f"phase {frm} -> {target}",
+                                   stop_point=reason or f"entered {target}")
+                if target == "SHIP":
+                    reg.add_milestone("completion", self._reflect_on_close())
+            except Exception:
+                pass  # registry writes never break the loop
+        # Track D: re-evaluate the role lens at phase boundaries (advisory —
+        # the router only switches on a trigger or a clearly better fit).
+        try:
+            mission = self.state.snapshot.get("mission") or {}
+            self.route_role(mission_text=mission.get("text", ""))
+        except Exception:
+            pass
         self.state.persist_snapshot()
         return {"status": "ok", "phase": target}
 
@@ -848,7 +983,15 @@ class Loop:
             self.request_phase("VERIFY", reason="write effects produced")
             s = self.state.snapshot
         if s["phase"] == "VERIFY" and self._has_exit_zero():
-            self.request_phase("REVIEW", reason="verify exit 0")
+            # Track G: exit 0 alone does NOT unlock REVIEW — only the
+            # verifier worker's journaled pass verdict does.
+            if s.get("verify_pass"):
+                self.request_phase("REVIEW",
+                                   reason="verify exit 0 + verifier pass")
+            else:
+                self.state.record("verify_gate_waiting",
+                                  {"reason": ("exit 0 observed but no "
+                                             "journaled verifier pass")})
             s = self.state.snapshot
         if s["phase"] == "REVIEW" and turn.get("done_claim"):
             # Semantic validation already proved every criterion in code, and
@@ -904,6 +1047,58 @@ class Loop:
     def _charge_tokens(self, contract_block: str, turn) -> None:
         approx = len(contract_block) // 4 + len(json.dumps(turn, default=str)) // 4
         self.state.record("tokens_charged", {"tokens": approx})
+
+    def _record_egress(self, turn_id: str) -> None:
+        """Track C: journal network I/O the backend performed for a turn.
+
+        Backends that do real HTTP expose `last_egress` ->
+        {"destination", "bytes_out", "bytes_in"} (consumed here). Local
+        backends (scripted/echo) report nothing and no event is recorded.
+        """
+        report = getattr(self.backend, "last_egress", None)
+        if not report:
+            return
+        try:
+            self.backend.last_egress = None  # consume: one event per call
+        except AttributeError:
+            pass
+        skills_now = list(self.state.snapshot.get("skills", []))
+        store = get_skill_store()
+        declared = all(store.network_declaration(n)["network"] == "declared"
+                       for n in skills_now) if skills_now else True
+        self.state.record("egress", {
+            "turn_id": turn_id,
+            "skills": skills_now,
+            "destination": report.get("destination", "?"),
+            "bytes_out": report.get("bytes_out", 0),
+            "bytes_in": report.get("bytes_in", 0),
+            "declared": declared,
+            "note": ("network declared by routed skill(s)" if declared
+                     else "UNDECLARED egress: no routed skill declared network"),
+        })
+
+    def _reflect_on_close(self) -> str:
+        """Track B: deterministic mission-close reflection -> milestone text.
+
+        Code-generated from the journal (no model): phases traversed,
+        criteria status, learnings count. The model never grades itself.
+        """
+        s = self.state.snapshot
+        mission = s.get("mission") or {}
+        phases = []
+        for e in self.state.events:
+            if e["type"] == "phase_changed":
+                phases.append(e["data"].get("phase"))
+        seen = []
+        for p in phases:
+            if p not in seen:
+                seen.append(p)
+        ok, _gaps = verify_done_criteria(s, self.state.events,
+                                         self._search_dirs(), manual_ok=True)
+        n_learn = len(s.get("learnings", []))
+        return (f"Mission closed: {mission.get('text', '(none)')[:120]} | "
+                f"phases: {'->'.join(seen) or 'none'} | "
+                f"criteria verified: {ok} | learnings banked: {n_learn}")
 
     # ------------------------------------------------------------ completion
     def request_done(self) -> dict:
@@ -1130,6 +1325,163 @@ class Loop:
                           {"worker_id": worker_id, "artifacts": artifacts})
         return {"status": "collected", "worker_id": worker_id,
                 "artifacts": artifacts}
+
+    # -------------------------------------------- Track G: verification gate
+    # The verifier is a SEPARATE worker with the verifier stance. The builder
+    # never grades its own work: complete_verification reads the verdict from
+    # the WORKER's journal only — a verdict forged in the parent's journal
+    # is ignored. Only a worker-journaled pass unlocks VERIFY -> REVIEW.
+    def begin_verification(self) -> dict:
+        """Spawn the verifier worker. Plain-language result, never raises."""
+        s = self.state.snapshot
+        if s.get("phase") != "VERIFY":
+            return {"status": "error",
+                    "said": ("Verification starts from the VERIFY phase. "
+                             "What happened: the mission is in "
+                             f"{s.get('phase')}, not VERIFY. What it means: "
+                             "there's nothing to verify yet. Next action: "
+                             "finish the build work first, then verify.")}
+        if s.get("verify_pending"):
+            wid = s["verify_pending"]["worker_id"]
+            return {"status": "error",
+                    "said": (f"A verifier worker ({wid}) is already running. "
+                             "What happened: verification is in progress. "
+                             "Next action: run its turn, then complete it.")}
+        try:
+            spawn = self.spawn_worker(
+                objective="verify the mission against its done criteria",
+                owned_files=[],  # read-only: the verifier changes nothing
+                budget_share={"max_turns": 2, "max_seconds": 600})
+        except RuntimeError as e:
+            return {"status": "error",
+                    "said": f"Could not start verification: {e}. "
+                            f"Next action: free up the turn budget and retry."}
+        wid = spawn["worker_id"]
+        self.state.record("verify_started", {"worker_id": wid})
+        self.state.persist_snapshot()
+        return {"status": "ok", "worker_id": wid,
+                "said": (f"Verifier worker {wid} started (separate worker, "
+                         f"read-only). Next action: run_verifier_turn, then "
+                         f"complete_verification.")}
+
+    def _worker_state(self, worker_id: str):
+        """The worker's own journal (ProjectState), re-opened from disk."""
+        s = self.state.snapshot
+        return ProjectState(self.home, f"{s['project_id']}/{worker_id}")
+
+    def run_verifier_turn(self, worker_id: str,
+                          context: dict | None = None) -> dict:
+        """Run the verifier worker's turn: compute the verdict and journal it
+        ON THE WORKER's journal with role=verifier. Never raises."""
+        s = self.state.snapshot
+        pend = s.get("verify_pending") or {}
+        if pend.get("worker_id") != worker_id:
+            return {"status": "error",
+                    "said": (f"No pending verification for worker {worker_id}. "
+                             "What happened: this worker wasn't started by "
+                             "begin_verification. Next action: call "
+                             "begin_verification first.")}
+        context = context or {}
+        try:
+            from verify import compute_verdict, criterion_text
+            reg = getattr(self, "registry", None)
+            dag_tasks = reg.tasks() if reg is not None else []
+            blockers = reg.unblock_report() if reg is not None else []
+            mission = s.get("mission") or {}
+            criteria = [criterion_text(c)
+                        for c in mission.get("done_criteria", [])]
+            role = (s.get("role_mode") or {}).get("role", "")
+            role_ev = list(_modes.ROLES.get(role, {}).get("required_evidence", []))
+            result = compute_verdict(
+                criteria,
+                evidence_links=context.get("evidence_links", {}),
+                dag_tasks=dag_tasks, blockers=blockers,
+                recipe_result=context.get("recipe_result"),
+                role_evidence=role_ev,
+                project_root=context.get("project_root", "."))
+        except Exception as e:  # noqa: BLE001 — verdict failure is a finding
+            result = {"verdict": [{"criterion": "verifier ran",
+                                   "needed_evidence": "a computed verdict",
+                                   "accomplished": "no",
+                                   "proof_link": ""}],
+                      "passed": False, "recipe": None,
+                      "error": f"{type(e).__name__}: {e}"}
+        wstate = self._worker_state(worker_id)
+        wstate.record("verify_verdict",
+                      {"worker_id": worker_id, "role": "verifier",
+                       "verdict": result["verdict"], "passed": result["passed"]})
+        wstate.persist_snapshot()
+        self.state.record("verify_verdict",
+                          {"worker_id": worker_id, "role": "verifier",
+                           "passed": result["passed"],
+                           "note": ("verdict journaled on the worker; "
+                                    "parent records only the pointer")})
+        self.state.persist_snapshot()
+        return {"status": "ok", "worker_id": worker_id,
+                "passed": result["passed"], "verdict": result["verdict"]}
+
+    def complete_verification(self, worker_id: str) -> dict:
+        """Collect the verifier's verdict from the WORKER's journal.
+
+        Pass -> verify_passed unlocks VERIFY -> REVIEW.
+        Fail -> findings become new DAG tasks; route back to BUILD.
+        A verdict forged in the PARENT journal is ignored (worker isolation).
+        """
+        s = self.state.snapshot
+        wstate = self._worker_state(worker_id)
+        verdict_ev = None
+        for e in wstate.events:
+            d = e.get("data", {})
+            if (e.get("type") == "verify_verdict"
+                    and d.get("worker_id") == worker_id
+                    and d.get("role") == "verifier"):
+                verdict_ev = e
+        if verdict_ev is None:
+            self.state.record("verify_failed",
+                              {"worker_id": worker_id,
+                               "reason": "no verifier verdict in worker journal"})
+            self.state.persist_snapshot()
+            return {"status": "error",
+                    "said": (f"Worker {worker_id} has no journaled verdict. "
+                             "What happened: the verifier never recorded its "
+                             "verdict. What it means: nothing was proven. "
+                             "Next action: run_verifier_turn, then retry.")}
+        data = verdict_ev["data"]
+        entries = data.get("verdict", [])
+        passed = bool(data.get("passed")) and all(
+            e.get("accomplished") == "yes" for e in entries) and bool(entries)
+        reg = getattr(self, "registry", None)
+        if passed:
+            self.state.record("verify_passed",
+                              {"worker_id": worker_id, "verdict": entries})
+            self.state.persist_snapshot()
+            return {"status": "ok", "passed": True,
+                    "said": (f"Verification PASSED ({len(entries)} criteria, "
+                             f"all evidenced). Next action: request_phase "
+                             f"('REVIEW') is now unlocked.")}
+        from verify import findings_as_tasks
+        new_tasks = []
+        if reg is not None:
+            for text in findings_as_tasks(entries):
+                try:
+                    t = reg.add_task(text, source="verifier", state="open")
+                    new_tasks.append(t["id"])
+                except Exception:
+                    pass
+        self.state.record("verify_failed",
+                          {"worker_id": worker_id, "verdict": entries,
+                           "findings_tasks": new_tasks})
+        self.state.persist_snapshot()
+        # Failed verification routes back to BUILD with findings as tasks.
+        self.request_phase("BUILD", reason="verification failed")
+        return {"status": "ok", "passed": False,
+                "said": (f"Verification FAILED: "
+                         f"{sum(1 for e in entries if e.get('accomplished') != 'yes')} "
+                         f"criterion/criteria unmet. What happened: the "
+                         f"verifier could not evidence everything. What it "
+                         f"means: the mission goes back to BUILD. Next "
+                         f"action: work the {len(new_tasks)} finding task(s) "
+                         f"the verifier filed, then verify again.")}
 
     # -------------------------------------------------------- Phase E: rollback
     def rollback(self, seq: int) -> dict:

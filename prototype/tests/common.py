@@ -24,3 +24,21 @@ def T(**kw):
             "progress_delta": "Working.", "done_claim": False}
     base.update(kw)
     return base
+
+
+def drive_verification(loop, evidence_links=None, recipe_exit=0):
+    """Drive the Track G verifier flow: begin -> turn -> complete.
+
+    Returns the complete_verification result. evidence_links maps
+    criterion text (see verify.criterion_text) to proof-link paths.
+    """
+    b = loop.begin_verification()
+    assert b["status"] == "ok", b
+    wid = b["worker_id"]
+    r = loop.run_verifier_turn(
+        wid, {"evidence_links": evidence_links or {},
+              "recipe_result": {"runner": "just", "recipe": "test",
+                                "exit_code": recipe_exit, "output": "stubbed"},
+              "project_root": "."})
+    assert r["status"] == "ok", r
+    return loop.complete_verification(wid)

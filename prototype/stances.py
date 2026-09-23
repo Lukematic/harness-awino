@@ -169,6 +169,20 @@ STANCES = {
             "computes that."
         ),
     },
+    "verifier": {
+        "procedure": (
+            "PROCEDURE verifier (Track G — separate worker, never the builder):\n"
+            "1. Read the mission's done criteria from the contract.\n"
+            "2. For each criterion: name the evidence needed, then check it "
+            "exists — a missing proof link is a NO, not a maybe.\n"
+            "3. Run the project's test/lint recipe; record name + exit code.\n"
+            "4. Every DAG task marked done must have an existing evidence link.\n"
+            "5. Confirm no open blockers.\n"
+            "6. Journal the verdict in the exact shape: criterion / "
+            "needed_evidence / accomplished (yes|no) / proof_link.\n"
+            "7. Never grade your own builder work; never claim on prose."
+        ),
+    },
     "steel-man": {
         "procedure": (
             "PROCEDURE steel-man:\n"
@@ -409,6 +423,22 @@ def _rb_advisor_progress(turn: dict, user_text: str) -> str | None:
     return None
 
 
+def _rb_verifier_no_tools(turn: dict, user_text: str) -> str | None:
+    """The verifier is read-only: it judges, it never builds."""
+    if turn.get("tool_calls"):
+        return "verifier: must not call tools (read-only judge)"
+    return None
+
+
+def _rb_verifier_verdict_shape(turn: dict, user_text: str) -> str | None:
+    """A verifier turn must carry a per-criterion verdict, not a prose claim."""
+    prog = (turn.get("progress_delta") or "").lower()
+    if "criterion" not in prog and "verdict" not in prog:
+        return ("verifier: progress_delta must carry the per-criterion "
+                "verdict (criterion / needed evidence / accomplished)")
+    return None
+
+
 RUBRICS = {
     "steel-man": [_rb_steel_restatement, _rb_steel_substance],
     "feynman": [_rb_feynman_steps, _rb_feynman_question, _rb_feynman_no_tools],
@@ -419,6 +449,7 @@ RUBRICS = {
     "devil's-advocate": [_rb_da_attacks],
     "triage": [_rb_triage_names_mode, _rb_triage_falsifier, _rb_triage_readonly],
     "advisor": [_rb_advisor_progress],
+    "verifier": [_rb_verifier_no_tools, _rb_verifier_verdict_shape],
 }
 
 

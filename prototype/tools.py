@@ -6,6 +6,7 @@ a hard timeout, and truncated output (Phase 0: mock/test use only).
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
 from pathlib import Path
 
@@ -18,10 +19,14 @@ TOOL_DEFS = {
 
 
 class Sandbox:
-    def __init__(self, root: str | Path):
+    def __init__(self, root: str | Path, venv_bin: str | Path | None = None):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self._manifest: dict[str, str] = {}  # Phase B: path -> sha256 of writes
+        # Track A (project bootstrap): when a project .venv exists, every
+        # command resolves the venv's bin/ first so the venv python is used
+        # automatically — the operator never thinks about activation.
+        self.venv_bin = Path(venv_bin) if venv_bin else None
 
     def _resolve(self, path: str) -> Path:
         p = (self.root / path).resolve()
@@ -68,12 +73,23 @@ class Sandbox:
     def run_command(self, cmd: str, timeout: int = 30) -> dict:
         """Run a shell command with cwd confined to the sandbox.
 
+        Track A: when venv_bin is set (project bootstrap found/created a
+        .venv), the venv's bin/ is prepended to PATH and VIRTUAL_ENV is set,
+        so `python3` resolves to the venv python automatically.
+
         Returns {"cmd", "exit_code", "stdout", "stderr"}. Output truncated.
         """
+        env = None
+        if self.venv_bin and self.venv_bin.is_dir():
+            env = dict(os.environ)
+            env["PATH"] = (str(self.venv_bin) + os.pathsep
+                           + env.get("PATH", ""))
+            env["VIRTUAL_ENV"] = str(self.venv_bin.parent)
         try:
             proc = subprocess.run(
                 cmd, shell=True, cwd=self.root,
                 capture_output=True, text=True, timeout=timeout,
+                env=env,
             )
         except subprocess.TimeoutExpired:
             return {"cmd": cmd, "exit_code": 124,

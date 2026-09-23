@@ -2,7 +2,7 @@
 terminate the loop. The most important test in the suite."""
 import unittest
 
-from tests.common import make_loop, T
+from tests.common import make_loop, T, drive_verification
 from backends import HostileBackend, ScriptedBackend
 
 
@@ -25,13 +25,23 @@ def plan_write_verify():
 
 
 def drive_to_review(loop):
-    """Approve the contract + scope, run the plan/write/verify script."""
+    """Approve the contract + scope, run the plan/write/verify script, then
+    pass the verifier gate (Track G) to reach REVIEW."""
     loop.run_user_turn("draft the plan")
     loop.approve_contract()
     loop.approve_contract(["fix.py"])
     loop.run_user_turn("fix it now")
     loop.approve()
     loop.run_user_turn("run the tests")
+    assert loop.state.snapshot["phase"] == "VERIFY", loop.state.snapshot["phase"]
+    # Track G: the verifier worker must journal a pass verdict.
+    res = drive_verification(
+        loop, evidence_links={"artifact exists: fix.py": "tests/common.py",
+                              "manual (operator sign-off)": "tests/common.py",
+                              "event: tool_result": "tests/common.py"})
+    assert res["passed"], res.get("said")
+    r = loop.request_phase("REVIEW", reason="verifier passed")
+    assert r["status"] == "ok", r
     assert loop.state.snapshot["phase"] == "REVIEW", loop.state.snapshot["phase"]
 
 

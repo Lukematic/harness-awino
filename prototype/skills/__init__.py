@@ -24,6 +24,7 @@ from pathlib import Path
 
 STORE_DIR = Path(__file__).parent
 MANIFEST = "manifest.json"
+NETWORK_META = "network.json"  # Track C: skill -> network declaration
 
 
 class SkillIntegrityError(Exception):
@@ -61,6 +62,20 @@ class SkillStore:
             bodies[name] = raw.decode("utf-8")
         self._pinned = dict(pinned)
         self._bodies = bodies
+        # Track C: network declarations. Absence of the file or of an entry
+        # means "network: none". This meta file is advisory (surfacing +
+        # egress audit); integrity of the bodies is still the sha256 manifest.
+        self._network: dict[str, dict] = {}
+        meta_path = self.dir / NETWORK_META
+        if meta_path.is_file():
+            try:
+                meta = json.loads(meta_path.read_text())
+                if isinstance(meta, dict):
+                    self._network = {k: v for k, v in meta.items()
+                                     if isinstance(v, dict)
+                                     and not k.startswith("_")}
+            except (json.JSONDecodeError, OSError):
+                pass
 
     @classmethod
     def default(cls) -> "SkillStore":
@@ -87,6 +102,21 @@ class SkillStore:
                 f"unknown skill {name!r}: not in the pinned manifest; "
                 f"the harness cannot deliver what it cannot verify")
         return body
+
+    def network_declaration(self, name: str) -> dict:
+        """Track C: network declaration for a skill.
+
+        Returns {"network": "none"|"declared", "destinations": [...],
+        "why": "..."}. Absence of an entry means "none" — the safe default.
+        """
+        decl = self._network.get(name, {})
+        network = decl.get("network", "none")
+        if network not in ("none", "declared"):
+            network = "none"
+        dests = decl.get("destinations", [])
+        return {"network": network,
+                "destinations": list(dests) if isinstance(dests, list) else [],
+                "why": str(decl.get("why", ""))}
 
     def as_dict(self) -> dict:
         """Compatibility view: {name: {"name": name, "body": body}}."""

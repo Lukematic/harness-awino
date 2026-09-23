@@ -3,10 +3,13 @@
 Tests that the phase transition table enforces the full journey in order
 with no skips. The scripted backend proves the mechanism; the live 7B
 journey is documented as future work (Phase D design).
+
+Track G: VERIFY -> REVIEW additionally requires the verifier worker's
+journaled pass verdict — exit 0 alone no longer unlocks REVIEW.
 """
 import unittest
 
-from tests.common import make_loop
+from tests.common import make_loop, drive_verification
 
 
 class TestEndToEndJourney(unittest.TestCase):
@@ -25,6 +28,15 @@ class TestEndToEndJourney(unittest.TestCase):
             elif target == "BUILD":
                 r = loop.approve_contract(["out.txt"])
                 self.assertEqual(r["status"], "ok")
+            elif target == "REVIEW":
+                # Track G: VERIFY -> REVIEW needs the verifier's journaled
+                # pass verdict — the builder's word is not enough.
+                res = drive_verification(
+                    loop, evidence_links={"manual (operator sign-off)":
+                                          "tests/common.py"})
+                self.assertTrue(res["passed"], res.get("said"))
+                r = loop.request_phase(target, reason="verifier passed")
+                self.assertEqual(r["status"], "ok", f"failed at {target}")
             else:
                 r = loop.request_phase(target, reason="test journey")
                 self.assertEqual(r["status"], "ok", f"failed at {target}")

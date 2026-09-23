@@ -64,8 +64,29 @@ def parse_mission_arg(arg: str):
     return text.strip(), criteria
 
 
+def session_start(project_dir=None) -> dict | None:
+    """Session-start auto-init (Track A/H).
+
+    When a chat session starts in a directory that is not an awino project
+    yet (no `.awino/project.yaml`), run the full init flow automatically —
+    the user never has to type `awino init` by hand — then print one brief
+    plain-language summary of what was set up, before the mission proceeds.
+    Returns the auto-init result, or None when the directory was already a
+    project (silent). Never raises.
+    """
+    from bootstrap import session_start_auto_init  # lazy: keep REPL start fast
+    result = session_start_auto_init(
+        Path(project_dir) if project_dir else Path.cwd())
+    if result:
+        for line in result["summary"]:
+            print(line)
+        print()
+    return result
+
+
 def main() -> None:
     project = "inbox"
+    session_start()  # auto-init: the primary path; `awino init` is the override
     loop = Loop(HOME, project, make_backend(), build_judge_panel())
     print(f"awino chat — home={HOME} project={project}")
     print("Type /help for commands. Ctrl-C/D exits safely; restart resumes.\n")

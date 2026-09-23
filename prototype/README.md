@@ -22,8 +22,32 @@ goes through `ModelBackend` with mock backends (scripted / hostile / echo).
   (FAIL blocks), tool execution behind mode permission profiles + approval
   gate, event-sourced reduce + persist, budgets (max turns, stall, tokens).
 - `chat.py` — REPL. `python chat.py [home]`; `/help` for commands.
+  Auto-init runs on session start: in a directory without
+  `.awino/project.yaml`, the harness sets the project up itself and
+  prints a brief summary before the mission proceeds.
+- `cli.py` — `awino init|status|plan [dir]`: one-command project setup
+  (idempotent), a plain-language project dashboard, and the task DAG in
+  plain words.
+- `bootstrap.py` — Track A/H: startup checklist (python, uv, venv,
+  just/make, ruff, git, `.awino/`), venv creation/adoption, justfile
+  scaffold, seed-checklist parsing, `.awino/project.yaml` source of
+  truth, project scaffolding, per-profile environment folders.
+- `registry.py` — Tracks B/F: auto-created `.awino/registry/` with
+  milestones, breadcrumbs, and a task DAG (dependencies, states, done
+  criteria, evidence links, topological order, what's-next, blocked
+  propagation, self-audit).
+- `modes.py` — Track D: five role lenses (software-engineer,
+  ai-researcher, ai-architect, forward-deployed-engineer,
+  cybersecurity-engineer) + the deterministic router that proposes the
+  lens from mission text, phase, registry context, and profile.
+  Switching is journaled with its reason and never expands permissions.
+- `verify.py` — Track G: the verifier's verdict computation —
+  goal → needed evidence → accomplished (yes/no + proof) per criterion,
+  role-aware required-evidence checklists.
 - `demo.py` — scripted two-project human+AI session. `python demo.py`.
-- `tests/` — adversarial suite (spec §7).
+- `tests/` — adversarial suite (spec §7) plus plug-and-play, registry,
+  DAG, modes, profiles, verification-gate, skill-security, and
+  battle-hardening tests.
 
 ## Run
 

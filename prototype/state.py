@@ -67,6 +67,9 @@ def initial_snapshot(project_id: str, conversation_id: str) -> dict:
         "worker_budget_allocated": 0,  # Phase D: turns allocated to workers
         "worker_id": None,  # Phase D: set on worker Loops
         "scope": [],  # Phase D: worker file ownership (list of path prefixes)
+        "role_mode": None,  # Track D: active role lens {role, reason, source}
+        "verify_pass": None,  # Track G: journaled verifier verdict that passed
+        "verify_pending": None,  # Track G: {worker_id} while verifier runs
         "awaiting_approval": False,
         "awaiting_inspection": None,  # call_id or None
         "awaiting_operator": False,
@@ -97,6 +100,10 @@ def apply_event(snap: dict, ev: dict) -> None:
         snap["phase"] = "DEFINE"
         snap["plan"] = []
         snap["open_questions"] = []
+        # Track G: a new mission needs a fresh verification — a stale pass
+        # from the previous mission must never unlock REVIEW.
+        snap["verify_pass"] = None
+        snap["verify_pending"] = None
         snap["assumptions"] = []
         snap["contract_approved"] = False  # new contract needs new approval
         snap["scope"] = None
@@ -129,6 +136,23 @@ def apply_event(snap: dict, ev: dict) -> None:
     elif t == "skills_routed":
         snap["skills"] = d["skills"]
         snap["skill_trigger"] = d["trigger"]
+    # Track D: role lens routing. A lens, never permissions — it only changes
+    # which skill bodies the harness routes into the contract.
+    elif t == "role_mode":
+        snap["role_mode"] = {"role": d["role"], "reason": d.get("reason", ""),
+                             "source": d.get("source", "router")}
+    # Track G: verification lifecycle. Only a verifier worker's journaled
+    # verdict (verify_passed) unlocks REVIEW — never a builder claim.
+    elif t == "verify_started":
+        snap["verify_pending"] = {"worker_id": d["worker_id"], "ts": ev["ts"]}
+        snap["verify_pass"] = None
+    elif t == "verify_verdict":
+        snap["verify_pending"] = None
+    elif t == "verify_passed":
+        snap["verify_pass"] = {"worker_id": d["worker_id"],
+                               "verdict": d["verdict"], "ts": ev["ts"]}
+    elif t == "verify_failed":
+        snap["verify_pass"] = None
     elif t == "scope_changed":
         # Approvals never survive a scope change: invalidate, drop the
         # elevator, require a revised contract. A paused turn is discarded.

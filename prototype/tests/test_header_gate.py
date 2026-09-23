@@ -63,7 +63,7 @@ class TestTurnHeader(unittest.TestCase):
         self.assertEqual(phase, "PLAN")
         self.assertEqual(mode, "plan")  # opinion intent: read-only
         self.assertEqual(stance, "steel-man")
-        self.assertEqual(skills, "domain")
+        self.assertEqual(skills, "domain,mode-software-engineer")
 
     def test_omitted_header_is_rejected(self):
         loop, _ = make_loop(backend=HostileBackend(["omit_header"]))
@@ -166,7 +166,9 @@ class TestElevatorGate(unittest.TestCase):
         self.assertFalse((loop.sandbox.root / "other.py").exists())
         self.assertEqual(loop.state.snapshot["phase"], "BUILD")
 
-    def test_verify_to_review_needs_exit_zero(self):
+    def test_verify_to_review_needs_exit_zero_and_verifier_pass(self):
+        # Track G: exit 0 alone no longer unlocks REVIEW — the verifier
+        # worker's journaled pass verdict is required too.
         loop = self._loop_at_build()
         loop.run_user_turn("fix it now")
         loop.approve()
@@ -179,7 +181,8 @@ class TestElevatorGate(unittest.TestCase):
         ])
         loop.run_user_turn("verify it")
         self.assertEqual(loop.state.snapshot["phase"], "VERIFY")
-        # A VERIFY turn that runs a command with exit 0: elevator moves.
+        # A VERIFY turn that runs a command with exit 0: still stays —
+        # the gate waits for the verifier's journaled pass.
         loop.backend = ScriptedBackend([
             T(plan=["Verify"],
               tool_calls=[{"name": "run_command", "args": {"cmd": "true"}}],
@@ -188,6 +191,17 @@ class TestElevatorGate(unittest.TestCase):
                            "exercise the empty-password path itself."]),
         ])
         loop.run_user_turn("verify it")
+        self.assertEqual(loop.state.snapshot["phase"], "VERIFY")
+        self.assertTrue(any(e["type"] == "verify_gate_waiting"
+                            for e in loop.state.events))
+        # The verifier worker passes -> REVIEW unlocks.
+        from tests.common import drive_verification
+        res = drive_verification(
+            loop, evidence_links={"artifact exists: fix.py":
+                                  "tests/common.py"})
+        self.assertTrue(res["passed"], res.get("said"))
+        r = loop.request_phase("REVIEW", reason="verifier passed")
+        self.assertEqual(r["status"], "ok")
         self.assertEqual(loop.state.snapshot["phase"], "REVIEW")
 
     def test_contract_approval_resets_on_new_mission(self):

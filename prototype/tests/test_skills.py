@@ -19,7 +19,11 @@ class TestSkillStore(unittest.TestCase):
     def test_default_store_loads_all_skills(self):
         store = SkillStore.default()
         names = store.names()
-        self.assertEqual(len(names), 11)
+        # every pinned skill loads; count tracks the manifest, not a constant
+        import json
+        manifest = json.load(open(STORE_DIR / "manifest.json"))
+        self.assertEqual(len(names), len(manifest))
+        self.assertEqual(set(names), set(manifest))
         for n in names:
             body = store.get(n)
             self.assertIsInstance(body, str)

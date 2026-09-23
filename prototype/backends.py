@@ -306,6 +306,9 @@ class OllamaBackend(ModelBackend):
         self.num_predict = num_predict
         self.temperature = temperature
         self.calls: list[dict] = []
+        # Track C: consumed by Loop._record_egress -> journaled as an
+        # `egress` event (destination, bytes). None when no HTTP happened.
+        self.last_egress: dict | None = None
 
     def generate(self, contract_block, history, feedback=None,
                  temperature=None):
@@ -350,7 +353,11 @@ class OllamaBackend(ModelBackend):
             self.host + "/v1/chat/completions", data=body,
             headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            payload = json.loads(resp.read().decode())
+            raw = resp.read()
+            payload = json.loads(raw.decode())
+        # Track C: report the network I/O so the loop can journal it.
+        self.last_egress = {"destination": self.host + "/v1/chat/completions",
+                            "bytes_out": len(body), "bytes_in": len(raw)}
         return payload["choices"][0]["message"]["content"]
 
     @staticmethod

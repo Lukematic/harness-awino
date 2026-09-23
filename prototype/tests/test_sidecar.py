@@ -131,6 +131,27 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(e["workspace"], self.c.ws)
         self.assertIn("mcp", e)
 
+    def test_hello_auto_inits_fresh_workspace(self):
+        # Track A/H: session start in a fresh dir runs the full init flow
+        # automatically — no `awino init` was ever typed — and the ready
+        # event carries the one brief plain-language summary.
+        e = self.c.hello()
+        self.assertEqual(e["event"], "ready")
+        summary = e.get("auto_init")
+        self.assertIsInstance(summary, list, "ready event must carry auto_init")
+        joined = "\n".join(summary)
+        self.assertIn("Set up this project", joined)
+        self.assertNotIn("Traceback", joined)
+        ws = self.c.ws
+        self.assertTrue(os.path.isfile(os.path.join(ws, ".awino", "project.yaml")))
+        self.assertTrue(os.path.isdir(os.path.join(ws, ".venv")))
+        self.assertTrue(os.path.isfile(os.path.join(ws, "justfile")))
+        self.assertTrue(os.path.isdir(os.path.join(ws, ".awino", "registry")))
+        # second hello in the same workspace: already a project -> silent
+        e2 = self.c.hello()
+        self.assertEqual(e2["event"], "ready")
+        self.assertIsNone(e2.get("auto_init"))
+
     def test_command_before_hello_fails_closed(self):
         c2 = SidecarClient()
         try:

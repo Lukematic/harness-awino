@@ -505,6 +505,14 @@ def compile_contract(state, turn_no: int | None = None,
     A(f"offered tools: {', '.join(offered)}")
     A(f"consequential (need human approval): {', '.join(consequential) or '(none)'}")
     A("")
+    # Track D: the role lens section. The lens is perspective + evidence —
+    # it never changes the offered tools above.
+    rm = s.get("role_mode") or {}
+    if rm.get("role"):
+        from modes import role_contract_section
+        A(role_contract_section(rm["role"], rm.get("reason", ""),
+                                offered, offered))
+        A("")
     A(f"## CONTEXT\nproject: {s['project_id']} | turn: {turn_no} "
       f"| knowledge: {knowledge[0]}/{knowledge[1]}")
     A("")
@@ -529,11 +537,29 @@ def compile_contract(state, turn_no: int | None = None,
     A("## SKILLS (routed by harness — full bodies, not fetched by model)")
     # Phase C: mandatory loading — an unknown routed skill name raises
     # (fail-closed) instead of silently skipping.
+    store = get_skill_store()
     for name in s.get("skills", []):
-        body = get_skill_store().get_verified(name)
+        body = store.get_verified(name)
         A(f"### {name}\n{body}")
     if not s.get("skills"):
         A("(none routed)")
+    A("")
+    # Track C: network declarations surface pre-turn. A skill that needs
+    # network MUST declare it; undeclared egress is flagged in the journal.
+    A("## NETWORK (declared by routed skills — surfaced before the turn)")
+    declared = []
+    for name in s.get("skills", []):
+        decl = store.network_declaration(name)
+        if decl["network"] == "declared":
+            dests = ", ".join(decl["destinations"]) or "(destinations unstated)"
+            declared.append(f"- {name}: network DECLARED -> {dests}"
+                            + (f" ({decl['why']})" if decl["why"] else ""))
+    if declared:
+        for line in declared:
+            A(line)
+    else:
+        A("(all routed skills: network none — any egress this turn is "
+          "flagged undeclared in the journal)")
     A("")
     A("## STANCE (routed by harness code — never model-chosen)")
     chain = s.get("stance_chain") or [s.get("stance", "advisor")]
@@ -575,6 +601,13 @@ def compile_contract(state, turn_no: int | None = None,
     A("")
     A("## STOP CONDITION")
     A("Mission completes only when all criteria verify, or the loop hits a terminal budget state.")
+    A("")
+    A("## CALIBRATION (the Reasoning Partner rule)")
+    A("Label every substantive claim in progress_delta and assumptions with one of:")
+    A("[Certain] — directly evidenced by a tool result, file read, or test output this turn;")
+    A("[Likely] — the best-supported inference, but not directly observed;")
+    A("[Guessing] — a working hypothesis with no evidence yet.")
+    A("Never present a [Guessing] as a [Certain]. Unlabeled claims are treated as [Guessing].")
     A("")
     A("## YOUR OUTPUT — TurnContract (JSON object, exact fields)")
     A('{"header": str (echo the header above EXACTLY), '

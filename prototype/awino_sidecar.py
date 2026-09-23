@@ -186,6 +186,9 @@ class OpenAICompatibleBackend(OllamaBackend):
         self.timeout = timeout
         self.num_predict = num_predict
         self.calls: list[dict] = []
+        # Track C: consumed by Loop._record_egress -> journaled as an
+        # `egress` event (destination, bytes). None when no HTTP happened.
+        self.last_egress: dict | None = None
 
     def _chat(self, prompt: str, system: str) -> str:
         body = json.dumps({
@@ -205,11 +208,15 @@ class OpenAICompatibleBackend(OllamaBackend):
                                      headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                payload = json.loads(resp.read().decode())
+                raw = resp.read()
+                payload = json.loads(raw.decode())
         except urllib.error.HTTPError as e:
             # 401/403/429/5xx -> generate() catches -> safe fallback turn.
             # The key (if any) is never included in the fallback or logs.
             raise RuntimeError(f"endpoint HTTP {e.code}")
+        # Track C: report the network I/O so the loop can journal it.
+        self.last_egress = {"destination": self.chat_url,
+                            "bytes_out": len(body), "bytes_in": len(raw)}
         return payload["choices"][0]["message"]["content"]
 
 
@@ -229,6 +236,9 @@ class AnthropicBackend(OllamaBackend):
         self.timeout = timeout
         self.num_predict = num_predict
         self.calls: list[dict] = []
+        # Track C: consumed by Loop._record_egress -> journaled as an
+        # `egress` event (destination, bytes). None when no HTTP happened.
+        self.last_egress: dict | None = None
 
     def _chat(self, prompt: str, system: str) -> str:
         body = json.dumps({
@@ -244,9 +254,13 @@ class AnthropicBackend(OllamaBackend):
                                      headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                payload = json.loads(resp.read().decode())
+                raw = resp.read()
+                payload = json.loads(raw.decode())
         except urllib.error.HTTPError as e:
             raise RuntimeError(f"anthropic HTTP {e.code}")
+        # Track C: report the network I/O so the loop can journal it.
+        self.last_egress = {"destination": self.messages_url,
+                            "bytes_out": len(body), "bytes_in": len(raw)}
         return payload["content"][0]["text"]
 
 
@@ -1018,6 +1032,7 @@ class Sidecar:
         self._cancel = threading.Event()
         self._worker: threading.Thread | None = None
         self._turn_out: queue.Queue = queue.Queue()
+        self._pending_says: list = []  # per-command _say() buffer
         self._mcp_clients: list[McpClient] = []
         self._mcp_status: list[dict] = []
         # Scope #4 state: provider binding, mode overlay, skill persona.
@@ -1167,12 +1182,29 @@ class Sidecar:
             "key": key_status,
         })
         self._register_mcp_servers(cmd.get("mcp_servers") or [])
+        # Track A/H: auto-init on session start. If the workspace is not an
+        # awino project yet (.awino/project.yaml absent), run the full init
+        # flow now — the user never has to type `awino init` by hand — and
+        # carry the one brief plain-language summary in the ready event.
+        # (First-message mission start re-runs the idempotent checklist
+        # anyway via _bootstrap_and_registry.) Never breaks hello.
+        auto_init_summary = None
+        try:
+            from bootstrap import session_start_auto_init
+            auto_init = session_start_auto_init(wsp)
+            if auto_init:
+                auto_init_summary = auto_init["summary"]
+                self.loop.state.record("auto_init", {
+                    "ok": auto_init["ok"], "summary": auto_init_summary})
+        except Exception:  # noqa: BLE001 — session start must proceed
+            auto_init_summary = None
         _emit({"event": "ready", "protocol": PROTOCOL, "project": project,
                "provider": self.provider, "model": self.model_desc,
                "workspace": str(wsp), "mcp": self._mcp_status,
                "binding": {k: v for k, v in self._binding.items()},
                "modes": self._modes_summary(),
-               "active_mode": self._active_mode_info()})
+               "active_mode": self._active_mode_info(),
+               "auto_init": auto_init_summary})
 
     # --------------------------------------------- scoped provider bindings
     def _read_providers_file(self) -> dict | None:
@@ -2204,6 +2236,15 @@ class Sidecar:
         skills = self._project_skills_section()
         if skills:
             parts.append(skills)
+        # Track B: registry state loads into the contract on every turn.
+        reg = getattr(self.loop, "registry", None)
+        if reg is not None:
+            try:
+                section = reg.contract_section()
+                if section:
+                    parts.append(section)
+            except Exception:
+                pass
         return "\n\n".join(p for p in parts if p)
 
     def _read_context(self) -> str:
@@ -2393,6 +2434,17 @@ class Sidecar:
         self._emit_turn_result(result)
 
     # --------------------------------------------------------------- command
+    def _say(self, kind: str, text: str) -> None:
+        """Queue a human-readable sidecar message for the chat UI.
+
+        Command handlers run inside _do_command, which emits exactly one
+        "command_result" event per command. _say buffers the message; the
+        dispatcher merges buffered messages into the result dict's "said"
+        (and "says") fields, so clients always get one event per command
+        and nothing the harness says is lost.
+        """
+        self._pending_says.append({"kind": kind, "message": text})
+
     def _do_command(self, cmd: dict) -> None:
         name = cmd.get("name")
         args = cmd.get("args") or {}
@@ -2418,6 +2470,13 @@ class Sidecar:
             "seeds_list": lambda a: {"seeds": self._list_seeds()},
             "mission_from_seed": self._cmd_mission_from_seed,
             "seed_save": self._cmd_seed_save,
+            "bootstrap": self._cmd_bootstrap,
+            "registry_audit": self._cmd_registry_audit,
+            "mode": self._cmd_role_mode,
+            "plan": self._cmd_plan,
+            "verify_begin": self._cmd_verify_begin,
+            "verify_turn": self._cmd_verify_turn,
+            "verify_complete": self._cmd_verify_complete,
             "context_list": lambda a: {"files": self._context_files()},
             "context_add": self._cmd_context_add,
             "context_set": self._cmd_context_set,
@@ -2437,6 +2496,7 @@ class Sidecar:
             _emit({"event": "command_result", "name": name, "ok": False,
                    "result": {"error": f"unknown command {name!r}"}})
             return
+        self._pending_says = []
         try:
             result = fn(args)
             ok = not (isinstance(result, dict)
@@ -2447,6 +2507,14 @@ class Sidecar:
             traceback.print_exc(file=sys.stderr)
             result = {"error": f"{type(e).__name__}: {e}"}
             ok = False
+        # Merge any _say() messages queued by the handler into the result:
+        # the chat UI reads "said"; structured clients can read "says".
+        if self._pending_says and isinstance(result, dict):
+            extra = "\n".join(s["message"] for s in self._pending_says)
+            prev = result.get("said")
+            result["said"] = (extra + "\n" + prev) if prev else extra
+            result["says"] = self._pending_says
+        self._pending_says = []
         _emit({"event": "command_result", "name": name, "ok": ok,
                "result": result})
 
@@ -2515,6 +2583,10 @@ class Sidecar:
         except Exception as e:  # noqa: BLE001
             return {"status": "error",
                     "said": f"mission failed: {type(e).__name__}: {e}"}
+        # Track A + B: project bootstrap + memory registry attach, on every
+        # mission start. Bootstrap is idempotent and never raises; registry
+        # continuity survives persona/mode changes (it lives on the project).
+        self._bootstrap_and_registry(text, criteria)
         # A new mission clears mission-scoped mode overlays and any active
         # persona: both were invoked for the previous mission's context.
         if self._mode_overlay and self._mode_overlay.get("scope") == "mission":
@@ -2531,6 +2603,93 @@ class Sidecar:
             self._persona = None
         return {"status": "ok", "mission": {"id": m["id"], "kind": m["kind"],
                                             "revision": m["revision"]}}
+
+    def _bootstrap_and_registry(self, text: str, criteria: list) -> None:
+        """Track A + B: run the startup checklist, attach the venv and the
+        memory registry, import seed checklist tasks, journal the result.
+        Never raises — bootstrap failures become journal breadcrumbs."""
+        from bootstrap import run_startup_checklist
+        from registry import Registry
+        ws = self.workspace
+        try:
+            report = run_startup_checklist(ws, mission_text=text,
+                                           criteria=criteria)
+        except Exception as e:  # noqa: BLE001 — absolute last resort
+            self.loop.state.record("bootstrap_failed",
+                                   {"error": f"{type(e).__name__}: {e}"})
+            return
+        # Track A: point run_command at the project venv (if bootstrap made
+        # or found one) so commands use the venv python automatically.
+        if report.get("venv_bin"):
+            self.loop.sandbox.venv_bin = Path(report["venv_bin"])
+        # Track B: auto-create the registry on first mission; seed checklist
+        # tasks import into the tracker; every item journals as evidence.
+        reg = Registry(ws / ".awino")
+        reg.ensure()
+        self.loop.registry = reg
+        try:
+            n = reg.import_seed_tasks(report.get("seed_tasks", []))
+        except Exception:
+            n = 0
+        # Track D: route the role lens from the mission text + the
+        # configured profile (project.yaml). Surfaced in the contract with
+        # its reason; the user can override with the `mode` command.
+        # Track F: seed the initial task DAG from the role's decomposition
+        # playbook (idempotent — skips when tasks already exist).
+        try:
+            import modes as _modes
+            from bootstrap import read_project_yaml
+            prof = _modes.DEFAULT_ROLE
+            try:
+                prof = read_project_yaml(ws / ".awino" / "project.yaml"
+                                         ).get("profile") or prof
+            except Exception:
+                pass
+            proposal = self.loop.route_role(mission_text=text,
+                                            configured_profile=prof,
+                                            force=True)
+            role = proposal.get("role", prof)
+            mid = (self.loop.state.snapshot.get("mission") or {}).get("id", "")
+            dag_tasks = _modes.compile_initial_dag(reg, text, role, mid)
+            lines_extra = (f"role lens: {role} ({proposal.get('source')}; "
+                           f"{proposal.get('reason', '')[:100]})")
+            self.loop.state.record("dag_compiled",
+                                   {"role": role, "tasks": len(dag_tasks),
+                                    "mission_id": mid})
+            self.loop.state.persist_snapshot()
+        except Exception as e:  # noqa: BLE001 — routing never breaks bootstrap
+            lines_extra = f"role/DAG skipped: {type(e).__name__}"
+            dag_tasks = []
+        lines = ["project bootstrap:"]
+        for c in report["checks"]:
+            lines.append(f"- [{c['status']}] {c['name']}: {c['detail']}")
+        lines.append(f"seed tasks imported into registry: {n}")
+        lines.append(lines_extra)
+        lines.append(f"initial DAG tasks: {len(dag_tasks)}")
+        fails = [c for c in report["checks"] if c["status"] == "fail"]
+        warns = [c for c in report["checks"] if c["status"] == "warn"]
+        self.loop.state.record("bootstrap_complete", {
+            "ok": report["ok"],
+            "checks": [(c["name"], c["status"]) for c in report["checks"]],
+            "venv_bin": report.get("venv_bin"),
+            "seed_tasks_imported": n,
+            "breadcrumbs": report.get("breadcrumbs", []),
+        })
+        for crumb in report.get("breadcrumbs", []):
+            try:
+                reg.add_breadcrumb((self.loop.state.snapshot.get("mission")
+                                    or {}).get("id", "?"),
+                                   f"bootstrap: {crumb}")
+            except Exception:
+                pass
+        lines = ["project bootstrap:"]
+        for c in report["checks"]:
+            lines.append(f"- [{c['status']}] {c['name']}: {c['detail']}")
+        lines.append(f"seed tasks imported into registry: {n}")
+        if warns or fails:
+            lines.append("warnings/failures: " + "; ".join(
+                f"{c['name']}: {c['detail']}" for c in warns + fails))
+        self._say("bootstrap", "\n".join(lines))
 
     def _cmd_seed_save(self, args: dict) -> dict:
         name = args.get("name", "")
@@ -2556,8 +2715,114 @@ class Sidecar:
         self.loop.state.record("seed_saved",
                                {"name": name, "file": p.name,
                                 "overwrote": existed})
+        # Track B: seed_save also registers tasks — the seed becomes a task
+        # in the registry tracker so progress on it is tracked.
+        reg = getattr(self.loop, "registry", None)
+        if reg is not None:
+            try:
+                reg.add_task(f"execute seed '{name}' ({p.name})",
+                             source=f"seed:{slug}", state="open")
+            except Exception:
+                pass
         self.loop.state.persist_snapshot()
         return {"status": "ok", "seed": p.name, "overwrote": existed}
+
+    def _cmd_bootstrap(self, args: dict) -> dict:
+        """Re-run the project startup checklist on demand (Track A)."""
+        from bootstrap import run_startup_checklist
+        report = run_startup_checklist(self.workspace)
+        if report.get("venv_bin"):
+            self.loop.sandbox.venv_bin = Path(report["venv_bin"])
+        return {"status": "ok",
+                "checks": report["checks"],
+                "ok": report["ok"],
+                "venv_bin": report.get("venv_bin"),
+                "breadcrumbs": report.get("breadcrumbs", [])}
+
+    def _cmd_registry_audit(self, args: dict) -> dict:
+        """Report every registry belief as fact/assumption/outdated (Track B)."""
+        reg = getattr(self.loop, "registry", None)
+        if reg is None or not reg.exists:
+            return {"status": "error",
+                    "said": "no registry yet — start a mission first"}
+        audit = reg.audit()
+        self._say("registry_audit", audit["summary"])
+        return {"status": "ok", **audit}
+
+    # -------------------------------- Track D/F/G: role, plan, verification
+    def _cmd_role_mode(self, args: dict) -> dict:
+        """User override of the role lens. `mode` with no role reports."""
+        import modes as _modes
+        role = (args.get("role") or "").strip()
+        if not role:
+            cur = self.loop.active_role() or {}
+            return {"status": "ok", "role": cur.get("role"),
+                    "reason": cur.get("reason"), "source": cur.get("source"),
+                    "available": list(_modes.ROLE_IDS)}
+        res = self.loop.set_role_mode(role, args.get("reason", "user override"),
+                                      source="override")
+        if res.get("status") == "ok":
+            self._say("mode", f"role lens: {role} — {res.get('reason')}")
+        return res
+
+    def _cmd_plan(self, args: dict) -> dict:
+        """Show the mission's task DAG simply: next, blocked, by what."""
+        reg = getattr(self.loop, "registry", None)
+        if reg is None or not reg.exists:
+            return {"status": "error",
+                    "said": ("no registry yet — start a mission first; the "
+                             "task DAG is compiled at mission start")}
+        nxt = reg.whats_next(limit=10)
+        blocked = reg.unblock_report()
+        try:
+            order = reg.topological_order()
+        except ValueError as e:
+            order = [f"cycle: {e}"]
+        lines = ["task DAG:"]
+        lines.append(f"- progress: {reg.dag_summary()}")
+        lines.append("- what's next (unblocked):")
+        for t in nxt:
+            lines.append(f"  - {t['text'][:80]} (id: {t['id']})")
+        if not nxt:
+            lines.append("  (nothing unblocked — all remaining work is blocked "
+                         "or done)")
+        if blocked:
+            lines.append("- blocked, and by what:")
+            for b in blocked[:10]:
+                by = ", ".join(x["text"][:50] for x in b["blocked_by"])
+                lines.append(f"  - {b['task']['text'][:80]} blocked by: {by}")
+        self._say("plan", "\n".join(lines))
+        return {"status": "ok", "next": [t["id"] for t in nxt],
+                "blocked": [{"id": b["task"]["id"],
+                             "by": [x["id"] for x in b["blocked_by"]]}
+                            for b in blocked],
+                "order": order}
+
+    def _cmd_verify_begin(self, args: dict) -> dict:
+        """Spawn the verifier worker (Track G)."""
+        return self.loop.begin_verification()
+
+    def _cmd_verify_turn(self, args: dict) -> dict:
+        """Run the verifier worker's turn.
+
+        args: {evidence_links: {criterion: path}, recipe_result: {...}}
+        Defaults: project_root = this workspace.
+        """
+        ctx = {"evidence_links": args.get("evidence_links", {}),
+               "recipe_result": args.get("recipe_result"),
+               "project_root": str(self.workspace)}
+        res = self.loop.run_verifier_turn(args.get("worker_id", ""), ctx)
+        if res.get("status") == "ok":
+            verdict = res.get("verdict", [])
+            yes = sum(1 for e in verdict if e.get("accomplished") == "yes")
+            self._say("verify_turn",
+                     f"verifier verdict: {yes}/{len(verdict)} evidenced "
+                     f"({'PASS' if res.get('passed') else 'FAIL'})")
+        return res
+
+    def _cmd_verify_complete(self, args: dict) -> dict:
+        """Collect the verifier verdict; pass unlocks REVIEW, fail -> BUILD."""
+        return self.loop.complete_verification(args.get("worker_id", ""))
 
     # --------------------------------------------------------------- context
     def _context_files(self) -> list[dict]:

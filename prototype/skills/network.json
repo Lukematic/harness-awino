@@ -1,0 +1,38 @@
+{
+  "_comment": "Network declarations for pinned skills (Track C: skill security hardening). Absence of an entry means network:none. A skill that needs network access MUST declare it here; the declaration is surfaced in the compiled turn contract BEFORE the turn runs, and every network call during a turn is journaled as an `egress` event (turn, skill, destination, bytes). An egress event for a skill declaring network:none is flagged declared:false in the journal.",
+  "mode-ai-architect": {
+    "destinations": [],
+    "network": "none",
+    "why": "pure prompt text; no network needed"
+  },
+  "mode-ai-researcher": {
+    "destinations": [],
+    "network": "none",
+    "why": "pure prompt text; no network needed"
+  },
+  "mode-cybersecurity-engineer": {
+    "destinations": [],
+    "network": "none",
+    "why": "pure prompt text; no network needed"
+  },
+  "mode-forward-deployed-engineer": {
+    "destinations": [],
+    "network": "none",
+    "why": "pure prompt text; no network needed"
+  },
+  "mode-software-engineer": {
+    "destinations": [],
+    "network": "none",
+    "why": "pure prompt text; no network needed"
+  },
+  "project-bootstrap": {
+    "destinations": [],
+    "network": "none",
+    "why": "Local project setup only: venv creation, file scaffolding, local package installs. No network calls."
+  },
+  "verify": {
+    "destinations": [],
+    "network": "none",
+    "why": "pure prompt text; no network needed"
+  }
+}
