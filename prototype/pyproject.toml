@@ -23,9 +23,11 @@ py-modules = [
     "contract",
     "contract_loop",
     "demo",
+    "judges",
     "loop",
     "state",
     "stances",
+    "synthesis",
     "tools",
 ]
 packages = ["skills"]

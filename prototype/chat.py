@@ -16,7 +16,8 @@ import sys
 from pathlib import Path
 
 from loop import Loop
-from backends import EchoBackend, OllamaBackend, ScriptedJudge
+from backends import EchoBackend, OllamaBackend
+from judges import build_judge_panel
 
 
 def make_backend():
@@ -45,6 +46,8 @@ HELP = """\
 /replay [n]              show last n events (default 10)
 /journal                 show the effect journal (ordered tool executions)
 /learnings               list the learning record
+/synthesize [n]          synthesize learning n into a verified skill
+                         (refused unless sandbox-verified; latest if n omitted)
 /rollback <seq>          rollback to sequence number (operator only)
 /help                    this text
 /quit                    exit (state is saved; restart resumes)
@@ -63,7 +66,7 @@ def parse_mission_arg(arg: str):
 
 def main() -> None:
     project = "inbox"
-    loop = Loop(HOME, project, make_backend(), ScriptedJudge())
+    loop = Loop(HOME, project, make_backend(), build_judge_panel())
     print(f"awino chat — home={HOME} project={project}")
     print("Type /help for commands. Ctrl-C/D exits safely; restart resumes.\n")
     while True:
@@ -88,7 +91,7 @@ def main() -> None:
                     print("usage: /project <id>")
                     continue
                 project = arg
-                loop = Loop(HOME, project, make_backend(), ScriptedJudge())
+                loop = Loop(HOME, project, make_backend(), build_judge_panel())
                 st = loop.status()
                 print(f"switched to project '{project}' "
                       f"(phase={st['phase']}, mission={st['mission']!r})")
@@ -128,6 +131,19 @@ def main() -> None:
                     print("(no learnings recorded yet)")
                 for l in learnings:
                     print(f"[{l['kind']}] {l['text']}")
+            elif cmd == "synthesize":
+                try:
+                    idx = int(arg) if arg else -1
+                except ValueError:
+                    print("usage: /synthesize [n]  (learning index, default: latest)")
+                    continue
+                r = loop.synthesize_learning(idx)
+                if r["status"] == "admitted":
+                    print(f"admitted skill {r['name']} "
+                          f"(sha256 {r['sha256'][:16]}..., "
+                          f"{len(r['checks'])} checks passed)")
+                else:
+                    print(f"refused [{r['code']}]: {r['detail']}")
             elif cmd == "approve":
                 print(loop.approve(arg or None)["said"])
             elif cmd == "deny":
