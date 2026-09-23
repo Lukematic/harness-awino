@@ -26,24 +26,33 @@ All custom properties are prefixed `--awino-`. Every usage pairs with a VS Code 
 
 ### 1.1 Palette
 
-| Token | Dark value (`body.vscode-dark`) | Light value (`body.vscode-light`) | Maps to / used for |
+| Token | Vibranium value (`body.awino-vibranium`) | Savanna value (`body.awino-savanna`) | Maps to / used for |
 |---|---|---|---|
-| `--awino-bg` | `#0B101B` | `var(--vscode-sideBar-background)` | chat body background (fallback when no VS Code var) |
-| `--awino-bg-2` | `#101827` | `var(--vscode-editor-background)` | message cards, approval cards |
-| `--awino-bg-3` | `#162032` | `var(--vscode-input-background)` | input bar, code block headers |
+| `--awino-bg` | `#111A2E` | `#F6F1E5` | chat body background |
+| `--awino-bg-2` | `#172036` | `#FFFEFA` | message cards, approval cards |
+| `--awino-bg-3` | `#1E2A45` | `#ECE4D0` | input bar, code block headers |
 | `--awino-vibranium` | `#00C6FF` | `#0B7FA6` | primary accent: links, phase chip, Send button, streaming caret |
 | `--awino-vibranium-deep` | `#0B7FA6` | `#0B5A78` | borders, hover states |
-| `--awino-vibranium-dim` | `rgba(0,198,255,.12)` | `rgba(11,127,166,.10)` | chip backgrounds, focus rings, progress-row backgrounds |
+| `--awino-vibranium-dim` | `rgba(0,198,255,.12)` | `rgba(11,127,166,.12)` | chip backgrounds, focus rings, progress-row backgrounds |
 | `--awino-gold` | `#D4A937` | `#8A6D1F` | secondary accent: mode chip, approval-card chevron band, bead indicators |
 | `--awino-gold-bright` | `#F0C94A` | `#8A6D1F` | highlights, active bead glow |
-| `--awino-gold-dim` | `rgba(212,169,55,.12)` | `rgba(138,109,31,.10)` | mode chip background, thinking-section border |
-| `--awino-text` | `#DCE7F7` | `var(--vscode-foreground)` | primary text fallback |
-| `--awino-muted` | `#8B98B0` | `var(--vscode-descriptionForeground)` | secondary text fallback |
+| `--awino-gold-dim` | `rgba(212,169,55,.12)` | `rgba(138,109,31,.14)` | mode chip background, thinking-section border |
+| `--awino-text` | `#DCE7F7` | `#2B2517` | primary text fallback |
+| `--awino-muted` | `#8B98B0` | `#77694F` | secondary text fallback |
 | `--awino-ok` | `#4EC9B0` | `#1E7E5A` | success (keeps VS Code testing-green semantics) |
 | `--awino-danger` | `#F14C4C` | `#C42B2B` | errors (keeps VS Code testing-red semantics) |
 | `--awino-warn` | `#CCA700` | `#8A6D00` | warnings (unchanged from today) |
 
-Dark overrides are scoped: `body.vscode-dark { --awino-bg: #0B101B; ... }`, `body.vscode-light { --awino-vibranium: #0B7FA6; ... }`. The base `:root` sets the dark values (VS Code webviews default to dark in most operator setups; the explicit light block keeps light themes professional).
+### 1.1a Theme variants (user refinement, 2026-09-23 — supersedes the §10 light-theme non-goal)
+
+Two Wakandan variants ship in 0.4.0, both in the same design language (§1.2 motifs: bead dots, chevron bands, geometric edges):
+
+- **Vibranium** (dark): the palette above, lifted slightly from the first draft (`#0B101B` → `#111A2E`, `#101827` → `#172036`, `#162032` → `#1E2A45`) — deep blue-black, no pitch-black heaviness. Vibranium blue `#00C6FF` and gold `#D4A937` accents unchanged.
+- **Savanna** (light): warm light variant — sand surfaces (`#F6F1E5` / `#FFFEFA` / `#ECE4D0`), dark warm text `#2B2517`, deeper vibranium `#0B7FA6` and gold `#8A6D1F` for contrast on light.
+
+**Selection:** the chat webview defaults to the VS Code color theme — `body.vscode-light` → Savanna, otherwise Vibranium (the `vscode-*` blocks carry these as no-JS fallbacks). A small toggle in the chat header (`#theme-toggle`, "◐ Savanna/Vibranium") switches variants manually; the explicit `body.awino-savanna` / `body.awino-vibranium` classes sit later in the stylesheet than the `vscode-*` blocks so the manual choice wins at equal specificity. The manual choice persists in webview state (`vscode.setState({awinoTheme})`) for the webview's lifetime; it is a display preference only and is never journaled.
+
+**Scope:** the chat UI gets the full two-variant treatment. The Models panel (§2.11) and tree views (§2.10) get light-touch consistency only (existing token accents, no retheme).
 
 ### 1.2 Motifs (spare, never cluttered)
 
@@ -376,7 +385,7 @@ New screenshots appended to `proof/vscode_gui/`: `16_streaming_midturn.png`, `17
 - No markdown tables, no LaTeX, no mermaid (subset is §4.2, frozen).
 - No webview state persistence across reloads (streaming cards rebuild from `turn_result` on reconnect — same as today).
 - No changes to the approval decision path (modal stays authoritative), the contract pipeline, judges, or journaling semantics.
-- No light-theme background artwork — light theme gets the professional token set, not the full Wakandan treatment (dark is the showcase).
+- No light-theme background artwork — superseded 2026-09-23: Savanna is a full Wakandan light variant (§1.1a), not a plain token set.
 
 ## 11. Risks
 

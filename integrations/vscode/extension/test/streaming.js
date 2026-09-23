@@ -36,30 +36,70 @@ StubEl.prototype.setAttribute = function (k, v) { this[k] = v; };
 StubEl.prototype.getAttribute = function (k) { return this[k]; };
 StubEl.prototype.querySelectorAll = function () { return []; };
 
-const ids = {};
-["messages", "input", "send", "stop", "statusline", "banner", "jump-latest"].forEach(function (id) {
-  const e = new StubEl("div");
-  e.id = id;
-  if (id === "jump-latest") e.hidden = true; // chat.html ships it hidden
-  ids[id] = e;
-});
-const messageListeners = [];
-global.window = {
-  addEventListener: function (t, fn) { if (t === "message") messageListeners.push(fn); }
+// Minimal classList (add/remove/contains/toggle), synced into className.
+function StubClassList(el) { this._el = el; this._set = {}; }
+StubClassList.prototype._sync = function () {
+  this._el.className = Object.keys(this._set).filter(function (k) { return this._set[k]; }, this).join(" ");
 };
-global.document = {
-  getElementById: function (id) { return ids[id] || null; },
-  createElement: function (tag) { return new StubEl(tag); },
-  createTextNode: function (t) { return { nodeType: 3, textContent: String(t), parentNode: null }; }
+StubClassList.prototype.add = function () {
+  for (let i = 0; i < arguments.length; i++) this._set[arguments[i]] = true;
+  this._sync();
 };
-const posted = [];
-global.acquireVsCodeApi = function () {
-  return { postMessage: function (m) { posted.push(m); } };
+StubClassList.prototype.remove = function () {
+  for (let i = 0; i < arguments.length; i++) delete this._set[arguments[i]];
+  this._sync();
 };
+StubClassList.prototype.contains = function (c) { return !!this._set[c]; };
+StubClassList.prototype.toggle = function (c) {
+  if (this.contains(c)) this.remove(c); else this.add(c);
+  return this.contains(c);
+};
+const _stubElInit = StubEl;
+StubEl = function (tag) { _stubElInit.call(this, tag); this.classList = new StubClassList(this); };
+StubEl.prototype = _stubElInit.prototype;
 
-require("../webview/chat.js"); // boots the IIFE against the shim
-
-const messages = ids["messages"];
+let ids, messageListeners, posted, messages, bodyEl, webviewState;
+function boot(bodyClasses, initialState) {
+  ids = {};
+  ["messages", "input", "send", "stop", "statusline", "banner", "jump-latest",
+   "theme-toggle", "theme-name"].forEach(function (id) {
+    const e = new StubEl("div");
+    e.id = id;
+    if (id === "jump-latest") e.hidden = true; // chat.html ships it hidden
+    ids[id] = e;
+  });
+  messageListeners = [];
+  posted = [];
+  webviewState = Object.assign({}, initialState || {});
+  bodyEl = new StubEl("body");
+  (bodyClasses || []).forEach(function (c) { bodyEl.classList.add(c); });
+  global.window = {
+    addEventListener: function (t, fn) { if (t === "message") messageListeners.push(fn); }
+  };
+  global.document = {
+    body: bodyEl,
+    getElementById: function (id) { return ids[id] || null; },
+    createElement: function (tag) { return new StubEl(tag); },
+    createTextNode: function (t) { return { nodeType: 3, textContent: String(t), parentNode: null }; }
+  };
+  global.acquireVsCodeApi = function () {
+    return {
+      postMessage: function (m) { posted.push(m); },
+      getState: function () { return webviewState; },
+      // NB: VS Code copies state on setState; snapshot first so a caller
+      // passing the live getState() object (as chat.js does) isn't wiped.
+      setState: function (s) {
+        const snap = Object.assign({}, s);
+        Object.keys(webviewState).forEach(function (k) { delete webviewState[k]; });
+        Object.assign(webviewState, snap);
+      }
+    };
+  };
+  delete require.cache[require.resolve("../webview/chat.js")];
+  require("../webview/chat.js"); // boots the IIFE against the shim
+  messages = ids["messages"];
+}
+boot([]);
 function fire(payload) {
   messageListeners.forEach(function (fn) { fn({ data: { type: "event", payload: payload } }); });
 }
@@ -198,6 +238,28 @@ ok(subtreeHtml(legacy).indexOf("<table") >= 0, "legacy tool table fallback prese
 // 12. stop posts the stop verb
 ids["stop"].fire("click", {});
 ok(posted.length === 1 && posted[0].type === "stop", "stop button posts {type:stop}");
+
+// 13. theme variants (refinement 2026-09-23): vibranium default, toggle, savanna, persistence
+ok(bodyEl.classList.contains("awino-vibranium"), "default theme is vibranium when no vscode-light class");
+ok(!bodyEl.classList.contains("awino-savanna"), "savanna not applied by default in dark");
+ok(ids["theme-name"].textContent === "Vibranium", "toggle label shows the current variant");
+ids["theme-toggle"].fire("click");
+ok(bodyEl.classList.contains("awino-savanna"), "toggle switches body to savanna");
+ok(!bodyEl.classList.contains("awino-vibranium"), "vibranium removed after toggle to savanna");
+ok(ids["theme-name"].textContent === "Savanna", "toggle label updates to Savanna");
+ok(webviewState.awinoTheme === "savanna", "manual choice persisted in webview state");
+ids["theme-toggle"].fire("click");
+ok(bodyEl.classList.contains("awino-vibranium"), "toggle switches back to vibranium");
+ok(webviewState.awinoTheme === "vibranium", "state updated on second toggle");
+
+// 14. light VS Code theme defaults to savanna; saved override wins
+boot(["vscode-light"]);
+ok(bodyEl.classList.contains("awino-savanna"), "vscode-light defaults to savanna");
+ok(!bodyEl.classList.contains("awino-vibranium"), "vibranium not applied for light default");
+ok(ids["theme-name"].textContent === "Savanna", "label follows savanna default");
+boot(["vscode-light"], { awinoTheme: "vibranium" });
+ok(bodyEl.classList.contains("awino-vibranium"), "saved manual override wins over vscode-light default");
+ok(ids["theme-name"].textContent === "Vibranium", "label follows saved override");
 
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

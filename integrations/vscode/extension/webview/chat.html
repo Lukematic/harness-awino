@@ -16,9 +16,9 @@
    * ============================================================ */
   :root {
     color-scheme: dark;
-    --awino-bg: #0B101B;
-    --awino-bg-2: #101827;
-    --awino-bg-3: #162032;
+    --awino-bg: #111A2E;
+    --awino-bg-2: #172036;
+    --awino-bg-3: #1E2A45;
     --awino-vibranium: #00C6FF;
     --awino-vibranium-deep: #0B7FA6;
     --awino-vibranium-dim: rgba(0,198,255,.12);
@@ -40,9 +40,9 @@
   }
   body.vscode-dark {
     color-scheme: dark;
-    --awino-bg: #0B101B;
-    --awino-bg-2: #101827;
-    --awino-bg-3: #162032;
+    --awino-bg: #111A2E;
+    --awino-bg-2: #172036;
+    --awino-bg-3: #1E2A45;
     --awino-vibranium: #00C6FF;
     --awino-vibranium-deep: #0B7FA6;
     --awino-vibranium-dim: rgba(0,198,255,.12);
@@ -63,26 +63,80 @@
   }
   body.vscode-light {
     color-scheme: light;
-    --awino-bg: var(--vscode-sideBar-background, #FFFFFF);
-    --awino-bg-2: var(--vscode-editor-background, #FFFFFF);
-    --awino-bg-3: var(--vscode-input-background, #F3F3F3);
+    --awino-bg: #F6F1E5;
+    --awino-bg-2: #FFFEFA;
+    --awino-bg-3: #ECE4D0;
     --awino-vibranium: #0B7FA6;
     --awino-vibranium-deep: #0B5A78;
-    --awino-vibranium-dim: rgba(11,127,166,.10);
+    --awino-vibranium-dim: rgba(11,127,166,.12);
     --awino-gold: #8A6D1F;
     --awino-gold-bright: #8A6D1F;
-    --awino-gold-dim: rgba(138,109,31,.10);
-    --awino-text: var(--vscode-foreground, #1F1F1F);
-    --awino-muted: var(--vscode-descriptionForeground, #616161);
+    --awino-gold-dim: rgba(138,109,31,.14);
+    --awino-text: #2B2517;
+    --awino-muted: #77694F;
     --awino-ok: #1E7E5A;
     --awino-danger: #C42B2B;
     --awino-warn: #8A6D00;
-    --awino-thinking-bg: rgba(138,109,31,.05);
+    --awino-thinking-bg: rgba(138,109,31,.06);
+    --awino-diff-add: rgba(30,126,90,.14);
+    --awino-diff-del: rgba(196,43,43,.12);
+    --awino-ok-dim: rgba(30,126,90,.14);
+    --awino-danger-dim: rgba(196,43,43,.12);
+    --awino-on-vibranium: #FFFFFF;
+  }
+  /* ---------- explicit theme variants (user refinement 2026-09-23) ----------
+   * .awino-vibranium: lifted dark ("a little lighter", no pitch-black).
+   * .awino-savanna: warm light variant. Same design language (beads,
+   * chevrons, geometric motifs), different light. Later in the sheet than
+   * the vscode-* blocks, so a manual toggle overrides the VS Code default
+   * at equal specificity. */
+  body.awino-vibranium {
+    color-scheme: dark;
+    --awino-bg: #111A2E;
+    --awino-bg-2: #172036;
+    --awino-bg-3: #1E2A45;
+    --awino-vibranium: #00C6FF;
+    --awino-vibranium-deep: #0B7FA6;
+    --awino-vibranium-dim: rgba(0,198,255,.12);
+    --awino-gold: #D4A937;
+    --awino-gold-bright: #F0C94A;
+    --awino-gold-dim: rgba(212,169,55,.12);
+    --awino-text: #DCE7F7;
+    --awino-muted: #8B98B0;
+    --awino-ok: #4EC9B0;
+    --awino-danger: #F14C4C;
+    --awino-warn: #CCA700;
+    --awino-thinking-bg: rgba(212,169,55,.05);
     --awino-diff-add: rgba(78,201,176,.14);
     --awino-diff-del: rgba(241,76,76,.14);
     --awino-ok-dim: rgba(78,201,176,.14);
     --awino-danger-dim: rgba(241,76,76,.14);
+    --awino-on-vibranium: #04222E;
+    --awino-chevron: repeating-linear-gradient(135deg, var(--awino-gold) 0 2px, transparent 2px 9px);
+  }
+  body.awino-savanna {
+    color-scheme: light;
+    --awino-bg: #F6F1E5;
+    --awino-bg-2: #FFFEFA;
+    --awino-bg-3: #ECE4D0;
+    --awino-vibranium: #0B7FA6;
+    --awino-vibranium-deep: #0B5A78;
+    --awino-vibranium-dim: rgba(11,127,166,.12);
+    --awino-gold: #8A6D1F;
+    --awino-gold-bright: #8A6D1F;
+    --awino-gold-dim: rgba(138,109,31,.14);
+    --awino-text: #2B2517;
+    --awino-muted: #77694F;
+    --awino-ok: #1E7E5A;
+    --awino-danger: #C42B2B;
+    --awino-warn: #8A6D00;
+    --awino-thinking-bg: rgba(138,109,31,.06);
+    --awino-diff-add: rgba(30,126,90,.14);
+    --awino-diff-del: rgba(196,43,43,.12);
+    --awino-ok-dim: rgba(30,126,90,.14);
+    --awino-danger-dim: rgba(196,43,43,.12);
     --awino-on-vibranium: #FFFFFF;
+    --awino-chevron: repeating-linear-gradient(135deg, var(--awino-gold) 0 2px, transparent 2px 9px);
   }
   body.vscode-high-contrast {
     color-scheme: dark;
@@ -114,7 +168,7 @@
     font-family: var(--vscode-font-family, system-ui);
     font-size: var(--vscode-font-size, 13px);
     color: var(--awino-text, var(--vscode-foreground, #DCE7F7));
-    background: var(--awino-bg, var(--vscode-sideBar-background, #0B101B));
+    background: var(--awino-bg, var(--vscode-sideBar-background, #111A2E));
     margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh;
     position: relative;
   }
@@ -128,15 +182,44 @@
   }
   #banner.show { display: block; }
 
+  /* ---------- chat header (theme toggle; refinement 2026-09-23) ---------- */
+  #chatheader {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 10px;
+    background: var(--awino-bg, var(--vscode-sideBar-background, #111A2E));
+    border-bottom: 1px solid var(--vscode-panel-border, #232F45);
+    color: var(--awino-text, var(--vscode-foreground, #DCE7F7));
+    flex: 0 0 auto;
+  }
+  #chatheader .brand {
+    font-weight: 600; font-size: 12px; letter-spacing: .02em;
+    color: var(--awino-gold-bright, var(--vscode-editorWarning-foreground, #F0C94A));
+  }
+  #chatheader .deco { display: inline-flex; gap: 4px; align-items: center; }
+  #chatheader .spacer { flex: 1; }
+  #theme-toggle {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 11px; padding: 3px 9px; border-radius: 10px;
+    background: transparent; cursor: pointer;
+    border: 1px solid var(--awino-vibranium-deep, var(--vscode-textLink-foreground, #0B7FA6));
+    color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+  }
+  #theme-toggle:hover {
+    background: var(--awino-vibranium-dim, rgba(0,198,255,.12));
+  }
+  #theme-toggle:focus-visible, button:focus-visible, #chat:focus-visible {
+    outline: 2px solid var(--awino-vibranium, #00C6FF); outline-offset: 1px;
+  }
+
   /* ---------- messages (§2.1) ---------- */
   #messages { flex: 1; overflow-y: auto; padding: 10px; }
   .msg {
     margin-bottom: 12px; padding: 10px 12px; border-radius: 8px;
-    background: var(--awino-bg-2, var(--vscode-editor-background, #101827));
+    background: var(--awino-bg-2, var(--vscode-editor-background, #172036));
     color: var(--awino-text, var(--vscode-foreground, #DCE7F7));
   }
   .msg.user {
-    background: var(--awino-bg-3, var(--vscode-input-background, #162032));
+    background: var(--awino-bg-3, var(--vscode-input-background, #1E2A45));
     border-left: 3px solid var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
   }
   .msg.turn { border-left: 3px solid var(--awino-vibranium-deep, var(--vscode-textLink-foreground, #0B7FA6)); }
@@ -172,7 +255,7 @@
   /* ---------- approval cards (§2.3) ---------- */
   .approval {
     position: relative; overflow: hidden;
-    background: var(--awino-bg-2, var(--vscode-editor-background, #101827));
+    background: var(--awino-bg-2, var(--vscode-editor-background, #172036));
     border: 1px solid var(--vscode-panel-border, #232F45);
     border-radius: 8px; padding: 12px; padding-top: 15px; margin: 8px 0;
   }
@@ -186,7 +269,7 @@
     font-family: var(--vscode-editor-font-family, monospace);
   }
   pre.diff {
-    background: var(--awino-bg, var(--vscode-editor-background, #0B101B));
+    background: var(--awino-bg, var(--vscode-editor-background, #111A2E));
     color: var(--awino-text, var(--vscode-foreground, #DCE7F7));
     padding: 8px; border-radius: 4px; overflow-x: auto;
     font-size: 11px; max-height: 240px; overflow-y: auto; white-space: pre-wrap;
@@ -298,12 +381,12 @@
   /* ---------- input bar (§2.7) ---------- */
   #inputbar {
     display: flex; padding: 8px; gap: 8px;
-    background: var(--awino-bg, var(--vscode-sideBar-background, #0B101B));
+    background: var(--awino-bg, var(--vscode-sideBar-background, #111A2E));
     border-top: 1px solid var(--vscode-panel-border, #232F45);
   }
   #input {
     flex: 1;
-    background: var(--awino-bg-3, var(--vscode-input-background, #162032));
+    background: var(--awino-bg-3, var(--vscode-input-background, #1E2A45));
     color: var(--awino-text, var(--vscode-input-foreground, #DCE7F7));
     border: 1px solid var(--awino-vibranium-deep, var(--vscode-input-border, #0B7FA6));
     border-radius: 8px; padding: 8px; font: inherit; resize: none;
@@ -326,7 +409,7 @@
     display: flex; align-items: center; gap: 6px;
     padding: 4px 10px; font-size: 11px;
     color: var(--awino-muted, var(--vscode-descriptionForeground, #8B98B0));
-    background: var(--awino-bg, var(--vscode-sideBar-background, #0B101B));
+    background: var(--awino-bg, var(--vscode-sideBar-background, #111A2E));
     border-top: 1px solid var(--vscode-panel-border, #232F45);
   }
   .beads { display: inline-flex; gap: 4px; align-items: center; }
@@ -375,7 +458,7 @@
   /* ---------- jump-to-latest pill (§4.1) ---------- */
   #jump-latest {
     position: absolute; left: 50%; transform: translateX(-50%); bottom: 108px; z-index: 10;
-    background: var(--awino-bg-3, var(--vscode-input-background, #162032));
+    background: var(--awino-bg-3, var(--vscode-input-background, #1E2A45));
     color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
     border: 1px solid var(--awino-vibranium-deep, var(--vscode-textLink-foreground, #0B7FA6));
     border-radius: 14px; padding: 4px 14px; font-size: 11px; cursor: pointer;
@@ -386,7 +469,7 @@
   /* ---------- markdown content (§4.2–4.4) ---------- */
   code {
     font-family: var(--vscode-editor-font-family, monospace); font-size: 11px;
-    background: var(--awino-bg, var(--vscode-editor-background, #0B101B));
+    background: var(--awino-bg, var(--vscode-editor-background, #111A2E));
     color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
     padding: 1px 4px; border-radius: 3px;
   }
@@ -417,7 +500,7 @@
   .md blockquote p { margin: 4px 0; }
   .md code {
     font-family: var(--vscode-editor-font-family, monospace); font-size: 11px;
-    background: var(--awino-bg, var(--vscode-editor-background, #0B101B));
+    background: var(--awino-bg, var(--vscode-editor-background, #111A2E));
     color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
     padding: 1px 4px; border-radius: 3px;
   }
@@ -428,7 +511,7 @@
   }
   .codeblock-header {
     display: flex; align-items: center; justify-content: space-between;
-    background: var(--awino-bg-3, var(--vscode-input-background, #162032));
+    background: var(--awino-bg-3, var(--vscode-input-background, #1E2A45));
     padding: 4px 8px;
   }
   .codeblock-lang {
@@ -450,7 +533,7 @@
     margin: 0; padding: 8px 10px; font-size: 12px;
     overflow-x: auto; max-height: 400px; overflow-y: auto;
     font-family: var(--vscode-editor-font-family, monospace); white-space: pre;
-    background: var(--awino-bg, var(--vscode-editor-background, #0B101B));
+    background: var(--awino-bg, var(--vscode-editor-background, #111A2E));
     color: var(--awino-text, var(--vscode-foreground, #DCE7F7));
   }
   .diff-add { display: block; background: var(--awino-diff-add, rgba(78,201,176,.14)); }
@@ -472,6 +555,12 @@
 </style>
 </head>
 <body>
+<div id="chatheader">
+  <span class="brand">◈ Awino</span>
+  <span class="deco" aria-hidden="true"><span class="bead on"></span><span class="bead vdim"></span><span class="bead gdim"></span></span>
+  <span class="spacer"></span>
+  <button id="theme-toggle" title="Switch Savanna / Vibranium theme">◐ <span id="theme-name">Vibranium</span></button>
+</div>
 <div id="banner"></div>
 <div id="messages"></div>
 <button id="jump-latest" hidden>&#8595; jump to latest</button>

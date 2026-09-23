@@ -254,6 +254,42 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
   const banner = document.getElementById("banner");
   let turnInFlight = false;
 
+  // ---------- theme variants (user refinement 2026-09-23) ----------
+  // Two Wakandan variants: "vibranium" (lifted dark) and "savanna" (warm
+  // light). Default follows the VS Code color theme (light editor ->
+  // savanna, dark editor -> vibranium); the header toggle sets a manual
+  // override persisted in webview state for the webview's lifetime.
+  const themeToggle = document.getElementById("theme-toggle");
+  const themeName = document.getElementById("theme-name");
+  function readSavedTheme() {
+    try {
+      const st = vscode.getState && vscode.getState();
+      if (st && (st.awinoTheme === "savanna" || st.awinoTheme === "vibranium")) return st.awinoTheme;
+    } catch (e) { /* ignore */ }
+    return null;
+  }
+  function defaultTheme() {
+    return document.body.classList.contains("vscode-light") ? "savanna" : "vibranium";
+  }
+  function applyTheme(v) {
+    document.body.classList.remove("awino-savanna", "awino-vibranium");
+    document.body.classList.add("awino-" + v);
+    if (themeName) themeName.textContent = v === "savanna" ? "Savanna" : "Vibranium";
+  }
+  function currentTheme() { return readSavedTheme() || defaultTheme(); }
+  if (themeToggle) {
+    themeToggle.addEventListener("click", function () {
+      const next = currentTheme() === "savanna" ? "vibranium" : "savanna";
+      try {
+        const prev = (vscode.getState && vscode.getState()) || {};
+        prev.awinoTheme = next;
+        if (vscode.setState) vscode.setState(prev);
+      } catch (e) { /* ignore */ }
+      applyTheme(next);
+    });
+  }
+  applyTheme(currentTheme());
+
   function esc(s) {
     return String(s == null ? "" : s)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
