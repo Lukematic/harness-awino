@@ -1,0 +1,1 @@
+{"mcpServers":{"awino":{"alwaysAllow":["awino_new_mission","awino_compile_contract","awino_validate_turn","awino_judge_turn","awino_synthesize_learning"],"args":["<ABSOLUTE_PATH_TO_REPO>/prototype/awino_mcp.py"],"command":"python3","disabled":false,"type":"stdio"}}}
