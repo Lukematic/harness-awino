@@ -170,7 +170,7 @@ function handleEnvPair(
     case "AWS_DEFAULT_PROFILE":
       pushFinding(
         out, source, "bedrock", "awsProfile", value,
-        "AWS profile found. Note: A.W.I.N.O.'s Bedrock provider uses an API key, not SSO profiles — enter the key yourself in the providers panel."
+        "AWS profile found. Note: Awino's Bedrock provider uses an API key, not SSO profiles — enter the key yourself in the providers panel."
       );
       return;
     case "ANTHROPIC_MODEL":

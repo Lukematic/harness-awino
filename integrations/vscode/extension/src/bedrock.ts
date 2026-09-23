@@ -1,5 +1,5 @@
 /**
- * bedrock.ts — AWS Bedrock provider support for the A.W.I.N.O. extension.
+ * bedrock.ts — AWS Bedrock provider support for the Awino extension.
  *
  * Pure logic: no `vscode` import, so it is unit-testable with plain node.
  * The extension host (extension.ts) wires these helpers to SecretStorage,
@@ -289,7 +289,7 @@ export function resolveBedrockConnection(
         error:
           `No Bedrock region is set. ` +
           `It means the endpoint URL can't be derived. ` +
-          `Run "A.W.I.N.O.: Set Up AWS Bedrock" and pick a region, or set awino.bedrockRegion.`,
+          `Run "Awino: Set Up AWS Bedrock" and pick a region, or set awino.bedrockRegion.`,
       };
     }
     const derived = bedrockEndpointForRegion(region);
@@ -304,7 +304,7 @@ export function resolveBedrockConnection(
       error:
         `No Bedrock API key is stored. ` +
         `It means the harness can't authenticate to Bedrock. ` +
-        `Run "A.W.I.N.O.: Set API Key", choose AWS Bedrock, and paste a key from the Bedrock console (API keys → Generate API key).`,
+        `Run "Awino: Set API Key", choose AWS Bedrock, and paste a key from the Bedrock console (API keys → Generate API key).`,
     };
   }
   return { ok: true, args: { sidecarProvider: "openai", endpoint, keyEnvVar: "AWINO_API_KEY" } };

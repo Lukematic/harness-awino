@@ -11,95 +11,95 @@
     "commands": [
       {
         "command": "awino.newMission",
-        "title": "A.W.I.N.O.: New Mission"
+        "title": "Awino: New Mission"
       },
       {
         "command": "awino.newMissionFromSeed",
-        "title": "A.W.I.N.O.: New Mission from Seed"
+        "title": "Awino: New Mission from Seed"
       },
       {
         "command": "awino.saveSeed",
-        "title": "A.W.I.N.O.: Save Current Mission as Seed"
+        "title": "Awino: Save Current Mission as Seed"
       },
       {
         "command": "awino.inspectContract",
-        "title": "A.W.I.N.O.: Inspect Contract"
+        "title": "Awino: Inspect Contract"
       },
       {
         "command": "awino.approveContract",
-        "title": "A.W.I.N.O.: Approve Contract"
+        "title": "Awino: Approve Contract"
       },
       {
         "command": "awino.rollback",
-        "title": "A.W.I.N.O.: Rollback"
+        "title": "Awino: Rollback"
       },
       {
         "command": "awino.housekeep",
-        "title": "A.W.I.N.O.: Housekeep Project"
+        "title": "Awino: Housekeep Project"
       },
       {
         "command": "awino.doctor",
-        "title": "A.W.I.N.O.: Doctor Project"
+        "title": "Awino: Doctor Project"
       },
       {
         "command": "awino.addSkill",
-        "title": "A.W.I.N.O.: Add Skill"
+        "title": "Awino: Add Skill"
       },
       {
         "command": "awino.addContext",
-        "title": "A.W.I.N.O.: Add Context File"
+        "title": "Awino: Add Context File"
       },
       {
         "command": "awino.removeContext",
-        "title": "A.W.I.N.O.: Remove Context File"
+        "title": "Awino: Remove Context File"
       },
       {
         "command": "awino.setApiKey",
-        "title": "A.W.I.N.O.: Set API Key"
+        "title": "Awino: Set API Key"
       },
       {
         "command": "awino.clearApiKey",
-        "title": "A.W.I.N.O.: Clear API Key"
+        "title": "Awino: Clear API Key"
       },
       {
         "command": "awino.invokeMode",
-        "title": "A.W.I.N.O.: Invoke Mode"
+        "title": "Awino: Invoke Mode"
       },
       {
         "command": "awino.dismissMode",
-        "title": "A.W.I.N.O.: Dismiss Mode (back to stage default)"
+        "title": "Awino: Dismiss Mode (back to stage default)"
       },
       {
         "command": "awino.assumePersona",
-        "title": "A.W.I.N.O.: Assume Skill as Persona"
+        "title": "Awino: Assume Skill as Persona"
       },
       {
         "command": "awino.dismissPersona",
-        "title": "A.W.I.N.O.: Dismiss Persona"
+        "title": "Awino: Dismiss Persona"
       },
       {
         "command": "awino.switchEnvironment",
-        "title": "A.W.I.N.O.: Switch Environment"
+        "title": "Awino: Switch Environment"
       },
       {
         "command": "awino.reconnect",
-        "title": "A.W.I.N.O.: Reconnect Sidecar"
+        "title": "Awino: Reconnect Sidecar"
       },
       {
         "command": "awino.refreshViews",
-        "title": "A.W.I.N.O.: Refresh Views"
+        "title": "Awino: Refresh Views"
       },
       {
         "command": "awino.openModels",
-        "title": "A.W.I.N.O.: Models & Providers"
+        "title": "Awino: Models & Providers"
       },
       {
         "command": "awino.setupBedrock",
-        "title": "A.W.I.N.O.: Set Up AWS Bedrock"
+        "title": "Awino: Set Up AWS Bedrock"
       },
       {
         "command": "awino.importConnections",
-        "title": "A.W.I.N.O.: Import connections from other tools"
+        "title": "Awino: Import connections from other tools"
       }
     ],
     "configuration": {
@@ -145,7 +145,7 @@
         },
         "awino.provider": {
           "default": "echo",
-          "description": "Model source for the harness. API keys are NOT stored here \u2014 use 'A.W.I.N.O.: Set API Key'.",
+          "description": "Model source for the harness. API keys are NOT stored here — use 'Awino: Set API Key'.",
           "enum": [
             "echo",
             "ollama",
@@ -162,12 +162,12 @@
         },
         "awino.pythonPath": {
           "default": "python3",
-          "description": "Python interpreter used to launch the A.W.I.N.O. sidecar.",
+          "description": "Python interpreter used to launch the Awino sidecar.",
           "type": "string"
         },
         "awino.script": {
           "default": null,
-          "description": "TEST ONLY: scripted candidate turns for the scripted provider (set awino.provider to \"scripted\"). Each turn goes through the identical validation/judge/approval pipeline \u2014 it only feeds candidate turns instead of calling a model. Leave empty in normal use.",
+          "description": "TEST ONLY: scripted candidate turns for the scripted provider (set awino.provider to \"scripted\"). Each turn goes through the identical validation/judge/approval pipeline — it only feeds candidate turns instead of calling a model. Leave empty in normal use.",
           "items": {
             "type": "object"
           },
@@ -182,7 +182,7 @@
           "type": "number"
         }
       },
-      "title": "A.W.I.N.O."
+      "title": "Awino"
     },
     "views": {
       "awino": [
@@ -222,24 +222,24 @@
         {
           "icon": "resources/awino.svg",
           "id": "awino",
-          "title": "A.W.I.N.O."
+          "title": "Awino"
         }
       ]
     },
     "viewsWelcome": [
       {
-        "contents": "No sidecar connected.\nOpen a workspace folder and the A.W.I.N.O. sidecar will start automatically.\n[Open Folder](command:vscode.openFolder)",
+        "contents": "No sidecar connected.\nOpen a workspace folder and the Awino sidecar will start automatically.\n[Open Folder](command:vscode.openFolder)",
         "view": "awino.chat"
       }
     ]
   },
-  "description": "A mission-driven agent IDE: the loop-owner harness owns every turn \u2014 contract, validation, judge, approvals \u2014 while the editor is just the surface. Kilo-class UX, harness-grade engine.",
+  "description": "Own the loop",
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
     "typescript": "^5.4.0"
   },
-  "displayName": "A.W.I.N.O. Loop Owner",
+  "displayName": "Awino",
   "engines": {
     "vscode": "^1.85.0"
   },

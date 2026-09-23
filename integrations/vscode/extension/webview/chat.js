@@ -1,4 +1,4 @@
-/* chat.js — A.W.I.N.O. mission chat renderer (plain JS, no build).
+/* chat.js — Awino mission chat renderer (plain JS, no build).
  * Renders every §4 sidecar event; forwards user input via acquireVsCodeApi().
  * The webview never constructs turns or calls tools — it only displays
  * events and sends the §4 command verbs.
@@ -426,7 +426,7 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
       const st = m.status || {};
       if (m.connected && st.mission == null) {
         banner.innerHTML = "<b>No active mission.</b> Say what you want to build and the harness opens its discovery interview. " +
-          "Or run <b>A.W.I.N.O.: New Mission</b> / <b>New Mission from Seed</b> from the command palette.";
+          "Or run <b>Awino: New Mission</b> / <b>New Mission from Seed</b> from the command palette.";
         banner.classList.add("show");
       } else {
         banner.classList.remove("show");

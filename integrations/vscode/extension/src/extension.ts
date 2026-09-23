@@ -1,5 +1,5 @@
 /**
- * extension.ts — A.W.I.N.O. VS Code extension host.
+ * extension.ts — Awino VS Code extension host.
  *
  * The extension is a surface. The Python sidecar owns the turn loop:
  * every model-proposed action flows through Loop.run_user_turn in the
@@ -229,8 +229,8 @@ function refreshViews(): void {
 
 function updateStatusBar(): void {
   if (!session?.ready) {
-    statusBar.text = "$(circle-slash) A.W.I.N.O.: not connected";
-    statusBar.tooltip = "A.W.I.N.O. sidecar is not running";
+    statusBar.text = "$(circle-slash) Awino: not connected";
+    statusBar.tooltip = "Awino sidecar is not running";
     return;
   }
   const binding = (session.ready["binding"] ?? {}) as Record<string, unknown>;
@@ -357,7 +357,7 @@ async function onSidecarEvent(ev: SidecarEvent): Promise<void> {
       postToChat({ type: "event", payload: ev });
       break;
     case "warning":
-      vscode.window.showWarningMessage(`A.W.I.N.O.: ${String(ev.message)}`);
+      vscode.window.showWarningMessage(`Awino: ${String(ev.message)}`);
       postToChat({ type: "event", payload: ev });
       break;
     case "error":
@@ -416,7 +416,7 @@ async function handleApprovalRequested(ev: SidecarEvent): Promise<void> {
       .filter(Boolean)
       .join("\n");
     const choice = await vscode.window.showWarningMessage(
-      `A.W.I.N.O. requests approval: ${a.tool}`,
+      `Awino requests approval: ${a.tool}`,
       { modal: true, detail: detail.slice(0, 4000) },
       "Approve",
       `Always allow ${a.tool} (this session)`,
@@ -450,7 +450,7 @@ async function handleCompactionProposed(ev: SidecarEvent): Promise<void> {
     String(ev["note"] ?? ""),
   ].join("\n");
   const choice = await vscode.window.showWarningMessage(
-    "A.W.I.N.O.: context window is filling — compact history?",
+    "Awino: context window is filling — compact history?",
     { modal: true, detail: detail.slice(0, 4000) },
     "Approve compaction",
     "Deny"
@@ -487,7 +487,7 @@ async function connect(context: vscode.ExtensionContext): Promise<void> {
       apiKey: bedrockKey ?? undefined,
     });
     if (!resolved.ok) {
-      vscode.window.showErrorMessage(`A.W.I.N.O.: ${resolved.error}`);
+      vscode.window.showErrorMessage(`Awino: ${resolved.error}`);
       log(`bedrock connect refused: ${resolved.error}`);
       return;
     }
@@ -541,7 +541,7 @@ async function connect(context: vscode.ExtensionContext): Promise<void> {
     );
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    vscode.window.showErrorMessage(`A.W.I.N.O.: sidecar failed to start — ${msg}`);
+    vscode.window.showErrorMessage(`Awino: sidecar failed to start — ${msg}`);
     log(`connect failed: ${msg}`);
     session = null;
     updateStatusBar();
@@ -568,7 +568,7 @@ async function disconnect(): Promise<void> {
 
 function mustSession(): Session {
   if (!session) {
-    throw new Error("A.W.I.N.O. is not connected (open a workspace folder first)");
+    throw new Error("Awino is not connected (open a workspace folder first)");
   }
   return session;
 }
@@ -595,7 +595,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
       .map((x) => x.trim())
       .filter(Boolean);
     const r = (await query("mission", { text, criteria: criteria.length ? criteria : ["manual"] })) as Record<string, unknown>;
-    vscode.window.showInformationMessage(`A.W.I.N.O.: mission started — ${String(r["status"] ?? "ok")}`);
+    vscode.window.showInformationMessage(`Awino: mission started — ${String(r["status"] ?? "ok")}`);
     refreshViews();
   });
 
@@ -604,7 +604,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
     const seeds = (await query("seeds_list")) as { seeds?: Array<{ name: string }> };
     const names = (seeds.seeds ?? []).map((x) => x.name);
     if (!names.length) {
-      vscode.window.showInformationMessage("A.W.I.N.O.: no seeds saved yet");
+      vscode.window.showInformationMessage("Awino: no seeds saved yet");
       return;
     }
     const pick = await vscode.window.showQuickPick(names, { placeHolder: "Pick a mission seed" });
@@ -612,7 +612,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
       return;
     }
     const r = (await query("mission_from_seed", { name: pick })) as Record<string, unknown>;
-    vscode.window.showInformationMessage(`A.W.I.N.O.: mission from seed — ${String(r["status"] ?? "ok")}`);
+    vscode.window.showInformationMessage(`Awino: mission from seed — ${String(r["status"] ?? "ok")}`);
     refreshViews();
   });
 
@@ -623,7 +623,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
       return;
     }
     await query("seed_save", { name });
-    vscode.window.showInformationMessage(`A.W.I.N.O.: seed saved as ${name}`);
+    vscode.window.showInformationMessage(`Awino: seed saved as ${name}`);
   });
 
   reg("awino.inspectContract", async () => {
@@ -651,7 +651,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
       .filter(Boolean);
     const r = (await query("approve-contract", { scope })) as Record<string, unknown>;
     vscode.window.showInformationMessage(
-      `A.W.I.N.O.: contract approval — ${JSON.stringify(r).slice(0, 300)}`
+      `Awino: contract approval — ${JSON.stringify(r).slice(0, 300)}`
     );
     refreshViews();
   });
@@ -661,7 +661,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
     const seqRaw = await vscode.window.showInputBox({ prompt: "Roll back effects at or after sequence number", placeHolder: "42" });
     const seq = Number(seqRaw);
     if (!Number.isInteger(seq) || seq < 0) {
-      vscode.window.showErrorMessage("A.W.I.N.O.: seq must be a non-negative integer");
+      vscode.window.showErrorMessage("Awino: seq must be a non-negative integer");
       return;
     }
     const ok = await vscode.window.showWarningMessage(
@@ -673,7 +673,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
       return;
     }
     const r = (await query("rollback", { seq })) as Record<string, unknown>;
-    vscode.window.showInformationMessage(`A.W.I.N.O.: rollback — ${JSON.stringify(r).slice(0, 300)}`);
+    vscode.window.showInformationMessage(`Awino: rollback — ${JSON.stringify(r).slice(0, 300)}`);
     refreshViews();
   });
 
@@ -682,7 +682,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
     const r = (await query("housekeeping", { reason: "manual" })) as Record<string, unknown>;
     const hk = (r["housekeeping"] ?? {}) as Record<string, unknown>;
     vscode.window.showInformationMessage(
-      `A.W.I.N.O.: housekeeping done — archived ${hk["archived"] ?? 0} file(s), manifest written`
+      `Awino: housekeeping done — archived ${hk["archived"] ?? 0} file(s), manifest written`
     );
     postToChat({ type: "event", payload: { event: "command_result", name: "housekeeping", ok: true, result: r } });
     refreshViews();
@@ -707,9 +707,9 @@ function registerCommands(context: vscode.ExtensionContext): void {
     }
     const r = (await query("skill_add", { name: name.trim(), path: files[0].fsPath })) as Record<string, unknown>;
     if (r["status"] && ["refused", "rejected", "error"].includes(String(r["status"]))) {
-      vscode.window.showWarningMessage(`A.W.I.N.O.: skill refused — ${String(r["detail"] ?? r["status"])}`);
+      vscode.window.showWarningMessage(`Awino: skill refused — ${String(r["detail"] ?? r["status"])}`);
     } else {
-      vscode.window.showInformationMessage(`A.W.I.N.O.: skill admitted — ${name.trim()} (sha ${(String(r["sha256"] ?? "")).slice(0, 12)})`);
+      vscode.window.showInformationMessage(`Awino: skill admitted — ${name.trim()} (sha ${(String(r["sha256"] ?? "")).slice(0, 12)})`);
     }
     refreshViews();
   });
@@ -722,7 +722,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
     }
     const content = await vscode.window.showInputBox({ prompt: `Content for ${name.trim()}` });
     await query("context_add", { name: name.trim(), content: content ?? "" });
-    vscode.window.showInformationMessage(`A.W.I.N.O.: context file added — ${name.trim()}`);
+    vscode.window.showInformationMessage(`Awino: context file added — ${name.trim()}`);
     refreshViews();
   });
 
@@ -731,7 +731,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
     const files = (await query("context_list")) as { files?: Array<{ name: string }> };
     const names = (files.files ?? []).map((f) => f.name);
     if (!names.length) {
-      vscode.window.showInformationMessage("A.W.I.N.O.: no context files");
+      vscode.window.showInformationMessage("Awino: no context files");
       return;
     }
     const pick = await vscode.window.showQuickPick(names, { placeHolder: "Remove context file" });
@@ -763,7 +763,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
       return;
     }
     await context.secrets.store(provider.key, value);
-    vscode.window.showInformationMessage(`A.W.I.N.O.: key stored securely. Reconnect to apply.`);
+    vscode.window.showInformationMessage(`Awino: key stored securely. Reconnect to apply.`);
   });
 
   reg("awino.clearApiKey", async () => {
@@ -779,7 +779,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
       return;
     }
     await context.secrets.delete(provider.key);
-    vscode.window.showInformationMessage(`A.W.I.N.O.: key cleared from secret storage.`);
+    vscode.window.showInformationMessage(`Awino: key cleared from secret storage.`);
   });
 
   reg("awino.invokeMode", async () => {
@@ -806,15 +806,15 @@ function registerCommands(context: vscode.ExtensionContext): void {
       const n = await vscode.window.showInputBox({ prompt: "Number of turns", value: "5" });
       turns = Number(n);
       if (!Number.isInteger(turns) || turns < 1) {
-        vscode.window.showErrorMessage("A.W.I.N.O.: turns must be a positive integer");
+        vscode.window.showErrorMessage("Awino: turns must be a positive integer");
         return;
       }
     }
     const r = (await query("mode_invoke", { mode: pick.id, scope, ...(turns ? { turns } : {}) })) as Record<string, unknown>;
     if (r["status"] === "refused") {
-      vscode.window.showWarningMessage(`A.W.I.N.O.: mode refused — ${String(r["code"] ?? "")}`);
+      vscode.window.showWarningMessage(`Awino: mode refused — ${String(r["code"] ?? "")}`);
     } else {
-      vscode.window.showInformationMessage(`A.W.I.N.O.: mode invoked — ${pick.id} (${scope})`);
+      vscode.window.showInformationMessage(`Awino: mode invoked — ${pick.id} (${scope})`);
     }
     refreshViews();
   });
@@ -822,7 +822,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
   reg("awino.dismissMode", async () => {
     mustSession();
     await query("mode_dismiss");
-    vscode.window.showInformationMessage("A.W.I.N.O.: back to stage-default mode");
+    vscode.window.showInformationMessage("Awino: back to stage-default mode");
     refreshViews();
   });
 
@@ -834,7 +834,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
     };
     const names = [...(skills.packaged ?? []), ...(skills.project ?? [])].map((s) => s.name);
     if (!names.length) {
-      vscode.window.showInformationMessage("A.W.I.N.O.: no admitted skills to personify");
+      vscode.window.showInformationMessage("Awino: no admitted skills to personify");
       return;
     }
     const pick = await vscode.window.showQuickPick(names, {
@@ -846,14 +846,14 @@ function registerCommands(context: vscode.ExtensionContext): void {
     const turnsRaw = await vscode.window.showInputBox({ prompt: "Persona lasts N turns", value: "10" });
     const turns = Number(turnsRaw);
     if (!Number.isInteger(turns) || turns < 1) {
-      vscode.window.showErrorMessage("A.W.I.N.O.: turns must be a positive integer");
+      vscode.window.showErrorMessage("Awino: turns must be a positive integer");
       return;
     }
     const r = (await query("persona_assume", { skill: pick, turns })) as Record<string, unknown>;
     if (r["status"] === "refused") {
-      vscode.window.showWarningMessage(`A.W.I.N.O.: persona refused — ${String(r["detail"] ?? r["code"])}`);
+      vscode.window.showWarningMessage(`Awino: persona refused — ${String(r["detail"] ?? r["code"])}`);
     } else {
-      vscode.window.showInformationMessage(`A.W.I.N.O.: persona assumed — ${pick} (${turns} turns)`);
+      vscode.window.showInformationMessage(`Awino: persona assumed — ${pick} (${turns} turns)`);
     }
     refreshViews();
   });
@@ -861,7 +861,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
   reg("awino.dismissPersona", async () => {
     mustSession();
     await query("persona_dismiss");
-    vscode.window.showInformationMessage("A.W.I.N.O.: persona dismissed");
+    vscode.window.showInformationMessage("Awino: persona dismissed");
     refreshViews();
   });
 
@@ -883,9 +883,9 @@ function registerCommands(context: vscode.ExtensionContext): void {
     }
     const r = (await query("env_switch", { environment: pick })) as Record<string, unknown>;
     if (r["status"] === "refused") {
-      vscode.window.showWarningMessage(`A.W.I.N.O.: environment switch refused — ${String(r["detail"] ?? r["code"])}`);
+      vscode.window.showWarningMessage(`Awino: environment switch refused — ${String(r["detail"] ?? r["code"])}`);
     } else {
-      vscode.window.showInformationMessage(`A.W.I.N.O.: environment switched — ${pick}`);
+      vscode.window.showInformationMessage(`Awino: environment switched — ${pick}`);
       await refreshStatus();
       refreshViews();
     }
@@ -939,9 +939,9 @@ function registerCommands(context: vscode.ExtensionContext): void {
     }
     if (auth.label.startsWith("AWS SSO")) {
       const choice = await vscode.window.showInformationMessage(
-        "A.W.I.N.O.: AWS SSO sessions need SigV4 request signing inside the sidecar, which isn't built yet — " +
+        "Awino: AWS SSO sessions need SigV4 request signing inside the sidecar, which isn't built yet — " +
           "the extension won't pretend otherwise. For now, use a Bedrock API key here, or use Claude Code's " +
-          "Bedrock setup (it speaks SSO natively) with the A.W.I.N.O. skill.",
+          "Bedrock setup (it speaks SSO natively) with the Awino skill.",
         "Enter a Bedrock API key instead",
         "Cancel"
       );
@@ -978,7 +978,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
     // 4. optional live connection test (lists models; nothing is sent anywhere else)
     const endpoint = bedrockEndpointForRegion(region);
     if (!endpoint.ok) {
-      vscode.window.showErrorMessage(`A.W.I.N.O.: ${endpoint.error}`);
+      vscode.window.showErrorMessage(`Awino: ${endpoint.error}`);
       return;
     }
     const testIt = await vscode.window.showQuickPick(["Test the connection", "Skip the test"], {
@@ -989,12 +989,12 @@ function registerCommands(context: vscode.ExtensionContext): void {
     }
     if (testIt.startsWith("Test")) {
       const probe = await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: "A.W.I.N.O.: testing Bedrock connection…" },
+        { location: vscode.ProgressLocation.Notification, title: "Awino: testing Bedrock connection…" },
         () => probeBedrockModels(endpoint.endpoint, key as string)
       );
       if (!probe.ok) {
         const retry = await vscode.window.showErrorMessage(
-          `A.W.I.N.O.: connection test failed — ${probe.error}`,
+          `Awino: connection test failed — ${probe.error}`,
           "Continue anyway",
           "Cancel setup"
         );
@@ -1003,7 +1003,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
         }
       } else {
         vscode.window.showInformationMessage(
-          `A.W.I.N.O.: Bedrock answered — ${probe.models?.length ?? 0} model(s) visible to this key.`
+          `Awino: Bedrock answered — ${probe.models?.length ?? 0} model(s) visible to this key.`
         );
       }
     }
@@ -1022,7 +1022,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
       const parsed = parseBedrockModelRef(typed);
       if (parsed.kind === "invalid") {
         const again = await vscode.window.showErrorMessage(
-          `A.W.I.N.O.: ${parsed.error}`,
+          `Awino: ${parsed.error}`,
           "Try again",
           "Cancel setup"
         );
@@ -1045,7 +1045,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
     await cfg.update("bedrockRegion", region, vscode.ConfigurationTarget.Workspace);
     await cfg.update("model", model, vscode.ConfigurationTarget.Workspace);
     const reconnect = await vscode.window.showInformationMessage(
-      `A.W.I.N.O.: Bedrock is configured (${region} → ${endpoint.endpoint}). Reconnect the sidecar to apply?`,
+      `Awino: Bedrock is configured (${region} → ${endpoint.endpoint}). Reconnect the sidecar to apply?`,
       "Reconnect",
       "Later"
     );
@@ -1070,14 +1070,14 @@ function registerCommands(context: vscode.ExtensionContext): void {
 
 async function importConnectionsFlow(context: vscode.ExtensionContext): Promise<void> {
   const consent = await vscode.window.showWarningMessage(
-    "A.W.I.N.O.: may I read your Claude Code, Kilo CLI, and project .env configs to find model connection details? " +
+    "Awino: may I read your Claude Code, Kilo CLI, and project .env configs to find model connection details? " +
       "I only read non-secret facts (provider, region, model, endpoint) — never keys or tokens — and nothing is applied without your approval.",
     { modal: true },
     "Yes, scan my configs",
     "No"
   );
   if (consent !== "Yes, scan my configs") {
-    vscode.window.showInformationMessage("A.W.I.N.O.: no problem — nothing was read.");
+    vscode.window.showInformationMessage("Awino: no problem — nothing was read.");
     return;
   }
 
@@ -1100,7 +1100,7 @@ async function importConnectionsFlow(context: vscode.ExtensionContext): Promise<
   if (applicable.length === 0) {
     const scannedList = result.scanned.length ? result.scanned.join(", ") : "(none found)";
     vscode.window.showInformationMessage(
-      `A.W.I.N.O.: no importable connection details found. Scanned: ${scannedList}.`
+      `Awino: no importable connection details found. Scanned: ${scannedList}.`
     );
     return;
   }
@@ -1114,7 +1114,7 @@ async function importConnectionsFlow(context: vscode.ExtensionContext): Promise<
   }));
   const picked = await vscode.window.showQuickPick(items, {
     canPickMany: true,
-    placeHolder: "Tick the connection details to import into A.W.I.N.O.",
+    placeHolder: "Tick the connection details to import into Awino",
   });
   if (!picked || picked.length === 0) {
     return; // user-confirm step: no selection, no writes
@@ -1129,7 +1129,7 @@ async function importConnectionsFlow(context: vscode.ExtensionContext): Promise<
     summarizeWrites(writes) +
     (infoNotes ? `\n\nAlso found (not imported):\n${infoNotes}` : "");
   const confirm = await vscode.window.showWarningMessage(
-    "A.W.I.N.O.: apply these settings?",
+    "Awino: apply these settings?",
     { modal: true, detail },
     "Apply",
     "Cancel"
@@ -1144,7 +1144,7 @@ async function importConnectionsFlow(context: vscode.ExtensionContext): Promise<
   }
   log(`connection import applied: ${summarizeWrites(writes).replace(/\n/g, "; ")}`);
   const reconnect = await vscode.window.showInformationMessage(
-    "A.W.I.N.O.: imported connection settings applied. Reconnect the sidecar to use them?",
+    "Awino: imported connection settings applied. Reconnect the sidecar to use them?",
     "Reconnect",
     "Later"
   );
@@ -1165,7 +1165,7 @@ async function offerConnectionImportOnce(context: vscode.ExtensionContext): Prom
     return; // already configured — no need to offer
   }
   const choice = await vscode.window.showInformationMessage(
-    "A.W.I.N.O.: I can import model connections from Claude Code, Kilo CLI, or your project's .env file so you don't retype them. May I scan those configs?",
+    "Awino: I can import model connections from Claude Code, Kilo CLI, or your project's .env file so you don't retype them. May I scan those configs?",
     "Import connections",
     "Not now",
     "Don't ask again"
@@ -1181,7 +1181,7 @@ async function offerConnectionImportOnce(context: vscode.ExtensionContext): Prom
 async function doctorProject(): Promise<void> {
   const folder = vscode.workspace.workspaceFolders?.[0];
   if (!folder) {
-    vscode.window.showWarningMessage("A.W.I.N.O.: open a folder first");
+    vscode.window.showWarningMessage("Awino: open a folder first");
     return;
   }
   const root = folder.uri.fsPath;
@@ -1236,12 +1236,12 @@ async function doctorProject(): Promise<void> {
   }
 
   if (!findings.length) {
-    vscode.window.showInformationMessage("A.W.I.N.O. Doctor: project looks healthy — nothing to fix.");
+    vscode.window.showInformationMessage("Awino Doctor: project looks healthy — nothing to fix.");
     return;
   }
   for (const f of findings) {
     const choice = await vscode.window.showWarningMessage(
-      `A.W.I.N.O. Doctor: ${f.label}`,
+      `Awino Doctor: ${f.label}`,
       { modal: true, detail: "Approval-gated fix. Nothing runs without your explicit approval." },
       `Apply: ${f.fix}`,
       "Skip"
@@ -1249,9 +1249,9 @@ async function doctorProject(): Promise<void> {
     if (choice?.startsWith("Apply")) {
       try {
         const done = await f.run();
-        vscode.window.showInformationMessage(`A.W.I.N.O. Doctor: ${done}`);
+        vscode.window.showInformationMessage(`Awino Doctor: ${done}`);
       } catch (e) {
-        vscode.window.showErrorMessage(`A.W.I.N.O. Doctor: fix failed — ${e instanceof Error ? e.message : String(e)}`);
+        vscode.window.showErrorMessage(`Awino Doctor: fix failed — ${e instanceof Error ? e.message : String(e)}`);
       }
     }
   }
@@ -1267,7 +1267,7 @@ function openModelsPanel(context: vscode.ExtensionContext): void {
   const webviewDir = vscode.Uri.file(path.join(context.extensionPath, "webview"));
   const panel = vscode.window.createWebviewPanel(
     "awinoModels",
-    "A.W.I.N.O.: Models & Providers",
+    "Awino: Models & Providers",
     vscode.ViewColumn.Beside,
     {
       enableScripts: true,
@@ -1322,7 +1322,7 @@ function openModelsPanel(context: vscode.ExtensionContext): void {
           await context.secrets.delete(KEY_ANTHROPIC);
           await context.secrets.delete(KEY_BEDROCK);
         }
-        vscode.window.showInformationMessage("A.W.I.N.O.: settings saved — reconnecting sidecar…");
+        vscode.window.showInformationMessage("Awino: settings saved — reconnecting sidecar…");
         await connect(context);
         panel.webview.postMessage({ type: "reconnected", ok: !!session?.ready });
         break;
@@ -1345,7 +1345,7 @@ function openModelsPanel(context: vscode.ExtensionContext): void {
 // ---------------------------------------------------------------- activate
 
 export function activate(context: vscode.ExtensionContext): void {
-  output = vscode.window.createOutputChannel("A.W.I.N.O.");
+  output = vscode.window.createOutputChannel("Awino");
   context.subscriptions.push(output);
   log("activating");
 

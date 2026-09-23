@@ -1,6 +1,8 @@
-# A.W.I.N.O. VS Code Extension
+# Awino VS Code Extension
 
-The agent IDE surface for A.W.I.N.O. — Kilo-class UX, harness-grade engine.
+*a win, oh.*
+
+The agent IDE surface for Awino — Kilo-class UX, harness-grade engine.
 
 ## What this is
 
@@ -28,13 +30,13 @@ is a surface and cannot bypass the harness.
 
 | Command | What |
 |---------|------|
-| `A.W.I.N.O.: New Mission` | Start a mission (objective + done criteria). |
-| `A.W.I.N.O.: Approve Contract` | Approve DEFINE→PLAN or PLAN→BUILD (with optional scope). |
-| `A.W.I.N.O.: Reconnect Sidecar` | Restart the sidecar (e.g. after changing providers). |
-| `A.W.I.N.O.: Open Models & Providers` | Configure backends (OpenAI/Anthropic/Bedrock/Ollama/MCP). |
-| `A.W.I.N.O.: Set Up AWS Bedrock` | Guided wizard: region → API key → connection test → model. |
-| `A.W.I.N.O.: Import connections from other tools` | Permission-first scan of Claude Code / Kilo CLI / project `.env` configs; you tick what to import, confirm, and only then is it applied. Also offered once on first run. |
-| `A.W.I.N.O.: Run Doctor` | Check sidecar health. |
+| `Awino: New Mission` | Start a mission (objective + done criteria). |
+| `Awino: Approve Contract` | Approve DEFINE→PLAN or PLAN→BUILD (with optional scope). |
+| `Awino: Reconnect Sidecar` | Restart the sidecar (e.g. after changing providers). |
+| `Awino: Open Models & Providers` | Configure backends (OpenAI/Anthropic/Bedrock/Ollama/MCP). |
+| `Awino: Set Up AWS Bedrock` | Guided wizard: region → API key → connection test → model. |
+| `Awino: Import connections from other tools` | Permission-first scan of Claude Code / Kilo CLI / project `.env` configs; you tick what to import, confirm, and only then is it applied. Also offered once on first run. |
+| `Awino: Run Doctor` | Check sidecar health. |
 
 ## AWS Bedrock
 
@@ -43,7 +45,7 @@ no native Bedrock client, no new sidecar backend: the sidecar speaks the OpenAI
 chat-completions protocol to `https://bedrock-runtime.{region}.amazonaws.com/openai/v1`
 with the Bedrock API key as the bearer token.
 
-- **Setup:** run `A.W.I.N.O.: Set Up AWS Bedrock` (or the panel's
+- **Setup:** run `Awino: Set Up AWS Bedrock` (or the panel's
   *Bedrock region* + *Bedrock API key* fields). The endpoint is derived from
   the region; setting `awino.endpoint` explicitly overrides it.
 - **Model field** accepts a model id (`anthropic.claude-…`), an
@@ -57,11 +59,11 @@ with the Bedrock API key as the bearer token.
   per-request SigV4 signing, which the sidecar doesn't do — so the extension
   does not offer them as working options. Use a Bedrock API key here, or use
   Claude Code's Bedrock integration (it speaks SSO natively) with the
-  A.W.I.N.O. skill.
+  Awino skill.
 
 ## Importing connections from other tools
 
-`A.W.I.N.O.: Import connections from other tools` ports model connection
+`Awino: Import connections from other tools` ports model connection
 details you already have elsewhere, so you don't retype them. Permission
 first: nothing on disk is read before you say yes, and nothing is written
 before you tick findings and confirm.
