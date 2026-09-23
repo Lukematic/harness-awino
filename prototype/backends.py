@@ -19,7 +19,11 @@ import urllib.request
 
 
 class ModelBackend:
-    def generate(self, contract_block: str, history: list, feedback: str | None = None) -> dict:
+    def generate(self, contract_block: str, history: list,
+                 feedback: str | None = None,
+                 temperature: float | None = None) -> dict:
+        """temperature: per-call sampling override (None = backend default).
+        Backends that cannot sample (echo/scripted) accept and ignore it."""
         raise NotImplementedError
 
 
@@ -59,9 +63,11 @@ class ScriptedBackend(ModelBackend):
         self.script = [copy.deepcopy(t) for t in script]
         self.calls: list[dict] = []
 
-    def generate(self, contract_block, history, feedback=None):
+    def generate(self, contract_block, history, feedback=None,
+                 temperature=None):
         self.calls.append({"contract": contract_block, "feedback": feedback,
-                           "history_len": len(history)})
+                           "history_len": len(history),
+                           "temperature": temperature})
         if self.script:
             return _fill_echo(copy.deepcopy(self.script.pop(0)), contract_block)
         return _fill_echo(_base_turn(plan=[], questions=["What should we work on next?"],
@@ -88,7 +94,8 @@ class HostileBackend(ModelBackend):
         self.calls: list[dict] = []
         self.tool_name = tool_name
 
-    def generate(self, contract_block, history, feedback=None):
+    def generate(self, contract_block, history, feedback=None,
+                 temperature=None):
         self.calls.append({"contract": contract_block, "feedback": feedback})
         a = self.attacks[self.i % len(self.attacks)]
         self.i += 1
@@ -194,7 +201,9 @@ class EchoBackend(ModelBackend):
     """Minimal interactive planner for the chat REPL. Reads a few markers out
     of the contract block; never calls consequential tools on its own."""
 
-    def generate(self, contract_block, history, feedback=None):
+    def generate(self, contract_block, history, feedback=None,
+                 temperature=None):
+        # temperature accepted and ignored: the echo planner is deterministic.
         if feedback:
             return _fill_echo(
                 _base_turn(plan=[], questions=[],
@@ -288,17 +297,21 @@ class OllamaBackend(ModelBackend):
     never a tool call the harness did not see validated.
     """
 
-    def __init__(self, model=None, host=None, timeout=180, num_predict=512):
+    def __init__(self, model=None, host=None, timeout=180, num_predict=512,
+                 temperature=0.2):
         self.model = model or os.environ.get("OLLAMA_MODEL", "qwen2.5:1.5b")
         self.host = (host or os.environ.get("OLLAMA_HOST",
                                             "http://localhost:11434")).rstrip("/")
         self.timeout = timeout
         self.num_predict = num_predict
+        self.temperature = temperature
         self.calls: list[dict] = []
 
-    def generate(self, contract_block, history, feedback=None):
+    def generate(self, contract_block, history, feedback=None,
+                 temperature=None):
         self.calls.append({"contract": contract_block[:200], "feedback": feedback,
-                           "history_len": len(history)})
+                           "history_len": len(history),
+                           "temperature": temperature})
         expected_header = contract_block.split("\n", 1)[0]
         system = _OLLAMA_SYSTEM.replace("{header}", expected_header)
         try:
@@ -320,7 +333,8 @@ class OllamaBackend(ModelBackend):
                   "Reply with ONLY the JSON turn object."]
         return "\n".join(lines)
 
-    def _chat(self, prompt: str, system: str) -> str:
+    def _chat(self, prompt: str, system: str,
+              temperature: float | None = None) -> str:
         body = json.dumps({
             "model": self.model,
             "messages": [
@@ -328,7 +342,8 @@ class OllamaBackend(ModelBackend):
                 {"role": "user", "content": prompt},
             ],
             "stream": False,
-            "temperature": 0.2,
+            "temperature": self.temperature if temperature is None
+                           else temperature,
             "max_tokens": self.num_predict,
         }).encode()
         req = urllib.request.Request(
