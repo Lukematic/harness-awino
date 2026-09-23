@@ -1,3 +1,5 @@
+> **RETIRED 2026-09-23.** The Kilo-Code agent-picker track is retired, superseded by the A.W.I.N.O. VS Code extension (proven live 2026-09-23), which provides the same loop-owner surface natively. This file is preserved for history. The MCP server (`../mcp.json`) remains supported as a standalone, client-agnostic tool server.
+
 ---
 description: A.W.I.N.O. loop-owner — runs every mission as a governed turn loop with per-turn contracts, validation, judge panel, and evidence-based completion
 mode: primary
