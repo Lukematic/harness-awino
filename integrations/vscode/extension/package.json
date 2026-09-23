@@ -92,6 +92,10 @@
       {
         "command": "awino.openModels",
         "title": "A.W.I.N.O.: Models & Providers"
+      },
+      {
+        "command": "awino.setupBedrock",
+        "title": "A.W.I.N.O.: Set Up AWS Bedrock"
       }
     ],
     "configuration": {
@@ -142,8 +146,14 @@
             "echo",
             "ollama",
             "openai",
-            "anthropic"
+            "anthropic",
+            "bedrock"
           ],
+          "type": "string"
+        },
+        "awino.bedrockRegion": {
+          "default": "",
+          "description": "AWS region for the Bedrock provider. The OpenAI-compatible endpoint is derived from it (https://bedrock-runtime.{region}.amazonaws.com/openai/v1); awino.endpoint overrides it when set.",
           "type": "string"
         },
         "awino.pythonPath": {
@@ -246,7 +256,7 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
-    "test": "node ./test/harness.js",
+    "test": "node ./test/harness.js && node ./test/bedrock.js",
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run compile && node ./scripts/bundle-sidecar.js"
   },

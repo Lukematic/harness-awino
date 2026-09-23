@@ -7,13 +7,23 @@
   const $ = function (id) { return document.getElementById(id); };
   const status = $("status");
 
-  function render(cfg, binding, environments, openaiKeySet, anthropicKeySet) {
+  function render(cfg, binding, environments, keys, bedrockRegions) {
     $("provider").value = cfg.provider || "echo";
     $("endpoint").value = cfg.endpoint || "";
     $("model").value = cfg.model || "";
     $("timeout").value = cfg.timeout || 180;
-    $("openaiKeyState").textContent = openaiKeySet ? "(stored)" : "(not set)";
-    $("anthropicKeyState").textContent = anthropicKeySet ? "(stored)" : "(not set)";
+    $("openaiKeyState").textContent = keys.openai ? "(stored)" : "(not set)";
+    $("anthropicKeyState").textContent = keys.anthropic ? "(stored)" : "(not set)";
+    $("bedrockKeyState").textContent = keys.bedrock ? "(stored)" : "(not set)";
+
+    var regionSel = $("bedrockRegion");
+    regionSel.innerHTML = "";
+    (bedrockRegions || []).forEach(function (r) {
+      var o = document.createElement("option");
+      o.value = r; o.textContent = r;
+      if (r === cfg.bedrockRegion) o.selected = true;
+      regionSel.appendChild(o);
+    });
 
     const b = binding || {};
     status.innerHTML =
@@ -44,13 +54,16 @@
       provider: $("provider").value,
       endpoint: $("endpoint").value.trim(),
       model: $("model").value.trim(),
+      bedrockRegion: $("bedrockRegion").value,
       timeout: Number($("timeout").value) || 180,
       openaiKey: $("openaiKey").value,
       anthropicKey: $("anthropicKey").value,
+      bedrockKey: $("bedrockKey").value,
       clearKeys: false,
     });
     $("openaiKey").value = "";
     $("anthropicKey").value = "";
+    $("bedrockKey").value = "";
     status.innerHTML = "<i>reconnecting…</i>";
   });
 
@@ -72,7 +85,8 @@
     if (!m || typeof m !== "object") return;
     if (m.type === "state") {
       render(m.config || {}, m.binding || null, m.environments || [],
-        !!m.openaiKeySet, !!m.anthropicKeySet);
+        { openai: !!m.openaiKeySet, anthropic: !!m.anthropicKeySet, bedrock: !!m.bedrockKeySet },
+        m.bedrockRegions || []);
     } else if (m.type === "reconnected") {
       $("envResult").textContent = m.ok ? "reconnected" : "reconnect failed — see output channel";
       vscode.postMessage({ type: "init" }); // refresh state

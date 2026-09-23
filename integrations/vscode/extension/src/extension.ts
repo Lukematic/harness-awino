@@ -14,6 +14,14 @@ import * as path from "path";
 import { spawn } from "child_process";
 import { SidecarClient, SidecarEvent, defaultSidecarPath } from "./sidecar";
 import {
+  BEDROCK_REGIONS,
+  bedrockEndpointForRegion,
+  isValidRegion,
+  parseBedrockModelRef,
+  resolveBedrockConnection,
+  probeBedrockModels,
+} from "./bedrock";
+import {
   QueryFn,
   ContractView,
   JournalView,
@@ -26,6 +34,7 @@ import {
 const EXT_ID = "awino-loop-owner";
 const KEY_OPENAI = "awino.apiKey.openai"; // -> AWINO_API_KEY
 const KEY_ANTHROPIC = "awino.apiKey.anthropic"; // -> ANTHROPIC_API_KEY
+const KEY_BEDROCK = "awino.apiKey.bedrock"; // Bedrock API key -> AWINO_API_KEY (Bearer)
 
 // ------------------------------------------------------------------ config
 
@@ -33,6 +42,8 @@ interface AwinoConfig {
   provider: string;
   endpoint: string;
   model: string;
+  /** AWS region for provider "bedrock"; endpoint is derived from it. */
+  bedrockRegion: string;
   timeout: number;
   pythonPath: string;
   mcpServers: Array<{ name: string; command: string; args?: string[]; env?: Record<string, string> }>;
@@ -46,6 +57,7 @@ function readConfig(): AwinoConfig {
     provider: c.get<string>("provider", "echo"),
     endpoint: c.get<string>("endpoint", ""),
     model: c.get<string>("model", ""),
+    bedrockRegion: c.get<string>("bedrockRegion", ""),
     timeout: c.get<number>("timeout", 180),
     pythonPath: c.get<string>("pythonPath", "python3"),
     mcpServers: c.get<Array<{ name: string; command: string; args?: string[]; env?: Record<string, string> }>>(
@@ -130,6 +142,10 @@ interface Session {
   alwaysAllow: Set<string>;
   ready: SidecarEvent | null;
   lastStatus: Record<string, unknown> | null;
+  /** User-facing provider label ("bedrock") when it differs from what the
+   *  sidecar was told (the sidecar only speaks openai/anthropic/ollama/echo,
+   *  so Bedrock rides its OpenAI-compatible backend — see bedrock.ts). */
+  displayProvider?: string;
 }
 
 // Webview handles live outside the session so a reconnect (sidecar restart)
@@ -210,7 +226,7 @@ function updateStatusBar(): void {
   }
   const binding = (session.ready["binding"] ?? {}) as Record<string, unknown>;
   const mode = (session.lastStatus?.["active_mode"] ?? session.ready["active_mode"] ?? {}) as Record<string, unknown>;
-  const provider = String(binding["provider"] ?? session.ready["provider"] ?? "?");
+  const provider = String(session.displayProvider ?? binding["provider"] ?? session.ready["provider"] ?? "?");
   const env = String(binding["environment"] ?? "(global)");
   const modeId = String(mode["id"] ?? "?");
   const persona = session.lastStatus?.["persona"] as Record<string, unknown> | null;
@@ -445,13 +461,40 @@ async function connect(context: vscode.ExtensionContext): Promise<void> {
   const cfg = readConfig();
   const secrets = context.secrets;
   const env: Record<string, string> = {};
-  const openaiKey = await secrets.get(KEY_OPENAI);
-  const anthropicKey = await secrets.get(KEY_ANTHROPIC);
-  if (openaiKey) {
-    env["AWINO_API_KEY"] = openaiKey;
-  }
-  if (anthropicKey) {
-    env["ANTHROPIC_API_KEY"] = anthropicKey;
+
+  // Resolve the user-facing provider to what the sidecar understands.
+  // "bedrock" rides the sidecar's OpenAI-compatible backend: Bedrock's
+  // https://bedrock-runtime.{region}.amazonaws.com/openai/v1 endpoint
+  // speaks the OpenAI chat-completions protocol with the Bedrock API key
+  // as the Bearer token. See src/bedrock.ts for the full rationale.
+  let sidecarProvider = cfg.provider;
+  let sidecarEndpoint = cfg.endpoint || undefined;
+  let displayProvider: string | undefined;
+  if (cfg.provider === "bedrock") {
+    const bedrockKey = await secrets.get(KEY_BEDROCK);
+    const resolved = resolveBedrockConnection({
+      endpoint: cfg.endpoint,
+      region: cfg.bedrockRegion,
+      apiKey: bedrockKey ?? undefined,
+    });
+    if (!resolved.ok) {
+      vscode.window.showErrorMessage(`A.W.I.N.O.: ${resolved.error}`);
+      log(`bedrock connect refused: ${resolved.error}`);
+      return;
+    }
+    sidecarProvider = resolved.args.sidecarProvider;
+    sidecarEndpoint = resolved.args.endpoint;
+    env[resolved.args.keyEnvVar] = bedrockKey as string;
+    displayProvider = "bedrock";
+  } else {
+    const openaiKey = await secrets.get(KEY_OPENAI);
+    const anthropicKey = await secrets.get(KEY_ANTHROPIC);
+    if (openaiKey) {
+      env["AWINO_API_KEY"] = openaiKey;
+    }
+    if (anthropicKey) {
+      env["ANTHROPIC_API_KEY"] = anthropicKey;
+    }
   }
 
   await disconnect();
@@ -463,6 +506,7 @@ async function connect(context: vscode.ExtensionContext): Promise<void> {
     alwaysAllow: new Set(),
     ready: null,
     lastStatus: null,
+    displayProvider,
   };
   updateStatusBar();
   try {
@@ -470,15 +514,22 @@ async function connect(context: vscode.ExtensionContext): Promise<void> {
       python: cfg.pythonPath,
       sidecarPath: defaultSidecarPath(context.extensionPath),
       workspace: folder.uri.fsPath,
-      provider: cfg.provider,
+      provider: sidecarProvider,
       model: cfg.model || undefined,
-      endpoint: cfg.endpoint || undefined,
+      endpoint: sidecarEndpoint,
       timeout: cfg.timeout,
       env,
       mcpServers: cfg.mcpServers,
       script: cfg.script,
     });
-    log(`connected: ${JSON.stringify({ provider: ready["provider"], model: ready["model"], project: ready["project"] })}`);
+    log(
+      `connected: ${JSON.stringify({
+        provider: displayProvider ?? ready["provider"],
+        sidecar_provider: ready["provider"],
+        model: ready["model"],
+        project: ready["project"],
+      })}`
+    );
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     vscode.window.showErrorMessage(`A.W.I.N.O.: sidecar failed to start — ${msg}`);
@@ -687,6 +738,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
       [
         { label: "OpenAI-compatible (AWINO_API_KEY)", key: KEY_OPENAI },
         { label: "Anthropic (ANTHROPIC_API_KEY)", key: KEY_ANTHROPIC },
+        { label: "AWS Bedrock (Bedrock API key)", key: KEY_BEDROCK },
       ],
       { placeHolder: "Which provider's key?" }
     );
@@ -710,6 +762,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
       [
         { label: "OpenAI-compatible (AWINO_API_KEY)", key: KEY_OPENAI },
         { label: "Anthropic (ANTHROPIC_API_KEY)", key: KEY_ANTHROPIC },
+        { label: "AWS Bedrock (Bedrock API key)", key: KEY_BEDROCK },
       ],
       { placeHolder: "Which provider's key to clear?" }
     );
@@ -829,6 +882,169 @@ function registerCommands(context: vscode.ExtensionContext): void {
     }
   });
 
+  reg("awino.setupBedrock", async () => {
+    // Guided AWS Bedrock setup: region -> auth -> key -> (test) -> model.
+    // Every prompt explains itself; keys go to SecretStorage only.
+
+    // 1. region
+    const regionPick = await vscode.window.showQuickPick(
+      [
+        ...BEDROCK_REGIONS.map((r) => ({ label: r, description: `https://bedrock-runtime.${r}.amazonaws.com/openai/v1` })),
+        { label: "Other region…", description: "type any valid AWS region" },
+      ],
+      { placeHolder: "AWS region for Bedrock (the endpoint URL is derived from it)" }
+    );
+    if (!regionPick) {
+      return;
+    }
+    let region = regionPick.label;
+    if (region === "Other region…") {
+      const typed = await vscode.window.showInputBox({
+        prompt: "AWS region",
+        placeHolder: "us-east-1",
+        validateInput: (v) =>
+          isValidRegion(v) ? undefined : "That doesn't look like an AWS region name (e.g. us-east-1).",
+      });
+      if (!typed) {
+        return;
+      }
+      region = typed.trim();
+    }
+
+    // 2. auth method — SSO is documented future work, never half-wired.
+    const auth = await vscode.window.showQuickPick(
+      [
+        {
+          label: "Bedrock API key (recommended)",
+          description: "Bedrock console → API keys → Generate API key",
+        },
+        {
+          label: "AWS SSO / shared config profile",
+          description: "not supported in the extension yet",
+        },
+      ],
+      { placeHolder: "How should the extension authenticate to Bedrock?" }
+    );
+    if (!auth) {
+      return;
+    }
+    if (auth.label.startsWith("AWS SSO")) {
+      const choice = await vscode.window.showInformationMessage(
+        "A.W.I.N.O.: AWS SSO sessions need SigV4 request signing inside the sidecar, which isn't built yet — " +
+          "the extension won't pretend otherwise. For now, use a Bedrock API key here, or use Claude Code's " +
+          "Bedrock setup (it speaks SSO natively) with the A.W.I.N.O. skill.",
+        "Enter a Bedrock API key instead",
+        "Cancel"
+      );
+      if (choice !== "Enter a Bedrock API key instead") {
+        return;
+      }
+    }
+
+    // 3. key (kept only in SecretStorage)
+    const existing = await context.secrets.get(KEY_BEDROCK);
+    let key = existing ?? undefined;
+    const replace =
+      existing &&
+      (await vscode.window.showQuickPick(["Keep the stored key", "Replace it"], {
+        placeHolder: "A Bedrock API key is already stored",
+      }));
+    if (replace === undefined && existing) {
+      return;
+    }
+    if (!existing || replace === "Replace it") {
+      const typed = await vscode.window.showInputBox({
+        prompt: "Bedrock API key",
+        password: true,
+        placeHolder: "from the Bedrock console → API keys → Generate API key",
+        validateInput: (v) => (v.trim() ? undefined : "The key can't be empty."),
+      });
+      if (!typed) {
+        return;
+      }
+      key = typed.trim();
+      await context.secrets.store(KEY_BEDROCK, key);
+    }
+
+    // 4. optional live connection test (lists models; nothing is sent anywhere else)
+    const endpoint = bedrockEndpointForRegion(region);
+    if (!endpoint.ok) {
+      vscode.window.showErrorMessage(`A.W.I.N.O.: ${endpoint.error}`);
+      return;
+    }
+    const testIt = await vscode.window.showQuickPick(["Test the connection", "Skip the test"], {
+      placeHolder: "Verify the key and region against Bedrock now?",
+    });
+    if (testIt === undefined) {
+      return;
+    }
+    if (testIt.startsWith("Test")) {
+      const probe = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: "A.W.I.N.O.: testing Bedrock connection…" },
+        () => probeBedrockModels(endpoint.endpoint, key as string)
+      );
+      if (!probe.ok) {
+        const retry = await vscode.window.showErrorMessage(
+          `A.W.I.N.O.: connection test failed — ${probe.error}`,
+          "Continue anyway",
+          "Cancel setup"
+        );
+        if (retry !== "Continue anyway") {
+          return;
+        }
+      } else {
+        vscode.window.showInformationMessage(
+          `A.W.I.N.O.: Bedrock answered — ${probe.models?.length ?? 0} model(s) visible to this key.`
+        );
+      }
+    }
+
+    // 5. model: friendly id, inference-profile id, or a full ARN (validated)
+    let model = "";
+    for (;;) {
+      const typed = await vscode.window.showInputBox({
+        prompt: "Bedrock model",
+        placeHolder: "us.anthropic.claude-sonnet-4-5-20250929-v1:0 — or paste a full ARN",
+        value: model || undefined,
+      });
+      if (typed === undefined) {
+        return;
+      }
+      const parsed = parseBedrockModelRef(typed);
+      if (parsed.kind === "invalid") {
+        const again = await vscode.window.showErrorMessage(
+          `A.W.I.N.O.: ${parsed.error}`,
+          "Try again",
+          "Cancel setup"
+        );
+        if (again !== "Try again") {
+          return;
+        }
+        model = typed;
+        continue;
+      }
+      model = parsed.ref;
+      if (parsed.description) {
+        log(`bedrock model: ${parsed.description}`);
+      }
+      break;
+    }
+
+    // 6. write config and offer reconnect
+    const cfg = vscode.workspace.getConfiguration("awino");
+    await cfg.update("provider", "bedrock", vscode.ConfigurationTarget.Workspace);
+    await cfg.update("bedrockRegion", region, vscode.ConfigurationTarget.Workspace);
+    await cfg.update("model", model, vscode.ConfigurationTarget.Workspace);
+    const reconnect = await vscode.window.showInformationMessage(
+      `A.W.I.N.O.: Bedrock is configured (${region} → ${endpoint.endpoint}). Reconnect the sidecar to apply?`,
+      "Reconnect",
+      "Later"
+    );
+    if (reconnect === "Reconnect") {
+      await connect(context);
+    }
+  });
+
   reg("awino.openModels", () => openModelsPanel(context));
 }
 
@@ -944,13 +1160,16 @@ function openModelsPanel(context: vscode.ExtensionContext): void {
       case "init": {
         const cfg = readConfig();
         const folder = vscode.workspace.workspaceFolders?.[0];
+        const binding = (session?.ready?.["binding"] ?? null) as Record<string, unknown> | null;
         panel.webview.postMessage({
           type: "state",
           config: cfg,
-          binding: session?.ready?.["binding"] ?? null,
+          binding: binding ? { ...binding, provider: session?.displayProvider ?? binding["provider"] } : null,
           environments: folder ? listEnvironments(folder.uri.fsPath) : [],
           openaiKeySet: !!(await context.secrets.get(KEY_OPENAI)),
           anthropicKeySet: !!(await context.secrets.get(KEY_ANTHROPIC)),
+          bedrockKeySet: !!(await context.secrets.get(KEY_BEDROCK)),
+          bedrockRegions: BEDROCK_REGIONS,
         });
         break;
       }
@@ -959,6 +1178,7 @@ function openModelsPanel(context: vscode.ExtensionContext): void {
         await cfg.update("provider", String(m.provider ?? "echo"), vscode.ConfigurationTarget.Workspace);
         await cfg.update("endpoint", String(m.endpoint ?? ""), vscode.ConfigurationTarget.Workspace);
         await cfg.update("model", String(m.model ?? ""), vscode.ConfigurationTarget.Workspace);
+        await cfg.update("bedrockRegion", String(m.bedrockRegion ?? ""), vscode.ConfigurationTarget.Workspace);
         await cfg.update("timeout", Number(m.timeout ?? 180), vscode.ConfigurationTarget.Workspace);
         if (typeof m.openaiKey === "string" && m.openaiKey) {
           await context.secrets.store(KEY_OPENAI, m.openaiKey);
@@ -966,9 +1186,13 @@ function openModelsPanel(context: vscode.ExtensionContext): void {
         if (typeof m.anthropicKey === "string" && m.anthropicKey) {
           await context.secrets.store(KEY_ANTHROPIC, m.anthropicKey);
         }
+        if (typeof m.bedrockKey === "string" && m.bedrockKey) {
+          await context.secrets.store(KEY_BEDROCK, m.bedrockKey);
+        }
         if (m.clearKeys) {
           await context.secrets.delete(KEY_OPENAI);
           await context.secrets.delete(KEY_ANTHROPIC);
+          await context.secrets.delete(KEY_BEDROCK);
         }
         vscode.window.showInformationMessage("A.W.I.N.O.: settings saved — reconnecting sidecar…");
         await connect(context);
