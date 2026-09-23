@@ -35,24 +35,63 @@ CHECK_OK = "ok"
 CHECK_WARN = "warn"
 CHECK_FAIL = "fail"
 
+
+# ---------------------------------------------------------------------------
+# Windows-compatible venv paths.
+#
+# A venv keeps its executables in bin/ on POSIX and Scripts/ on Windows,
+# and the interpreter is `python` vs `python.exe`. Every consumer below
+# goes through these helpers so the harness works on both. `os.name` is
+# read at call time (not import time) so tests can simulate Windows via
+# mock.patch("os.name", "nt").
+# ---------------------------------------------------------------------------
+
+def venv_bin_dir(venv: Path) -> Path:
+    """Executables directory inside a venv: Scripts/ on Windows, bin/ else."""
+    return venv / ("Scripts" if os.name == "nt" else "bin")
+
+
+def venv_python(venv_bin: Path) -> Path:
+    """The venv's python interpreter (python.exe on Windows)."""
+    return venv_bin / ("python.exe" if os.name == "nt" else "python")
+
+
+def venv_exe(venv_bin: Path, name: str) -> Path:
+    """Resolve `name` inside venv_bin, tolerating the Windows .exe suffix.
+
+    Console scripts install as `ruff`/`pip` on POSIX but `ruff.exe`/`pip.exe`
+    on Windows; a bare `venv_bin / name` existence check would miss them.
+    Returns the path that exists, else the plain (POSIX-style) candidate.
+    """
+    plain = venv_bin / name
+    if plain.is_file():
+        return plain
+    if os.name == "nt":
+        suffixed = venv_bin / (name + ".exe")
+        if suffixed.is_file():
+            return suffixed
+    return plain
+
 PRINCIPLES = ["spec-before-code", "contract-first", "evidence-for-every-change"]
 
 JUSTFILE_TEMPLATE = """# A.W.I.N.O. project task recipes (scaffolded by project bootstrap).
 # Install just: https://just.systems — or keep using make.
+#
+# Recipes are single portable commands (plain `python` / `ruff`, no shell
+# redirection, no ||/&& chains) so they run unchanged under sh, cmd.exe,
+# and PowerShell — just uses PowerShell on Windows by default.
 
-set dotenv-load := false
-
-# run the test suite
+# run the test suite (pip install pytest if it is missing)
 test:
-    python3 -m unittest discover -s tests -t . 2>/dev/null || pytest -q
+    python -m pytest -q
 
-# lint everything
+# lint everything (pip install ruff if it is missing)
 lint:
-    ruff check . 2>/dev/null || echo "ruff not installed"
+    ruff check .
 
-# format everything
+# format everything (pip install ruff if it is missing)
 format:
-    ruff format . 2>/dev/null || echo "ruff not installed"
+    ruff format .
 """
 
 README_TEMPLATE = """# {name}
@@ -129,7 +168,7 @@ def ensure_venv(root: Path, timeout: int = 120) -> tuple[dict, Path | None]:
     cfg = venv / "pyvenv.cfg"
     if cfg.is_file():
         return (_check("venv", CHECK_OK, f"using existing {venv}"),
-                venv / "bin")
+                venv_bin_dir(venv))
     if venv.exists() and not cfg.is_file():
         # half-created venv: move aside, don't delete, don't build on top
         import time as _t
@@ -149,7 +188,7 @@ def ensure_venv(root: Path, timeout: int = 120) -> tuple[dict, Path | None]:
         tried.append((how, code, out))
         if code == 0 and cfg.is_file():
             return (_check("venv", CHECK_OK, f"created via {how}",
-                           fixed=True), venv / "bin")
+                           fixed=True), venv_bin_dir(venv))
     # python3 -m venv: ensurepip may try to reach the network (sandbox or
     # offline hosts); fall back to --without-pip rather than failing.
     code, out = _run([sys.executable, "-m", "venv", ".venv"], root, timeout)
@@ -157,7 +196,7 @@ def ensure_venv(root: Path, timeout: int = 120) -> tuple[dict, Path | None]:
     tried.append((how, code, out))
     if code == 0 and cfg.is_file():
         return (_check("venv", CHECK_OK, f"created via {how}",
-                       fixed=True), venv / "bin")
+                       fixed=True), venv_bin_dir(venv))
     code, out = _run([sys.executable, "-m", "venv", "--without-pip",
                       ".venv"], root, timeout)
     how = "python3 -m venv --without-pip"
@@ -165,7 +204,7 @@ def ensure_venv(root: Path, timeout: int = 120) -> tuple[dict, Path | None]:
         return (_check("venv", CHECK_WARN,
                        f"created via {how} (ensurepip failed — no network "
                        f"or pip missing; pip can be added later)",
-                       fixed=True), venv / "bin")
+                       fixed=True), venv_bin_dir(venv))
     detail = "; ".join(f"{h} -> exit {c}: {o[-200:]}" for h, c, o in tried)
     return (_check("venv", CHECK_FAIL,
                    f"venv creation failed: {detail} — continuing with "
@@ -218,7 +257,7 @@ def check_ruff(root: Path, venv_bin: Path | None,
     """Detect ruff; best-effort install into the venv. Never fails."""
     candidates = []
     if venv_bin:
-        candidates.append(venv_bin / "ruff")
+        candidates.append(venv_exe(venv_bin, "ruff"))
     which = shutil.which("ruff")
     if which:
         candidates.append(Path(which))
@@ -227,17 +266,17 @@ def check_ruff(root: Path, venv_bin: Path | None,
             return _check("ruff", CHECK_OK, f"found: {c}")
     # best-effort install into the venv
     if venv_bin:
-        pip = venv_bin / "pip"
+        pip = venv_exe(venv_bin, "pip")
         uv = shutil.which("uv")
         if uv:
             code, _ = _run([uv, "pip", "install", "--python",
-                            str(venv_bin / "python"), "ruff"],
+                            str(venv_python(venv_bin)), "ruff"],
                            root, timeout)
         elif pip.is_file():
             code, _ = _run([str(pip), "install", "ruff"], root, timeout)
         else:
             code = 127
-        if code == 0 and (venv_bin / "ruff").is_file():
+        if code == 0 and venv_exe(venv_bin, "ruff").is_file():
             return _check("ruff", CHECK_OK, "installed into .venv",
                           fixed=True)
     return _check("ruff", CHECK_WARN,

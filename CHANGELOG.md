@@ -27,7 +27,8 @@ setup commands by hand.
   justfile scaffolded with test/lint/format recipes; `just` installed
   best-effort, breadcrumb recorded when unavailable), ruff
   (best-effort install into the venv), git repo, `.awino/` presence.
-- Every `run_command` resolves the project `.venv/bin` first (PATH prefix
+- Every `run_command` resolves the project venv executables first
+  (`.venv/bin` on POSIX, `.venv/Scripts` on Windows — PATH prefix
   + `VIRTUAL_ENV`), so project commands use the venv python automatically.
 - Seeds (`.awino/seeds/*.md` checklists) are parsed and their tasks imported
   into the task tracker on mission start.

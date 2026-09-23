@@ -115,17 +115,20 @@ def cmd_status(args: list[str]) -> int:
     try:
         from registry import Registry
         import modes as _modes
+        from bootstrap import venv_bin_dir, venv_python
         proj = _read_yaml(awino_dir / "project.yaml")
         reg = Registry(awino_dir)
         reg.ensure()
 
         print(f"project: {proj.get('project', target.name)}")
         # Environment, in plain words.
-        py = shutil.which("python3")
+        # `python3` exists on POSIX, `python` on Windows — accept either.
+        py = shutil.which("python3") or shutil.which("python")
         print("environment:")
-        print(f"  python3: {'found' if py else 'missing'}")
+        print(f"  python: {'found' if py else 'missing'}")
         venv = target / ".venv"
-        print(f"  virtual env: {'ready (.venv)' if (venv / 'bin' / 'python').exists() else 'not set up'}")
+        venv_ready = venv_python(venv_bin_dir(venv)).exists()
+        print(f"  virtual env: {'ready (.venv)' if venv_ready else 'not set up'}")
         runner = ("just" if (target / "justfile").exists()
                   or (target / "Justfile").exists()
                   else ("make" if (target / "Makefile").exists() else "none yet"))

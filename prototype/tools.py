@@ -74,8 +74,11 @@ class Sandbox:
         """Run a shell command with cwd confined to the sandbox.
 
         Track A: when venv_bin is set (project bootstrap found/created a
-        .venv), the venv's bin/ is prepended to PATH and VIRTUAL_ENV is set,
-        so `python3` resolves to the venv python automatically.
+        .venv), the venv's executables dir (bin/ on POSIX, Scripts/ on
+        Windows) is prepended to PATH and VIRTUAL_ENV is set, so `python`
+        resolves to the venv python automatically. Commands run with
+        shell=True, i.e. sh on POSIX and cmd.exe on Windows — keep
+        commands portable (no Unix-only builtins, no sh-only syntax).
 
         Returns {"cmd", "exit_code", "stdout", "stderr"}. Output truncated.
         """

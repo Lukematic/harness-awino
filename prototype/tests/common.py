@@ -16,6 +16,13 @@ def make_loop(project="p1", backend=None, judge=None, config=None, home=None):
     return Loop(home, project, backend, judge, config=config), home
 
 
+# Absolute path of prototype/. Tests must not depend on the process cwd:
+# the suite is run from prototype/ on Linux CI but from the repo root
+# (or elsewhere) on Windows. Evidence links like "tests/common.py" are
+# resolved against this, never against ".".
+PROTOTYPE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
 def T(**kw):
     base = {"header": "echo",  # cooperative mock echoes the harness header
             "objective": "Fix the login bug",
@@ -39,6 +46,6 @@ def drive_verification(loop, evidence_links=None, recipe_exit=0):
         wid, {"evidence_links": evidence_links or {},
               "recipe_result": {"runner": "just", "recipe": "test",
                                 "exit_code": recipe_exit, "output": "stubbed"},
-              "project_root": "."})
+              "project_root": PROTOTYPE_ROOT})
     assert r["status"] == "ok", r
     return loop.complete_verification(wid)

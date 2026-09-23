@@ -103,7 +103,7 @@ class BootstrapTest(unittest.TestCase):
         venv_bin = Path(report["venv_bin"])
         sb = Sandbox(self.tmp, venv_bin=venv_bin)
         res = sb.run_command(
-            "python3 -c \"import sys; print(sys.prefix)\"", timeout=30)
+            "python -c \"import sys; print(sys.prefix)\"", timeout=30)
         self.assertEqual(res["exit_code"], 0, res.get("stderr"))
         # PROOF: the venv is active through sys.prefix
         self.assertEqual(res["stdout"].strip(), str(self.tmp / ".venv"))

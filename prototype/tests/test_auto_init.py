@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import bootstrap
 import chat
 import cli
-from bootstrap import session_start_auto_init
+from bootstrap import session_start_auto_init, venv_bin_dir, venv_python
 from registry import Registry
 
 
@@ -52,7 +52,7 @@ class AutoInitTest(unittest.TestCase):
         self.assertTrue(result["ok"], result["summary"])
         self.assertTrue((self.tmp / ".awino" / "project.yaml").is_file(),
                         "project.yaml missing")
-        self.assertTrue((self.tmp / ".venv" / "bin" / "python").exists(),
+        self.assertTrue(venv_python(venv_bin_dir(self.tmp / ".venv")).exists(),
                         "venv missing")
         self.assertTrue((self.tmp / "justfile").is_file(), "justfile missing")
         self.assertTrue((self.tmp / ".awino" / "registry").is_dir(),

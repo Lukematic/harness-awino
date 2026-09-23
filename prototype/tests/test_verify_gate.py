@@ -16,7 +16,7 @@ from verify import compute_verdict, findings_as_tasks
 from skills import SkillStore
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
-from common import make_loop, drive_verification
+from common import make_loop, drive_verification, PROTOTYPE_ROOT
 
 
 def _to_verify(loop):
@@ -152,7 +152,7 @@ class ComputeVerdictTest(unittest.TestCase):
                             evidence_links={"ship it": "tests/common.py"},
                             recipe_result={"runner": "just", "recipe": "test",
                                            "exit_code": 0, "output": "ok"},
-                            project_root=".")
+                            project_root=PROTOTYPE_ROOT)
         self.assertTrue(v["passed"])
 
     def test_done_dag_task_without_evidence_fails(self):
