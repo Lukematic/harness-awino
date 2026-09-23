@@ -32,6 +32,15 @@ t("echo still needs no key when keys are stored", () => {
   assert.strictEqual(keyMissingForProvider("echo", ALL), false);
 });
 
+// scripted (TEST ONLY canned turns) needs no key — claiming otherwise would
+// show a lying setup card / onboarding wizard in GUI-test sessions
+t("scripted needs no key even when nothing is stored", () => {
+  assert.strictEqual(keyMissingForProvider("scripted", NONE), false);
+});
+t("scripted still needs no key when keys are stored", () => {
+  assert.strictEqual(keyMissingForProvider("scripted", ALL), false);
+});
+
 // bedrock needs the Bedrock key and nothing else satisfies it
 t("bedrock missing when no bedrock key stored", () => {
   assert.strictEqual(keyMissingForProvider("bedrock", NONE), true);

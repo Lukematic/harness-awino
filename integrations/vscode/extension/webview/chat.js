@@ -256,7 +256,35 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
   const setupCard = document.getElementById("setup-card");
   const setupSub = document.getElementById("setup-sub");
   const setupBtn = document.getElementById("setup-btn");
+  const providerPill = document.getElementById("provider-pill");
+  const inputbarEl = document.getElementById("inputbar");
+  // Onboarding wizard elements (may be absent in older test shims — guarded).
+  const wizardEl = document.getElementById("wizard");
+  const wProvider = document.getElementById("w-provider");
+  const wDocs = document.getElementById("w-docs");
+  const wKeyStep = document.getElementById("w-keystep");
+  const wKey = document.getElementById("w-key");
+  const wKeylabel = document.getElementById("w-keylabel");
+  const wGetKey = document.getElementById("w-getkey");
+  const wModel = document.getElementById("w-model");
+  const wModelSelect = document.getElementById("w-modelselect");
+  const wIntel = document.getElementById("w-intel");
+  const wEndpoint = document.getElementById("w-endpoint");
+  const wRegionRow = document.getElementById("w-regionrow");
+  const wRegion = document.getElementById("w-region");
+  const wFetchRow = document.getElementById("w-fetchrow");
+  const wFetch = document.getElementById("w-fetch");
+  const wFetchNote = document.getElementById("w-fetchnote");
+  const wDone = document.getElementById("w-done");
+  const wSkip = document.getElementById("w-skip");
+  const wError = document.getElementById("w-error");
   let turnInFlight = false;
+
+  // Shared provider catalogue / model-intel (webview/setup-shared.js).
+  // Lazily accessed so a failed load degrades instead of killing the chat.
+  function setupMeta() {
+    return (typeof AwinoSetup !== "undefined" && AwinoSetup) || null;
+  }
 
   // ---------- theme variants (user refinement 2026-09-23) ----------
   // Two Wakandan variants: "vibranium" (lifted dark) and "savanna" (warm
@@ -367,6 +395,183 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
       setupSub.textContent =
         "The \"" + String(provider || "unknown") + "\" provider needs an API key before a model can connect. " +
         "Keys are stored in VS Code SecretStorage — never in settings JSON.";
+    }
+  }
+
+  // Provider status pill in the input area (Kilo's "No providers" pattern):
+  // the binding state where the user types — "No provider" or
+  // "provider · model". Clicking opens Models & Providers.
+  function setProviderPill(m) {
+    if (!providerPill) return;
+    var none = true;
+    var label = "No provider";
+    var title = "No provider connected — open Models & Providers";
+    if (m.keyMissing !== true && (m.connected === true || (m.ready && m.ready.binding))) {
+      var b = (m.ready && m.ready.binding) || {};
+      var p = m.provider || b.provider;
+      var mo = m.model || b.model;
+      if (p) {
+        none = false;
+        label = p + " · " + (mo || "?");
+        title = "provider: " + p + " · model: " + (mo || "?") + " — open Models & Providers";
+      }
+    }
+    providerPill.textContent = label;
+    providerPill.title = title;
+    if (providerPill.classList && providerPill.classList.toggle) {
+      providerPill.classList.toggle("none", none);
+    }
+  }
+
+  // ---------- first-run onboarding wizard (§2.11) ----------
+  // On first activation with no provider key configured (a key the active
+  // provider actually needs), the sidebar IS the setup flow: Choose
+  // provider → API key (+ Get-key button) → Model (with Fetch) → Done.
+  // It supersedes the setup card while active; the input bar is parked
+  // until Done/Skip. Completing or skipping records awino.onboarded so this
+  // runs once.
+  var wizardActive = false;
+  var WIZ_MANUAL = "__awino_wmanual__";
+  var wizLastSelect = "";
+  var wizDocsUrl = null;
+
+  function setWizardError(t) {
+    if (!wError) return;
+    wError.hidden = !t;
+    wError.textContent = t || "";
+  }
+
+  function currentWizardModel() {
+    if (wModelSelect && !wModelSelect.hidden && wModelSelect.value !== WIZ_MANUAL) {
+      return wModelSelect.value;
+    }
+    return wModel ? wModel.value.trim() : "";
+  }
+
+  function showWizardModelInput() {
+    if (!wModel || !wModelSelect) return;
+    wModel.hidden = false;
+    wModelSelect.hidden = true;
+  }
+
+  function updateWizardIntel() {
+    if (!wIntel) return;
+    var sm = setupMeta();
+    var id = currentWizardModel();
+    var line = sm ? sm.modelIntelLine(id) : null;
+    if (!id) {
+      wIntel.textContent = "Pick a model to see context-window and pricing estimates.";
+    } else if (line) {
+      wIntel.textContent = line;
+    } else {
+      wIntel.textContent = "Context/pricing unknown for this model \u2014 check the provider docs.";
+    }
+  }
+
+  function updateWizardForProvider() {
+    if (!wProvider) return;
+    var sm = setupMeta();
+    var pid = wProvider.value;
+    var p = sm ? sm.providerById(pid) : null;
+    var needs = sm ? sm.needsKey(pid) : (pid === "openai" || pid === "anthropic" || pid === "bedrock");
+    if (wDocs) {
+      if (p && p.docsUrl) {
+        wDocs.hidden = false;
+        wizDocsUrl = p.docsUrl;
+        wDocs.title = (p.keyName || p.id) + " documentation";
+      } else {
+        wDocs.hidden = true;
+        wizDocsUrl = null;
+      }
+    }
+    if (wKeyStep) wKeyStep.hidden = !needs;
+    if (wGetKey) {
+      wGetKey.textContent = "Get " + (p && p.keyName ? p.keyName : "API") + " API Key";
+      wGetKey.hidden = !needs || !(p && p.keyUrl);
+    }
+    if (wFetchRow) wFetchRow.hidden = !(sm ? sm.fetchableProvider(pid) : (pid === "openai" || pid === "ollama"));
+    if (wRegionRow) wRegionRow.hidden = (pid !== "bedrock");
+    updateWizardIntel();
+  }
+
+  function populateWizardModelSelect(models) {
+    if (!wModelSelect || !wModel) return;
+    wModelSelect.innerHTML = "";
+    var current = wModel.value.trim();
+    var seen = {};
+    if (current && models.indexOf(current) < 0) {
+      var cur = document.createElement("option");
+      cur.value = current;
+      cur.textContent = current + " (current)";
+      wModelSelect.appendChild(cur);
+      seen[current] = true;
+    }
+    models.forEach(function (id) {
+      if (seen[id]) return;
+      seen[id] = true;
+      var o = document.createElement("option");
+      o.value = id;
+      o.textContent = id;
+      wModelSelect.appendChild(o);
+    });
+    var manual = document.createElement("option");
+    manual.value = WIZ_MANUAL;
+    manual.textContent = "Type a model id manually\u2026";
+    wModelSelect.appendChild(manual);
+    if (wModelSelect.options) {
+      wModelSelect.value = current && seen[current] ? current : models[0];
+    } else {
+      // minimal-DOM environments (headless tests): value sticks directly
+      wModelSelect.value = current && seen[current] ? current : models[0];
+    }
+    wizLastSelect = wModelSelect.value;
+    wModel.hidden = true;
+    wModelSelect.hidden = false;
+    updateWizardIntel();
+  }
+
+  function populateWizard(m) {
+    var sm = setupMeta();
+    if (wProvider && sm) {
+      wProvider.innerHTML = "";
+      sm.PROVIDERS.forEach(function (p) {
+        var o = document.createElement("option");
+        o.value = p.id;
+        o.textContent = p.label;
+        wProvider.appendChild(o);
+      });
+      sm.ensureSelectedOption(wProvider, (m && m.provider) || "echo");
+    }
+    if (wKey) wKey.value = "";
+    if (wKeylabel) wKeylabel.value = "";
+    if (wModel) { wModel.value = ""; showWizardModelInput(); }
+    if (wEndpoint) wEndpoint.value = "";
+    if (wFetchNote) wFetchNote.textContent = "";
+    if (wRegion && m && m.bedrockRegions) {
+      wRegion.innerHTML = "";
+      m.bedrockRegions.forEach(function (r) {
+        var o = document.createElement("option");
+        o.value = r;
+        o.textContent = r;
+        wRegion.appendChild(o);
+      });
+    }
+    setWizardError("");
+    updateWizardForProvider();
+  }
+
+  function setWizard(show, m) {
+    if (!wizardEl) return;
+    if (show && !wizardActive) {
+      wizardActive = true;
+      populateWizard(m);
+      wizardEl.hidden = false;
+      if (inputbarEl) inputbarEl.hidden = true;
+      setSetupCard(false);
+    } else if (!show && wizardActive) {
+      wizardActive = false;
+      wizardEl.hidden = true;
+      if (inputbarEl) inputbarEl.hidden = false;
     }
   }
 
@@ -782,6 +987,74 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
   const openModelsPanel = function () { vscode.postMessage({ type: "models" }); };
   if (modelsBtn) modelsBtn.addEventListener("click", openModelsPanel);
   if (setupBtn) setupBtn.addEventListener("click", openModelsPanel);
+  // Provider status pill: same destination as the gear — the click target
+  // a new user actually finds (Kilo pattern).
+  if (providerPill) providerPill.addEventListener("click", openModelsPanel);
+
+  // ---------- wizard events ----------
+  if (wProvider) wProvider.addEventListener("change", updateWizardForProvider);
+  if (wDocs) wDocs.addEventListener("click", function (e) {
+    if (e && e.preventDefault) e.preventDefault();
+    if (wizDocsUrl) vscode.postMessage({ type: "openExternal", url: wizDocsUrl });
+  });
+  if (wGetKey) wGetKey.addEventListener("click", function () {
+    var sm = setupMeta();
+    var p = sm ? sm.providerById(wProvider ? wProvider.value : "") : null;
+    if (p && p.keyUrl) vscode.postMessage({ type: "openExternal", url: p.keyUrl });
+  });
+  if (wModel) {
+    wModel.addEventListener("change", updateWizardIntel);
+    wModel.addEventListener("input", updateWizardIntel);
+  }
+  if (wModelSelect) wModelSelect.addEventListener("change", function () {
+    if (wModelSelect.value === WIZ_MANUAL) {
+      if (wizLastSelect && wizLastSelect !== WIZ_MANUAL && wModel) wModel.value = wizLastSelect;
+      showWizardModelInput();
+      if (wModel) wModel.focus();
+    } else {
+      wizLastSelect = wModelSelect.value;
+    }
+    updateWizardIntel();
+  });
+  if (wFetch) wFetch.addEventListener("click", function () {
+    if (!wProvider || !wEndpoint || !wKey || !wFetchNote) return;
+    var provider = wProvider.value;
+    var endpoint = wEndpoint.value.trim();
+    var key = wKey.value;
+    if (provider === "openai" && !endpoint && !key) {
+      wFetchNote.textContent = "Enter an endpoint and API key first, then fetch.";
+      return;
+    }
+    setWizardError("");
+    wFetchNote.textContent = "fetching\u2026";
+    vscode.postMessage({ type: "wizardFetch", provider: provider, endpoint: endpoint, key: key });
+  });
+  if (wDone) wDone.addEventListener("click", function () {
+    if (!wProvider) return;
+    var sm = setupMeta();
+    var provider = wProvider.value;
+    var needs = sm ? sm.needsKey(provider)
+      : (provider === "openai" || provider === "anthropic" || provider === "bedrock");
+    if (needs && wKey && !wKey.value) {
+      // Roo-style fail-closed inline validation: no silent no-op.
+      setWizardError("Enter an API key for this provider \u2014 or choose echo or ollama for the keyless path.");
+      wKey.focus();
+      return;
+    }
+    setWizardError("");
+    vscode.postMessage({
+      type: "wizardSave",
+      provider: provider,
+      endpoint: wEndpoint ? wEndpoint.value.trim() : "",
+      model: currentWizardModel(),
+      key: wKey ? wKey.value : "",
+      keyLabel: wKeylabel ? wKeylabel.value.trim() : "",
+      bedrockRegion: wRegion ? wRegion.value : "",
+    });
+  });
+  if (wSkip) wSkip.addEventListener("click", function () {
+    vscode.postMessage({ type: "wizardDismiss" });
+  });
   input.addEventListener("keydown", function (e) {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   });
@@ -791,11 +1064,26 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     if (!m || typeof m !== "object") return;
     if (m.type === "event" && m.payload) {
       renderEvent(m.payload);
+    } else if (m.type === "wizardModels") {
+      // Model discovery results for the onboarding wizard (host-side fetch).
+      if (m.ok && m.models && m.models.length) {
+        populateWizardModelSelect(m.models);
+        if (wFetchNote) wFetchNote.textContent =
+          "Found " + m.models.length + " models \u2014 pick one, or type manually.";
+      } else {
+        showWizardModelInput();
+        if (wFetchNote) wFetchNote.textContent =
+          "Couldn't fetch models: " + (m.error || "unknown error") + " \u2014 type a model id manually.";
+      }
     } else if (m.type === "state") {
+      // Provider pill always reflects the binding; the wizard supersedes the
+      // setup card while it owns the first-run setup flow.
+      setProviderPill(m);
+      setWizard(m.showWizard === true, m);
       // Missing API key for the active provider -> setup card at the top of
       // the chat, regardless of the connected flag (a keyless provider may
       // never reach "connected").
-      setSetupCard(m.keyMissing === true, m.provider);
+      setSetupCard(m.keyMissing === true && !wizardActive, m.provider);
       if (m.connected === false) {
         if (m.connectError) {
           // Sidecar failed to spawn/start: show the OS error + interpreter

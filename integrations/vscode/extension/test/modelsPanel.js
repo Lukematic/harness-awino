@@ -25,13 +25,50 @@ StubEl.prototype.addEventListener = function (t, fn) { (this.listeners[t] = this
 StubEl.prototype.fire = function (t, e) { (this.listeners[t] || []).forEach(function (fn) { fn(e || {}); }); };
 StubEl.prototype.focus = function () {};
 
+// Select double with REAL select semantics: assigning a value with no
+// matching <option> leaves the select blank (value "") — the 0.3.0 bug
+// (blank provider dropdown) only reproduces with this behavior.
+function SelectStub(optionValues) {
+  StubEl.call(this, "select");
+  const self = this;
+  this._options = optionValues.map(function (v) {
+    const o = new StubEl("option");
+    o.value = v; o.textContent = v;
+    return o;
+  });
+  this.children = this._options.slice();
+  this._value = "";
+  Object.defineProperty(this, "value", {
+    get: function () { return self._value; },
+    set: function (v) {
+      self._value = self._options.some(function (o) { return o.value === v; }) ? v : "";
+    }
+  });
+  Object.defineProperty(this, "firstChild", {
+    get: function () { return self.children[0] || null; }
+  });
+}
+SelectStub.prototype = Object.create(StubEl.prototype);
+SelectStub.prototype.appendChild = function (o) {
+  this._options.push(o); this.children.push(o); return o;
+};
+SelectStub.prototype.insertBefore = function (o) {
+  this._options.unshift(o); this.children.unshift(o); return o;
+};
+
 let ids, messageListeners, posted;
 function boot() {
+  // Shared setup knowledge first, while `window` is still undefined, so it
+  // attaches to globalThis and bare `AwinoSetup` resolves inside models.js.
+  delete require.cache[require.resolve("../webview/setup-shared.js")];
+  require("../webview/setup-shared.js");
   ids = {};
-  ["provider", "endpoint", "bedrockRegion", "model", "modelSelect", "timeout",
+  ["endpoint", "bedrockRegion", "model", "modelSelect", "timeout",
    "openaiKey", "anthropicKey", "bedrockKey",
    "openaiKeyLabel", "anthropicKeyLabel", "bedrockKeyLabel",
    "openaiKeyState", "anthropicKeyState", "bedrockKeyState",
+   "openaiGetKey", "anthropicGetKey", "bedrockGetKey",
+   "providerDocs", "modelIntel",
    "save", "clearKeys", "fetchModels", "fetchRow", "fetchNote",
    "status", "env", "switchEnv", "envResult"].forEach(function (id) {
     const e = new StubEl(id === "modelSelect" ? "select" : "div");
@@ -39,6 +76,11 @@ function boot() {
     if (id === "modelSelect" || id === "fetchRow") e.hidden = true; // as shipped in models.html
     ids[id] = e;
   });
+  // provider is a real select: value only sticks when an option matches
+  ids["provider"] = new SelectStub(["echo", "ollama", "openai", "anthropic", "bedrock"]);
+  ids["provider"].id = "provider";
+  ids["providerDocs"].hidden = true; // as shipped in models.html
+  ids["modelIntel"].hidden = true; // as shipped in models.html
   messageListeners = [];
   posted = [];
   global.window = {
@@ -179,6 +221,59 @@ const sv = lastPosted("save");
 ok(sv && sv.openaiKeyLabel === "Work" && sv.anthropicKeyLabel === "" && sv.bedrockKeyLabel === "Prod",
   "save posts the key labels");
 ok(sv && sv.model === "gpt-3.5", "save posts the dropdown model");
+
+// 10. (e) model intelligence line under the picker
+dispatch(stateMsg());
+// back to text-input mode as shipped (section 9 left the fetch dropdown open)
+ids["modelSelect"].hidden = true;
+ids["model"].value = "gpt-4o";
+ids["model"].fire("input", {});
+ok(ids["modelIntel"].hidden === false, "intel line visible");
+ok(ids["modelIntel"].textContent.indexOf("128K") >= 0, "intel shows context window for a known model");
+ok(ids["modelIntel"].textContent.indexOf("$2.50/M") >= 0, "intel shows input $/M for a known model");
+ok(ids["modelIntel"].textContent.indexOf("(est.)") >= 0, "intel marked as an estimate");
+ids["model"].value = "mystery-9000";
+ids["model"].fire("input", {});
+ok(ids["modelIntel"].textContent.indexOf("unknown") >= 0, "intel is honest about unlisted models");
+ids["model"].value = "";
+ids["model"].fire("input", {});
+ok(ids["modelIntel"].textContent.indexOf("Pick a model") >= 0, "empty model prompts to pick one");
+
+// 11. (c) Provider Docs link follows the provider, hidden for echo
+dispatch(stateMsg()); // provider openai
+ok(ids["providerDocs"].hidden === false, "docs link visible for openai");
+ids["providerDocs"].fire("click", { preventDefault: function () {} });
+const docMsg = lastPosted("openExternal");
+ok(docMsg && docMsg.url === "https://platform.openai.com/docs", "docs click opens the openai docs");
+ids["provider"].value = "anthropic";
+ids["provider"].fire("change", {});
+ids["providerDocs"].fire("click", { preventDefault: function () {} });
+ok(lastPosted("openExternal").url === "https://docs.anthropic.com", "docs link follows the provider");
+ids["provider"].value = "echo";
+ids["provider"].fire("change", {});
+ok(ids["providerDocs"].hidden === true, "docs link hidden for echo (no docs needed)");
+ids["provider"].value = "openai";
+ids["provider"].fire("change", {});
+
+// 12. (b) Get {Provider} API Key buttons -> key-creation pages
+ids["openaiGetKey"].fire("click", {});
+ok(lastPosted("openExternal").url === "https://platform.openai.com/api-keys",
+  "Get OpenAI API Key opens the key page");
+ids["anthropicGetKey"].fire("click", {});
+ok(lastPosted("openExternal").url === "https://console.anthropic.com",
+  "Get Anthropic API Key opens the key page");
+ids["bedrockGetKey"].fire("click", {});
+ok(lastPosted("openExternal").url === "https://console.aws.amazon.com/bedrock/",
+  "Get Bedrock API Key opens the key page");
+
+// 13. (d) legacy provider id renders as a labeled option — never blank
+const sc = stateMsg();
+sc.config.provider = "scripted"; // 0.3.0 left this binding behind
+dispatch(sc);
+ok(ids["provider"].value === "scripted", "provider dropdown shows the current binding, not blank");
+ok(ids["provider"].children.length === 6, "legacy binding added as an option");
+ok(ids["provider"].children[0].value === "scripted", "legacy option carries the binding id");
+ok(ids["provider"].children[0].textContent.indexOf("(current)") >= 0, "legacy option labeled as current");
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

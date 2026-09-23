@@ -7,6 +7,17 @@
   const $ = function (id) { return document.getElementById(id); };
   const status = $("status");
 
+  // Shared provider catalogue / model-intel (webview/setup-shared.js, loaded
+  // before this file). Lazily accessed so a failed load degrades instead of
+  // killing the panel.
+  function setupMeta() {
+    return (typeof AwinoSetup !== "undefined" && AwinoSetup) || null;
+  }
+
+  function openExternal(url) {
+    if (url) vscode.postMessage({ type: "openExternal", url: url });
+  }
+
   function setKeyState(name, isSet, label) {
     // "key set (Work)" when the user named the key, plain "key set" when
     // they didn't, "not set" when nothing is in SecretStorage.
@@ -17,9 +28,19 @@
 
   function render(cfg, binding, environments, keys, bedrockRegions, keyLabels) {
     var labels = keyLabels || {};
-    $("provider").value = cfg.provider || "echo";
+    // (d) MUST-FIX: never render the provider dropdown blank. The stored
+    // provider can be a legacy id no <option> carries (0.3.0 left "scripted"
+    // behind) — surface the real binding as a labeled option instead.
+    var sm = setupMeta();
+    if (sm) {
+      sm.ensureSelectedOption($("provider"), cfg.provider || "echo");
+    } else {
+      $("provider").value = cfg.provider || "echo";
+    }
+    updateProviderDocs();
     $("endpoint").value = cfg.endpoint || "";
     $("model").value = cfg.model || "";
+    updateModelIntel();
     $("timeout").value = cfg.timeout || 180;
     setKeyState("openai", keys.openai, labels.openai);
     setKeyState("anthropic", keys.anthropic, labels.anthropic);
@@ -74,12 +95,74 @@
   }
 
   function updateFetchUi() {
-    var show = fetchableProvider($("provider").value);
+    var sm = setupMeta();
+    var show = sm ? sm.fetchableProvider($("provider").value) : fetchableProvider($("provider").value);
     $("fetchRow").hidden = !show;
     if (!show) {
       showModelInput();
       setFetchNote("", "");
     }
+  }
+
+  // (c) "Provider Docs" link next to the provider dropdown — follows the
+  // selected provider; hidden when the provider needs no docs (echo).
+  var currentDocsUrl = null;
+  function updateProviderDocs() {
+    var link = $("providerDocs");
+    if (!link) return;
+    var sm = setupMeta();
+    var p = sm ? sm.providerById($("provider").value) : null;
+    if (p && p.docsUrl) {
+      link.hidden = false;
+      currentDocsUrl = p.docsUrl;
+      link.title = (p.keyName || p.id) + " documentation";
+    } else {
+      link.hidden = true;
+      currentDocsUrl = null;
+    }
+  }
+
+  // (e) Model intelligence line under the picker: context window + $/M
+  // in/out from the static table (all values estimates, labeled as such).
+  // Unknown models say so honestly instead of guessing.
+  function updateModelIntel() {
+    var el = $("modelIntel");
+    if (!el) return;
+    var id = currentModelValue();
+    if (id === MANUAL) id = $("model").value.trim();
+    var sm = setupMeta();
+    var line = sm ? sm.modelIntelLine(id) : null;
+    el.hidden = false;
+    if (!id) {
+      el.textContent = "Pick a model to see context-window and pricing estimates.";
+    } else if (line) {
+      el.textContent = line;
+    } else {
+      el.textContent = "Context/pricing unknown for this model \u2014 check the provider docs.";
+    }
+  }
+
+  // (b) "Get {Provider} API Key" buttons — straight to key creation, per the
+  // Roo/Cline pattern. The extension host allowlists the destination.
+  function wireGetKeyButton(id, providerId) {
+    var b = $(id);
+    if (!b) return;
+    b.addEventListener("click", function () {
+      var sm = setupMeta();
+      var p = sm ? sm.providerById(providerId) : null;
+      openExternal(p && p.keyUrl);
+    });
+  }
+  wireGetKeyButton("openaiGetKey", "openai");
+  wireGetKeyButton("anthropicGetKey", "anthropic");
+  wireGetKeyButton("bedrockGetKey", "bedrock");
+
+  var docsLink = $("providerDocs");
+  if (docsLink) {
+    docsLink.addEventListener("click", function (e) {
+      if (e && e.preventDefault) e.preventDefault();
+      openExternal(currentDocsUrl);
+    });
   }
 
   function setFetchNote(text, cls) {
@@ -129,9 +212,16 @@
     lastSelectValue = sel.value;
     $("model").hidden = true;
     sel.hidden = false;
+    updateModelIntel();
   }
 
-  $("provider").addEventListener("change", updateFetchUi);
+  $("provider").addEventListener("change", function () {
+    updateFetchUi();
+    updateProviderDocs();
+  });
+
+  $("model").addEventListener("change", updateModelIntel);
+  $("model").addEventListener("input", updateModelIntel);
 
   $("modelSelect").addEventListener("change", function () {
     var sel = $("modelSelect");
@@ -144,6 +234,7 @@
     } else {
       lastSelectValue = sel.value;
     }
+    updateModelIntel();
   });
 
   $("fetchModels").addEventListener("click", function () {

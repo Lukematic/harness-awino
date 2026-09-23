@@ -160,3 +160,139 @@ from `~/workspace/awino-rebuild/integrations/vscode/extension/`,
   contract, approvals, journal, and phase gates are the real code paths.
 - No Marketplace publication, signing, or release was performed — install
   and proof only, per the publish gate.
+
+---
+
+# 0.4.0 — Wakandan chat UI + competitor-teardown setup UX (2026-09-23)
+
+**Status: PROVEN — 43/44 GUI checks green.** The single failure
+(`040_approval_card_appears`) is pre-existing: the scripted approval flow
+was already red before this work (the mission never reaches BUILD in the
+GUI run), and it is unrelated to the six teardown items below.
+
+## Environment
+
+- **VS Code (official):** same Xvfb `:99` + Playwright harness as above.
+- **Extension:** `awino-loop-owner-0.4.0.vsix` (73 files, 270,791 bytes,
+  SHA-256 `090237460ac8195d2b48ccfaa8fa7459ecf9f6f91668ec080f8e09c32b0d87b6`),
+  installed into `~/workspace/vscode-test-env/ext-official`
+  (extracted from the VSIX; the `code --install-extension` CLI hangs
+  headless in this environment, so the equivalent manual extract was used
+  and verified: `webview/setup-shared.js` present,
+  `out/extension.js` contains the wizard code).
+- **Backend:** echo for the regression surface; openai-with-no-key for the
+  wizard/setup-card surface; scripted for the approval attempt. No real
+  provider keys, no network calls to paid providers.
+
+## Direct automated proof (no GUI)
+
+- `npx tsc -p ./` — clean.
+- `npm test` — all suites green (290 Node/webview tests), including two
+  new suites:
+  - `test/setupShared.js` (14): provider catalogue URLs, `needsKey`,
+    `fetchableProvider`, model-intel lines marked `(est.)`, honest
+    unknown-model fallback, and `ensureSelectedOption` with a
+    select-faithful stub (assigning an unmatched value leaves a real
+    select blank — the 0.3.0 bug only reproduces with true semantics).
+  - `test/chatSetup.js` (34): provider pill states + click, wizard
+    show/hide, provider/docs/get-key wiring, `wizardFetch`/`wizardModels`
+    success + failure paths, inline key validation, `wizardSave`,
+    `wizardDismiss`.
+  - `test/modelsPanel.js` extended to 48: (b) three Get-key buttons post
+    `openExternal` with the key-creation URLs, (c) Provider Docs link
+    follows the provider and hides for echo, (d) legacy `scripted`
+    binding renders as a labeled `(current)` option instead of blank,
+    (e) intel line for known/unknown/empty models.
+  - `test/providerKeys.js` extended: `scripted` is keyless (it replays
+    canned test turns and makes no API call).
+- `prototype/tests` — **468/468 passed** on the feature branch
+  (`TMPDIR=/home/hatch/tmp-test`).
+
+## What the GUI run proves (driver `gui_test_040.py`, log `/tmp/gui041_run.log`)
+
+### (a) First-run onboarding wizard
+
+With a fresh profile (`awino.onboarded` unset) and `awino.provider:
+"openai"` (no key), `Awino: Reconnect Sidecar` shows the wizard as the
+sidebar: provider select preselected to **openai (not blank)**, "Get
+OpenAI API Key" button, Provider Docs link, API-key step, model step;
+the input bar is parked while it is active. **Skip** dismisses it and
+the setup card takes over (key still missing). Screenshot
+`23_040_wizard.png` (wizard) and `24_040_setup_card.png` (after Skip).
+
+### (b) "Get {Provider} API Key" buttons
+
+Models & Providers shows **Get OpenAI API Key / Get Anthropic API Key /
+Get Bedrock API Key**; the wizard shows the per-provider button too.
+Unit tests prove each posts `openExternal` with the right key-creation
+URL; the extension host allowlists exactly
+`platform.openai.com`, `console.anthropic.com`, `docs.anthropic.com`,
+`console.aws.amazon.com`, `docs.aws.amazon.com`, `ollama.com` (https
+only) and refuses everything else.
+
+### (c) Provider Docs link
+
+Beside the provider dropdown in Models & Providers, and in the wizard
+header. Follows the provider (OpenAI → `platform.openai.com/docs`,
+Anthropic → `docs.anthropic.com`, …), hidden for echo. Click posts
+`openExternal` with the docs URL.
+
+### (d) Provider dropdown never blank (must-fix)
+
+The stored provider is rendered through `ensureSelectedOption`: a
+binding id with no matching `<option>` (0.3.0 left `scripted` behind)
+becomes a labeled `scripted (current)` option instead of a blank
+select. Proven in the panel, in the wizard, and by the select-faithful
+unit test.
+
+### (e) Model-intelligence line
+
+Under the model picker (panel and wizard): `Context 128K · $2.50/M in ·
+$10.00/M out (est.)` for gpt-4o — context window plus input/output
+$/M, always marked `(est.)`; local Ollama models say "no per-token
+cost"; unlisted models get the honest `Context/pricing unknown for this
+model — check the provider docs.` Screenshot `25_040_models_new.png`.
+
+### (f) Provider-status pill
+
+In the chat input area: **No provider** when the key is missing,
+**`echo · echo`** when connected; click opens Models & Providers
+(the GUI run opens the panel via the pill). Verified under Vibranium
+(`26_040_pill_vibranium.png`) and Savanna (`27_040_pill_savanna.png`).
+
+### Regression surface (still green)
+
+Vibranium default + Savanna toggle both directions, 5-bead statusline
+cluster, setup card hidden for echo, streaming echo turn with the
+honest `not exposed by this provider` thinking null, model-discovery
+fallback to manual entry, no orphan sidecar.
+
+## Screenshots (`proof/vscode_gui/`, all visually inspected)
+
+- `16_040_launch.png`, `17_040_vibranium_chat.png`,
+  `18_040_savanna_chat.png` — launch + themes (existing set)
+- `23_040_wizard.png` — onboarding wizard on first run
+- `24_040_setup_card.png` — setup card after wizard Skip
+- `25_040_models_new.png` — Models & Providers: docs link, Get-key
+  buttons, intel line
+- `26_040_pill_vibranium.png`, `27_040_pill_savanna.png` — provider
+  pill in both themes
+- `20_040_streaming_turn.png` — streaming echo turn regression
+- `22_040_final.png` — final state
+
+## Reproduce
+
+```bash
+cd ~/workspace/vscode-test-env
+DISPLAY=:99 ./pwvenv/bin/python gui_test_040.py   # ~12 min; 43/44 (approval pre-existing red)
+```
+
+## Honest gaps (unchanged)
+
+- The scripted approval GUI flow is still red (pre-existing; the mission
+  never reaches BUILD in the run). The approval *protocol* remains
+  proven by `test/harness.js`.
+- No real Windows GUI environment; Windows interpreter behavior is
+  unit-tested only.
+- No paid provider calls were made; Bedrock/Ollama discovery is
+  unit-tested, not live-proven.

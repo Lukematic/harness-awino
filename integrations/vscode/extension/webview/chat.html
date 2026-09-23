@@ -496,6 +496,95 @@
   }
   @keyframes awino-caret-blink { 50% { opacity: 0; } }
 
+  /* ---------- provider status pill (§2.10, Kilo pattern) ----------
+   * Binding state where the user types: "No provider" or "provider · model".
+   * Clicking opens Models & Providers. */
+  #provider-pill-row {
+    display: flex; padding: 6px 8px 0;
+    background: var(--awino-bg, var(--vscode-sideBar-background, #111A2E));
+    flex: 0 0 auto;
+  }
+  #provider-pill-row[hidden] { display: none; }
+  #provider-pill {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 11px; padding: 3px 12px; border-radius: 12px;
+    background: transparent; cursor: pointer;
+    border: 1px solid var(--awino-vibranium-deep, var(--vscode-textLink-foreground, #0B7FA6));
+    color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+  }
+  #provider-pill:hover {
+    background: var(--awino-vibranium-dim, rgba(0,198,255,.12));
+  }
+  #provider-pill::before {
+    content: ""; width: 8px; height: 8px; border-radius: 50%; flex: none;
+    background: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+    box-shadow: 0 0 6px var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+  }
+  #provider-pill.none::before {
+    background: var(--awino-muted, var(--vscode-descriptionForeground, #8B98B0));
+    box-shadow: none;
+  }
+
+  /* ---------- first-run onboarding wizard (§2.11) ----------
+   * On first activation with no provider key configured, the sidebar IS the
+   * setup flow: Choose provider → API key (+ Get-key button) → Model (with
+   * Fetch) → Done. Replaces the setup card while active; the input bar is
+   * parked until the wizard completes or is skipped. */
+  #wizard {
+    margin: 8px 10px 0;
+    border: 1px solid var(--awino-gold, #D4A937);
+    border-left: 4px solid var(--awino-gold, #D4A937);
+    border-radius: 10px;
+    background: var(--awino-surface-1, var(--vscode-sideBar-background, #172036));
+    flex: 0 0 auto;
+    max-height: 70%; overflow-y: auto;
+  }
+  #wizard[hidden] { display: none; }
+  .wizard-body { padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+  .wizard-title {
+    font-weight: 700; font-size: 13px; letter-spacing: .02em;
+    color: var(--awino-gold-bright, var(--vscode-editorWarning-foreground, #F0C94A));
+  }
+  .wizard-sub { font-size: 11.5px; color: var(--awino-muted, var(--vscode-descriptionForeground, #8B98B0)); }
+  .wlabel {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .06em; font-weight: 700;
+    color: var(--awino-gold, var(--vscode-editorWarning-foreground, #D4A937));
+    margin-bottom: 5px;
+  }
+  #wizard select, #wizard input {
+    width: 100%; box-sizing: border-box; padding: 7px;
+    background: var(--awino-bg-3, var(--vscode-input-background, #1E2A45));
+    color: var(--awino-text, var(--vscode-input-foreground, #DCE7F7));
+    border: 1px solid var(--awino-vibranium-deep, var(--vscode-input-border, #0B7FA6));
+    border-radius: 6px; font: inherit; font-size: 12px;
+  }
+  #wizard select:focus, #wizard input:focus { outline: none;
+    box-shadow: 0 0 0 1px var(--awino-vibranium, var(--vscode-focusBorder, #00C6FF)); }
+  #wizard .wkeyrow { display: flex; gap: 6px; }
+  #wizard .wkeyrow input[type="password"] { flex: 1; min-width: 0; }
+  #wizard #w-keylabel { flex: 0 0 104px; width: 104px; }
+  #wizard .wrow { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+  #wizard .wnote { font-size: 11px; color: var(--awino-muted, var(--vscode-descriptionForeground, #8B98B0)); }
+  #wizard .werror { font-size: 11.5px; color: var(--awino-danger, var(--vscode-testing-iconFailed, #F14C4C)); }
+  #wizard .werror[hidden] { display: none; }
+  #wizard .docslink {
+    font-size: 11.5px; color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+    text-decoration: none; margin-left: 8px;
+  }
+  #wizard .docslink:hover { text-decoration: underline; }
+  #wizard .docslink[hidden] { display: none; }
+  #wizard .wstep[hidden] { display: none; }
+  #wizard .btnrow { display: flex; gap: 8px; }
+  #w-done {
+    background: linear-gradient(180deg,
+      var(--awino-vibranium, var(--vscode-button-background, #00C6FF)),
+      var(--awino-vibranium-deep, var(--vscode-button-hoverBackground, #0B7FA6)));
+    color: var(--awino-on-vibranium, #04222E);
+    font-weight: 600;
+  }
+  #w-modelselect[hidden] { display: none; }
+  #inputbar[hidden] { display: none; }
+
   /* ---------- jump-to-latest pill (§4.1) ---------- */
   #jump-latest {
     position: absolute; left: 50%; transform: translateX(-50%); bottom: 108px; z-index: 10;
@@ -616,6 +705,54 @@
 <div id="messages"></div>
 <button id="jump-latest" hidden>&#8595; jump to latest</button>
 <div id="statusline">not connected</div>
+<div id="provider-pill-row">
+  <button id="provider-pill" class="none" title="Models &amp; Providers — API keys and model selection">No provider</button>
+</div>
+<div id="wizard" hidden>
+  <div class="wizard-body">
+    <div>
+      <div class="wizard-title">Set up Awino</div>
+      <div class="wizard-sub">Choose a provider, add an API key, pick a model — about a minute. You can change any of this later.</div>
+    </div>
+    <div class="wstep">
+      <div class="wlabel">1 · Choose provider<a id="w-docs" class="docslink" href="#" hidden>Provider Docs</a></div>
+      <select id="w-provider"></select>
+    </div>
+    <div class="wstep" id="w-keystep">
+      <div class="wlabel">2 · API key</div>
+      <div class="wkeyrow">
+        <input id="w-key" type="password" autocomplete="off" placeholder="Paste API key">
+        <input id="w-keylabel" type="text" maxlength="40" placeholder="Label (e.g. Work)" aria-label="Label for the API key">
+      </div>
+      <div class="wrow">
+        <button id="w-getkey" class="secondary">Get API Key</button>
+      </div>
+      <div class="wnote">Keys are stored in VS Code SecretStorage — never in settings, logs, or screenshots.</div>
+    </div>
+    <div class="wstep">
+      <div class="wlabel">3 · Model</div>
+      <input id="w-model" type="text" placeholder="Model id (empty = provider default)">
+      <select id="w-modelselect" hidden></select>
+      <div id="w-intel" class="wnote"></div>
+      <div class="wrow" id="w-regionrow" hidden>
+        <label class="wnote" for="w-region">Bedrock region</label>
+        <select id="w-region"></select>
+      </div>
+      <div class="wrow">
+        <input id="w-endpoint" type="text" placeholder="Endpoint (empty = provider default)" aria-label="Endpoint (empty = provider default)">
+      </div>
+      <div class="wrow" id="w-fetchrow" hidden>
+        <button id="w-fetch" class="secondary">Fetch models</button>
+        <span id="w-fetchnote" class="wnote"></span>
+      </div>
+    </div>
+    <div class="wstep btnrow">
+      <button id="w-done">Save &amp; Connect</button>
+      <button id="w-skip" class="secondary">Skip for now</button>
+    </div>
+    <div id="w-error" class="werror" hidden></div>
+  </div>
+</div>
 <div id="inputbar">
   <textarea id="input" rows="2" placeholder="Message the loop owner… (a mission starts with the discovery interview)"></textarea>
   <div style="display:flex;flex-direction:column;gap:6px;margin-left:8px;">
@@ -623,6 +760,7 @@
     <button id="stop" class="secondary">Stop</button>
   </div>
 </div>
+<script src="{{SETUP_SHARED_JS}}"></script>
 <script src="{{CHAT_JS}}"></script>
 </body>
 </html>

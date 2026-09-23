@@ -21,6 +21,10 @@ export function keyMissingForProvider(provider: string, keys: KeyPresence): bool
     case "echo":
     case "ollama":
       return false;
+    case "scripted":
+      // TEST ONLY provider: replays canned turns, no network, no key.
+      // Claiming it needs one would show a lying setup card / wizard.
+      return false;
     case "bedrock":
       return !keys.bedrock;
     case "anthropic":

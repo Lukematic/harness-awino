@@ -283,6 +283,75 @@ function postToChat(msg: unknown): void {
   chatPanel?.webview.postMessage(msg);
 }
 
+// Destinations the webviews may open via the "openExternal" message ("Get
+// {Provider} API Key" buttons, "Provider Docs" links). Fixed allowlist —
+// the webview never gets a free-form browser.
+const EXTERNAL_ALLOWLIST = new Set([
+  "platform.openai.com",
+  "console.anthropic.com",
+  "docs.anthropic.com",
+  "console.aws.amazon.com",
+  "docs.aws.amazon.com",
+  "ollama.com",
+]);
+
+function openExternalAllowed(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" && EXTERNAL_ALLOWLIST.has(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
+async function openExternal(url: unknown): Promise<void> {
+  if (typeof url !== "string" || !openExternalAllowed(url)) {
+    log(`openExternal refused: ${String(url).slice(0, 120)}`);
+    return;
+  }
+  await vscode.env.openExternal(vscode.Uri.parse(url));
+}
+
+// Single shape for every "state" push to the chat webview: connection,
+// binding (provider pill), key-missing (setup card), wizard flag, and the
+// bedrock region list for the wizard. `extra` carries per-site fields such
+// as connectError.
+function postChatState(extra: Record<string, unknown> = {}): void {
+  const binding = (session?.ready?.["binding"] ?? {}) as Record<string, unknown>;
+  postToChat({
+    type: "state",
+    connected: !!session?.ready,
+    ready: session?.ready ?? null,
+    status: session?.lastStatus ?? null,
+    keyMissing: lastKeyMissing?.missing ?? false,
+    provider: lastKeyMissing?.provider ?? "echo",
+    model: String(binding["model"] ?? (session?.ready as Record<string, unknown> | null)?.["model"] ?? ""),
+    showWizard: lastShowWizard,
+    bedrockRegions: BEDROCK_REGIONS,
+    ...extra,
+  });
+}
+
+// Model discovery shared by the Models & Providers panel ("fetchModels")
+// and the onboarding wizard ("wizardFetch"). Failures never throw — the
+// caller renders the plain-language reason and keeps manual entry.
+async function runModelDiscovery(
+  context: vscode.ExtensionContext,
+  provider: string,
+  endpoint: string,
+  key: string | undefined
+): Promise<{ ok: boolean; models: string[]; error?: string }> {
+  let k = key;
+  if (!k && provider === "openai") {
+    k = (await context.secrets.get(KEY_OPENAI)) ?? undefined;
+  }
+  try {
+    return await discoverModels(provider, endpoint || undefined, k);
+  } catch (e) {
+    return { ok: false, models: [], error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 class ChatViewProvider implements vscode.WebviewViewProvider {
   constructor(private ctx: vscode.ExtensionContext) {}
 
@@ -293,23 +362,21 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       enableScripts: true,
       localResourceRoots: [webviewDir],
     };
-    view.webview.html = loadWebviewHtml(this.ctx, "chat.html").replace(
-      "{{CHAT_JS}}",
-      String(view.webview.asWebviewUri(vscode.Uri.joinPath(webviewDir, "chat.js")))
-    );
-    view.webview.onDidReceiveMessage((m) => void handleChatMessage(m));
+    view.webview.html = loadWebviewHtml(this.ctx, "chat.html")
+      .replace(
+        "{{SETUP_SHARED_JS}}",
+        String(view.webview.asWebviewUri(vscode.Uri.joinPath(webviewDir, "setup-shared.js")))
+      )
+      .replace(
+        "{{CHAT_JS}}",
+        String(view.webview.asWebviewUri(vscode.Uri.joinPath(webviewDir, "chat.js")))
+      );
+    view.webview.onDidReceiveMessage((m) => void handleChatMessage(this.ctx, m));
     view.onDidDispose(() => {
       chatPanel = null;
     });
-    // initial state push
-    view.webview.postMessage({
-      type: "state",
-      connected: !!session?.ready,
-      ready: session?.ready ?? null,
-      status: session?.lastStatus ?? null,
-      keyMissing: lastKeyMissing?.missing ?? false,
-      provider: lastKeyMissing?.provider ?? "echo",
-    });
+    // initial state push (connect() re-pushes with fresh key/wizard state)
+    postChatState();
   }
 }
 
@@ -318,11 +385,45 @@ function loadWebviewHtml(ctx: vscode.ExtensionContext, file: string): string {
   return fs.readFileSync(p, "utf8");
 }
 
-async function handleChatMessage(m: { type: string; [k: string]: unknown }): Promise<void> {
+async function handleChatMessage(
+  context: vscode.ExtensionContext,
+  m: { type: string; [k: string]: unknown }
+): Promise<void> {
   // "models" opens the Models & Providers panel and needs no session — it is
   // the escape hatch when there is no model connected (e.g. missing API key).
   if (m.type === "models") {
     await vscode.commands.executeCommand("awino.openModels");
+    return;
+  }
+  // "openExternal" opens allowlisted provider pages (key creation, docs) and
+  // needs no session either — the wizard runs before any connection.
+  if (m.type === "openExternal") {
+    await openExternal(m.url);
+    return;
+  }
+  // Wizard dismissal: record onboarding so the wizard runs once, then
+  // re-render the normal chat surface.
+  if (m.type === "wizardDismiss") {
+    await context.globalState.update("awino.onboarded", true);
+    lastShowWizard = computeShowWizard(context);
+    postChatState();
+    return;
+  }
+  // Model discovery from the wizard (same backend as the panel's fetch).
+  if (m.type === "wizardFetch") {
+    const r = await runModelDiscovery(
+      context,
+      String(m.provider ?? "openai"),
+      String(m.endpoint ?? "").trim(),
+      typeof m.key === "string" && m.key ? m.key : undefined
+    );
+    postToChat({ type: "wizardModels", ok: r.ok, models: r.models, error: r.error ?? null });
+    return;
+  }
+  // Wizard completion: store the key (SecretStorage) + label + provider
+  // settings, mark onboarding done, reconnect.
+  if (m.type === "wizardSave") {
+    await saveWizardSettings(context, m);
     return;
   }
   if (!session) {
@@ -344,6 +445,44 @@ async function handleChatMessage(m: { type: string; [k: string]: unknown }): Pro
   }
 }
 
+// Onboarding wizard completion: the key goes to SecretStorage (never
+// settings JSON); the label is non-secret and lives in settings next to the
+// other awino.* values. Then onboarding is marked done and the sidecar
+// reconnects with the new binding.
+async function saveWizardSettings(
+  context: vscode.ExtensionContext,
+  m: { type: string; [k: string]: unknown }
+): Promise<void> {
+  const cfg = vscode.workspace.getConfiguration("awino");
+  const provider = String(m.provider ?? "echo");
+  const key = String(m.key ?? "");
+  const keyed = provider === "openai" || provider === "anthropic" || provider === "bedrock";
+  if (keyed && key) {
+    const target =
+      provider === "anthropic" ? KEY_ANTHROPIC : provider === "bedrock" ? KEY_BEDROCK : KEY_OPENAI;
+    await context.secrets.store(target, key);
+    const label = String(m.keyLabel ?? "").trim().slice(0, 40);
+    if (label) {
+      const labels = readKeyLabels();
+      labels[provider] = label;
+      await cfg.update("keyLabels", labels, vscode.ConfigurationTarget.Workspace);
+    }
+  }
+  await cfg.update("provider", provider, vscode.ConfigurationTarget.Workspace);
+  await cfg.update("endpoint", String(m.endpoint ?? ""), vscode.ConfigurationTarget.Workspace);
+  await cfg.update("model", String(m.model ?? ""), vscode.ConfigurationTarget.Workspace);
+  if (provider === "bedrock" && typeof m.bedrockRegion === "string" && m.bedrockRegion) {
+    await cfg.update("bedrockRegion", m.bedrockRegion, vscode.ConfigurationTarget.Workspace);
+  }
+  await context.globalState.update("awino.onboarded", true);
+  vscode.window.showInformationMessage("Awino: provider saved — reconnecting sidecar…");
+  await connect(context);
+  // connect() re-pushes chat state on every path; this covers its no-folder
+  // early return so the wizard always hides after Done.
+  lastShowWizard = computeShowWizard(context);
+  postChatState();
+}
+
 // ------------------------------------------------------- event routing
 
 async function onSidecarEvent(ev: SidecarEvent): Promise<void> {
@@ -354,13 +493,7 @@ async function onSidecarEvent(ev: SidecarEvent): Promise<void> {
       }
       updateStatusBar();
       postToChat({ type: "event", payload: ev });
-      postToChat({
-        type: "state",
-        connected: true,
-        ready: ev,
-        keyMissing: lastKeyMissing?.missing ?? false,
-        provider: lastKeyMissing?.provider ?? "echo",
-      });
+      postChatState();
       await refreshStatus();
       refreshViews(); // populate tree views on connect, not just after the first turn
       break;
@@ -522,6 +655,18 @@ let lastConnectError: string | null = null;
  * starts (e.g. Bedrock selected with no Bedrock key).
  */
 let lastKeyMissing: { missing: boolean; provider: string } | null = null;
+// First-run onboarding wizard: true when activation is fresh (awino.onboarded
+// not yet set) and the active provider needs an API key that is missing.
+// Computed in connect() next to lastKeyMissing; the chat webview shows the
+// guided flow instead of only the setup card while this is true.
+let lastShowWizard = false;
+
+function computeShowWizard(context: vscode.ExtensionContext): boolean {
+  if (context.globalState.get<boolean>("awino.onboarded", false)) {
+    return false;
+  }
+  return lastKeyMissing?.missing ?? false;
+}
 
 async function connect(context: vscode.ExtensionContext): Promise<void> {
   const folder = vscode.workspace.workspaceFolders?.[0];
@@ -556,6 +701,7 @@ async function connect(context: vscode.ExtensionContext): Promise<void> {
     }),
     provider: userProvider,
   };
+  lastShowWizard = computeShowWizard(context);
 
   if (cfg.provider === "bedrock") {
     const resolved = resolveBedrockConnection({
@@ -566,12 +712,7 @@ async function connect(context: vscode.ExtensionContext): Promise<void> {
     if (!resolved.ok) {
       vscode.window.showErrorMessage(`Awino: ${resolved.error}`);
       log(`bedrock connect refused: ${resolved.error}`);
-      postToChat({
-        type: "state",
-        connected: false,
-        keyMissing: lastKeyMissing.missing,
-        provider: lastKeyMissing.provider,
-      });
+      postChatState({ connected: false });
       return;
     }
     sidecarProvider = resolved.args.sidecarProvider;
@@ -635,14 +776,7 @@ async function connect(context: vscode.ExtensionContext): Promise<void> {
     lastConnectError = detail;
     vscode.window.showErrorMessage(`Awino: sidecar failed to start — ${detail}`);
     log(`connect failed: ${detail}`);
-    postToChat({
-      type: "state",
-      connected: false,
-      connectError: detail,
-      status: null,
-      keyMissing: lastKeyMissing?.missing ?? false,
-      provider: lastKeyMissing?.provider ?? "echo",
-    });
+    postChatState({ connected: false, connectError: detail });
     session = null;
     updateStatusBar();
   }
@@ -1376,10 +1510,15 @@ function openModelsPanel(context: vscode.ExtensionContext): void {
     }
   );
   modelsPanel = panel;
-  panel.webview.html = loadWebviewHtml(context, "models.html").replace(
-    "{{MODELS_JS}}",
-    String(panel.webview.asWebviewUri(vscode.Uri.joinPath(webviewDir, "models.js")))
-  );
+  panel.webview.html = loadWebviewHtml(context, "models.html")
+    .replace(
+      "{{SETUP_SHARED_JS}}",
+      String(panel.webview.asWebviewUri(vscode.Uri.joinPath(webviewDir, "setup-shared.js")))
+    )
+    .replace(
+      "{{MODELS_JS}}",
+      String(panel.webview.asWebviewUri(vscode.Uri.joinPath(webviewDir, "models.js")))
+    );
   panel.onDidDispose(() => {
     modelsPanel = null;
   });
@@ -1407,24 +1546,22 @@ function openModelsPanel(context: vscode.ExtensionContext): void {
         // from what the user just typed (unsaved is fine); for openai we fall
         // back to the stored secret. Failures never block saving — the panel
         // keeps its manual text input and shows the plain-language reason.
-        const provider = String(m.provider ?? "openai");
-        const endpoint = String(m.endpoint ?? "").trim();
-        let key = typeof m.key === "string" && m.key ? m.key : undefined;
-        if (!key && provider === "openai") {
-          key = (await context.secrets.get(KEY_OPENAI)) ?? undefined;
-        }
-        let r: { ok: boolean; models: string[]; error?: string };
-        try {
-          r = await discoverModels(provider, endpoint || undefined, key);
-        } catch (e) {
-          r = { ok: false, models: [], error: e instanceof Error ? e.message : String(e) };
-        }
+        const r = await runModelDiscovery(
+          context,
+          String(m.provider ?? "openai"),
+          String(m.endpoint ?? "").trim(),
+          typeof m.key === "string" && m.key ? m.key : undefined
+        );
         panel.webview.postMessage({
           type: "modelsFetched",
           ok: r.ok,
           models: r.models,
           error: r.error ?? null,
         });
+        break;
+      }
+      case "openExternal": {
+        await openExternal(m.url);
         break;
       }
       case "save": {

@@ -56,6 +56,14 @@
   .keyrow { display: flex; gap: 8px; }
   .keyrow input[type="password"] { flex: 1; min-width: 0; }
   .keylabel { flex: 0 0 150px; width: 150px; }
+  .keyactions { margin-top: 6px; }
+  .keyactions button { padding: 5px 12px; font-size: 12px; }
+  .docslink { float: right; font-size: 12px;
+    color: var(--awino-vibranium, #00C6FF); text-decoration: none; }
+  .docslink:hover { text-decoration: underline; }
+  .docslink[hidden] { display: none; }
+  #modelIntel { margin-top: 6px; }
+  #modelIntel[hidden] { display: none; }
   #fetchRow { margin-top: 6px; display: flex; gap: 8px; align-items: center; }
   #fetchRow[hidden] { display: none; }
   #fetchModels { white-space: nowrap; }
@@ -68,7 +76,7 @@
 <div id="status"><i>loading…</i></div>
 
 <div class="row">
-  <label for="provider">Provider</label>
+  <label for="provider">Provider <a id="providerDocs" class="docslink" href="#" hidden>Provider Docs</a></label>
   <select id="provider">
     <option value="echo">echo (safe default, no model)</option>
     <option value="ollama">ollama (local, no key)</option>
@@ -89,6 +97,7 @@
   <label for="model">Model (empty = provider default)</label>
   <input id="model" type="text" placeholder="qwen2.5:1.5b">
   <select id="modelSelect" hidden></select>
+  <div id="modelIntel" class="note" hidden></div>
   <div id="fetchRow" hidden>
     <button id="fetchModels" class="secondary">Fetch models</button>
     <span id="fetchNote" class="note"></span>
@@ -104,6 +113,7 @@
     <input id="openaiKey" type="password" autocomplete="off" placeholder="stored in VS Code SecretStorage — never in settings">
     <input id="openaiKeyLabel" type="text" class="keylabel" maxlength="40" placeholder="Label (e.g. Work)" aria-label="Label for the OpenAI-compatible API key">
   </div>
+  <div class="keyactions"><button id="openaiGetKey" class="secondary">Get OpenAI API Key</button></div>
 </div>
 <div class="row">
   <label for="anthropicKey">Anthropic API key <span id="anthropicKeyState"></span></label>
@@ -111,6 +121,7 @@
     <input id="anthropicKey" type="password" autocomplete="off" placeholder="stored in VS Code SecretStorage — never in settings">
     <input id="anthropicKeyLabel" type="text" class="keylabel" maxlength="40" placeholder="Label (e.g. Personal)" aria-label="Label for the Anthropic API key">
   </div>
+  <div class="keyactions"><button id="anthropicGetKey" class="secondary">Get Anthropic API Key</button></div>
 </div>
 <div class="row">
   <label for="bedrockKey">Bedrock API key <span id="bedrockKeyState"></span></label>
@@ -118,6 +129,7 @@
     <input id="bedrockKey" type="password" autocomplete="off" placeholder="from the Bedrock console → API keys → Generate API key">
     <input id="bedrockKeyLabel" type="text" class="keylabel" maxlength="40" placeholder="Label (e.g. Prod)" aria-label="Label for the Bedrock API key">
   </div>
+  <div class="keyactions"><button id="bedrockGetKey" class="secondary">Get Bedrock API Key</button></div>
 </div>
 <div class="note">Bedrock connects through its OpenAI-compatible endpoint
 (<code>https://bedrock-runtime.{region}.amazonaws.com/openai/v1</code>) with the Bedrock API key as the
@@ -144,6 +156,7 @@ project B's key. Keys stay in secret storage; only key <i>references</i> live in
 </div>
 <div id="envResult" class="note"></div>
 
+<script src="{{SETUP_SHARED_JS}}"></script>
 <script src="{{MODELS_JS}}"></script>
 </body>
 </html>

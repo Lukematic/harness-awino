@@ -1,0 +1,249 @@
+"use strict";
+// test/chatSetup.js — headless tests for the 0.4.0 chat-webview additions:
+// the provider-status pill (Kilo's "No providers" pattern) and the
+// first-run onboarding wizard (choose provider -> key/get-key -> model/fetch
+// -> Done). Feeds "state"/"wizardModels" messages through a minimal DOM shim
+// and asserts pill text, wizard visibility, provider/docs/get-key behavior,
+// model discovery wiring, inline validation, and the save/dismiss messages.
+function StubEl(tag) {
+  this.tagName = tag;
+  this.children = [];
+  this._innerHTML = "";
+  this._textContent = "";
+  this.className = "";
+  this.title = "";
+  this.hidden = false;
+  this.disabled = false;
+  this.value = "";
+  this.listeners = {};
+  this.parentNode = null;
+}
+StubEl.prototype.appendChild = function (c) { c.parentNode = this; this.children.push(c); return c; };
+Object.defineProperty(StubEl.prototype, "innerHTML", {
+  get: function () { return this._innerHTML; },
+  set: function (v) { this._innerHTML = String(v); this.children = []; }
+});
+Object.defineProperty(StubEl.prototype, "textContent", {
+  get: function () { return this._textContent; },
+  set: function (v) { this._textContent = String(v); this.children = []; }
+});
+StubEl.prototype.addEventListener = function (t, fn) { (this.listeners[t] = this.listeners[t] || []).push(fn); };
+StubEl.prototype.fire = function (t, e) { (this.listeners[t] || []).forEach(function (fn) { fn(e || {}); }); };
+StubEl.prototype.setAttribute = function (k, v) { this[k] = v; };
+StubEl.prototype.getAttribute = function (k) { return this[k]; };
+StubEl.prototype.focus = function () {};
+// every element gets a classList (banner/pill/theme code uses it)
+const _stubElInit = StubEl;
+StubEl = function (tag) { _stubElInit.call(this, tag); this.classList = new StubClassList(this); };
+StubEl.prototype = _stubElInit.prototype;
+// select with real semantics: a value with no matching option leaves it blank
+function SelectStub() {
+  StubEl.call(this, "select");
+  const self = this;
+  this._options = [];
+  this._value = "";
+  Object.defineProperty(this, "value", {
+    get: function () { return self._value; },
+    set: function (v) {
+      self._value = self._options.some(function (o) { return o.value === v; }) ? v : "";
+    }
+  });
+  Object.defineProperty(this, "firstChild", {
+    get: function () { return self.children[0] || null; }
+  });
+}
+SelectStub.prototype = Object.create(StubEl.prototype);
+SelectStub.prototype.appendChild = function (o) {
+  this._options.push(o); this.children.push(o); return o;
+};
+SelectStub.prototype.insertBefore = function (o) {
+  this._options.unshift(o); this.children.unshift(o); return o;
+};
+// minimal classList synced into className
+function StubClassList(el) { this._el = el; this._set = {}; }
+StubClassList.prototype._sync = function () {
+  const self = this;
+  this._el.className = Object.keys(this._set).filter(function (k) { return self._set[k]; }).join(" ");
+};
+StubClassList.prototype.add = function (c) { this._set[c] = true; this._sync(); };
+StubClassList.prototype.remove = function (c) { delete this._set[c]; this._sync(); };
+StubClassList.prototype.contains = function (c) { return !!this._set[c]; };
+StubClassList.prototype.toggle = function (c, force) {
+  const on = force === undefined ? !this.contains(c) : !!force;
+  if (on) this._set[c] = true; else delete this._set[c];
+  this._sync();
+  return on;
+};
+
+let ids, messageListeners, posted, bodyEl;
+function boot() {
+  // shared setup knowledge first, while `window` is undefined, so it
+  // attaches to globalThis and bare `AwinoSetup` resolves inside chat.js
+  delete require.cache[require.resolve("../webview/setup-shared.js")];
+  require("../webview/setup-shared.js");
+  ids = {};
+  ["messages", "input", "send", "stop", "statusline", "banner", "jump-latest",
+   "theme-toggle", "theme-name", "models-btn", "setup-card", "setup-sub",
+   "setup-btn", "provider-pill", "inputbar", "wizard",
+   "w-docs", "w-keystep", "w-key", "w-keylabel", "w-getkey",
+   "w-model", "w-modelselect", "w-intel", "w-endpoint",
+   "w-regionrow", "w-region", "w-fetchrow", "w-fetch", "w-fetchnote",
+   "w-done", "w-skip", "w-error"].forEach(function (id) {
+    ids[id] = new StubEl("div");
+    ids[id].id = id;
+  });
+  ids["wizard"].hidden = true;
+  ids["w-provider"] = new SelectStub();
+  ids["w-provider"].id = "w-provider";
+  messageListeners = [];
+  posted = [];
+  bodyEl = new StubEl("body");
+  bodyEl.classList = new StubClassList(bodyEl);
+  global.window = {
+    addEventListener: function (t, fn) { if (t === "message") messageListeners.push(fn); }
+  };
+  global.document = {
+    body: bodyEl,
+    getElementById: function (id) { return ids[id] || null; },
+    createElement: function (tag) {
+      return tag === "select" ? new SelectStub() : new StubEl(tag);
+    },
+    createTextNode: function (t) { return { nodeType: 3, textContent: String(t), parentNode: null }; }
+  };
+  global.acquireVsCodeApi = function () {
+    return {
+      postMessage: function (m) { posted.push(m); },
+      getState: function () { return {}; },
+      setState: function () {}
+    };
+  };
+  delete require.cache[require.resolve("../webview/chat.js")];
+  require("../webview/chat.js");
+}
+boot();
+function state(over) {
+  const m = Object.assign({
+    type: "state", connected: false, ready: null, status: null,
+    keyMissing: false, provider: "echo", model: "",
+    showWizard: false, bedrockRegions: ["us-east-1"]
+  }, over || {});
+  messageListeners.forEach(function (fn) { fn({ data: m }); });
+}
+function lastPosted(type) {
+  for (let i = posted.length - 1; i >= 0; i--) {
+    if (posted[i].type === type) return posted[i];
+  }
+  return null;
+}
+
+let pass = 0, fail = 0;
+function ok(cond, name) {
+  if (cond) { pass++; console.log("ok   - " + name); }
+  else { fail++; console.log("FAIL - " + name); }
+}
+
+// 1. provider pill: "No provider" when the key is missing
+state({ keyMissing: true, provider: "openai" });
+ok(ids["provider-pill"].textContent === "No provider", "pill reads 'No provider' when the key is missing");
+ok(ids["provider-pill"].classList.contains("none"), "pill styled as 'none' with no provider");
+// 2. provider pill: "provider · model" when connected
+state({
+  keyMissing: false, connected: true, provider: "openai", model: "gpt-4o",
+  ready: { binding: { provider: "openai", model: "gpt-4o" } }, status: { mission: null }
+});
+ok(ids["provider-pill"].textContent === "openai · gpt-4o", "pill reads 'provider · model' when connected");
+ok(!ids["provider-pill"].classList.contains("none"), "pill not styled 'none' when connected");
+// 3. pill click opens Models & Providers (same as the gear button)
+posted = [];
+ids["provider-pill"].fire("click", {});
+ok(lastPosted("models") !== null, "pill click posts 'models' (opens Models & Providers)");
+
+// 4. wizard shows on first-run state, parks the input bar, hides setup card
+state({ showWizard: true, provider: "echo", keyMissing: false });
+ok(ids["wizard"].hidden === false, "wizard visible when showWizard is true");
+ok(ids["inputbar"].hidden === true, "input bar parked while the wizard is active");
+ok(ids["setup-card"].hidden === true, "setup card suppressed while the wizard owns setup");
+ok(ids["w-provider"].children.length === 5, "wizard provider select populated from the catalogue");
+// 5. wizard hides again; input bar returns
+state({ showWizard: false, connected: true });
+ok(ids["wizard"].hidden === true, "wizard hidden when showWizard is false");
+ok(ids["inputbar"].hidden === false, "input bar returns after the wizard");
+// 6. wizard never renders the provider select blank (0.4.0d in the wizard too)
+state({ showWizard: true, provider: "scripted" });
+ok(ids["w-provider"].value === "scripted", "wizard provider select shows the binding, never blank");
+// 7. provider change drives docs link, key step, get-key button (openai)
+state({ showWizard: true, provider: "echo" });
+ids["w-provider"].value = "openai";
+ids["w-provider"].fire("change", {});
+ok(ids["w-docs"].hidden === false, "docs link visible for openai");
+ids["w-docs"].fire("click", { preventDefault: function () {} });
+ok(lastPosted("openExternal") && lastPosted("openExternal").url === "https://platform.openai.com/docs",
+  "wizard docs link opens the openai docs");
+ok(ids["w-keystep"].hidden === false, "key step shown for a keyed provider");
+ok(ids["w-getkey"].hidden === false, "get-key button shown for a keyed provider");
+ok(ids["w-getkey"].textContent.indexOf("OpenAI") >= 0, "get-key button names the provider");
+posted = [];
+ids["w-getkey"].fire("click", {});
+ok(lastPosted("openExternal") && lastPosted("openExternal").url === "https://platform.openai.com/api-keys",
+  "wizard get-key button opens the key-creation page");
+// 8. echo hides the key step and docs link
+ids["w-provider"].value = "echo";
+ids["w-provider"].fire("change", {});
+ok(ids["w-keystep"].hidden === true, "key step hidden for echo");
+ok(ids["w-docs"].hidden === true, "docs link hidden for echo");
+ok(ids["w-getkey"].hidden === true, "get-key button hidden for echo");
+// 9. wizard model intel line (0.4.0e in the wizard too)
+ids["w-model"].value = "gpt-4o";
+ids["w-model"].fire("input", {});
+ok(ids["w-intel"].textContent.indexOf("128K") >= 0, "wizard intel shows context for a known model");
+ok(ids["w-intel"].textContent.indexOf("(est.)") >= 0, "wizard intel marked as an estimate");
+// 10. model fetch posts wizardFetch; results populate the dropdown
+ids["w-provider"].value = "ollama";
+ids["w-provider"].fire("change", {});
+posted = [];
+ids["w-fetch"].fire("click", {});
+const wf = lastPosted("wizardFetch");
+ok(wf && wf.provider === "ollama", "fetch posts wizardFetch for the chosen provider");
+messageListeners.forEach(function (fn) {
+  fn({ data: { type: "wizardModels", ok: true, models: ["llama3.1:8b", "qwen2.5:7b"] } });
+});
+ok(ids["w-modelselect"].hidden === false, "fetch results open the model dropdown");
+ok(ids["w-fetchnote"].textContent.indexOf("Found 2 models") >= 0, "fetch note reports the count");
+// 11. fetch failure keeps manual entry with the plain-language reason
+messageListeners.forEach(function (fn) {
+  fn({ data: { type: "wizardModels", ok: false, error: "connection refused" } });
+});
+ok(ids["w-model"].hidden === false, "manual model input returns on fetch failure");
+ok(ids["w-fetchnote"].textContent.indexOf("connection refused") >= 0, "failure note shows the reason");
+// 12. Done validates inline: keyed provider with no key is refused, not silent
+state({ showWizard: true, provider: "echo" });
+ids["w-provider"].value = "openai";
+ids["w-provider"].fire("change", {});
+ids["w-key"].value = "";
+posted = [];
+ids["w-done"].fire("click", {});
+ok(ids["w-error"].hidden === false, "inline error shown when the key is missing");
+ok(ids["w-error"].textContent.indexOf("API key") >= 0, "error names the missing API key");
+ok(lastPosted("wizardSave") === null, "no wizardSave posted without the required key");
+// 13. Done with a key posts wizardSave (key travels to SecretStorage via host)
+ids["w-key"].value = "sk-test";
+ids["w-keylabel"].value = "work";
+posted = [];
+ids["w-done"].fire("click", {});
+const ws = lastPosted("wizardSave");
+ok(ws && ws.provider === "openai" && ws.key === "sk-test" && ws.keyLabel === "work",
+  "wizardSave carries provider, key, and label");
+// 14. keyless path needs no key: echo Done posts wizardSave immediately
+ids["w-provider"].value = "echo";
+ids["w-provider"].fire("change", {});
+posted = [];
+ids["w-done"].fire("click", {});
+ok(lastPosted("wizardSave") && lastPosted("wizardSave").provider === "echo",
+  "echo Done posts wizardSave with no key required");
+// 15. Skip posts wizardDismiss
+posted = [];
+ids["w-skip"].fire("click", {});
+ok(lastPosted("wizardDismiss") !== null, "skip posts wizardDismiss");
+
+console.log(`\n${pass} passed, ${fail} failed`);
+process.exit(fail ? 1 : 0);
