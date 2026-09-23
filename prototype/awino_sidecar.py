@@ -2466,6 +2466,16 @@ class Sidecar:
             return
         self._cancel.clear()
         self._turn_out = queue.Queue()
+        # Sidecar streaming protocol (spec §3): per-turn opt-in via
+        # "stream": true. Absent/false preserves the 0.3.0 event set
+        # byte-identically (old clients simply never send it).
+        use_stream = bool(cmd.get("stream"))
+        self.loop.sidecar_emit = _emit if use_stream else None
+        self.loop.sidecar_turn_meta = (
+            self._stream_turn_meta if use_stream else None)
+        # Identity snapshot: _for_turn below must be the context THIS turn
+        # created, not a stale one (early-return turns never run _pipeline).
+        stream_before = self.loop._turn_stream
         # Scope #5: compaction check happens BEFORE the turn starts. If the
         # ~0.85 threshold is hit, the sidecar emits compaction_proposed and
         # pauses for the user's approval (normal approve/deny commands).
@@ -2506,20 +2516,56 @@ class Sidecar:
                             "effects already executed remain in the journal. "
                             f"dropped {dropped} queued message(s).")})
             return
-        self._emit_turn_result(result)
+        # _for_turn: the streamed turn's context (thinking + checks) belongs
+        # to this result even when the result carries no turn_id (e.g. a
+        # turn paused for approval). None for non-streamed turns, and None
+        # when this turn never reached the pipeline (identity unchanged).
+        fresh_stream = self.loop._turn_stream if use_stream else None
+        self._emit_turn_result(
+            result,
+            _for_turn=(fresh_stream if fresh_stream is not None
+                       and fresh_stream is not stream_before else None))
         if isinstance(result, dict) and result.get("status") == \
                 "awaiting_approval":
             self._emit_approvals(result)
 
-    def _emit_turn_result(self, result: dict) -> None:
+    def _stream_turn_meta(self, turn_id: str, phase: str,
+                          mode_id: str) -> dict:
+        """Refine a streamed turn_start with sidecar-owned metadata: the
+        mode source (operator overlay vs stage default) and the active
+        persona. Key material never appears here."""
+        info = self._active_mode_info()
+        source = "overlay" if info.get("source") == "overlay" else "stage"
+        return {"mode": {"id": mode_id or info.get("id"), "source": source},
+                "persona": self._persona_info()}
+
+    def _emit_turn_result(self, result: dict, _for_turn=None) -> None:
         """turn_result enriched with the live mode/persona/binding identity
-        the turn ran under (UI mode chip + auditability)."""
+        the turn ran under (UI mode chip + auditability).
+
+        Step 3 (spec §3.1): streamed turns additionally carry the
+        accumulated thinking trace and the finalized harness checks, so a
+        client that never saw the deltas still gets everything in one
+        event. Non-streamed turns keep the 0.3.0 shape byte-identically:
+        no "thinking"/"checks" keys are added.
+        """
         if isinstance(result, dict):
             result = dict(result)
             result["active_mode"] = self._active_mode_info()
             result["persona"] = self._persona_info()
             result["provider"] = {"provider": self.provider,
                                   "model": self.model_desc}
+            tctx = (_for_turn if _for_turn is not None
+                    else getattr(self.loop, "_turn_stream", None))
+            tid = result.get("turn_id")
+            if tctx is not None and (_for_turn is not None
+                                     or tid == tctx.turn_id):
+                # _for_turn: the just-completed streamed turn in
+                # _do_user_message (its result may legitimately lack a
+                # turn_id, e.g. awaiting_approval). Otherwise the context
+                # must belong to this result's turn.
+                result["thinking"] = tctx.thinking_text()
+                result["checks"] = [dict(c) for c in tctx.checks]
         _emit({"event": "turn_result", "result": result})
         # Scope #5: automatic housekeeping on stage transitions.
         self._maybe_housekeep_on_phase(result)
