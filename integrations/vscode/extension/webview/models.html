@@ -34,7 +34,12 @@
     <option value="ollama">ollama (local, no key)</option>
     <option value="openai">openai-compatible (endpoint + AWINO_API_KEY)</option>
     <option value="anthropic">anthropic (ANTHROPIC_API_KEY)</option>
+    <option value="bedrock">bedrock (AWS Bedrock API key)</option>
   </select>
+</div>
+<div class="row">
+  <label for="bedrockRegion">Bedrock region (endpoint is derived from it; empty endpoint = derived)</label>
+  <select id="bedrockRegion"></select>
 </div>
 <div class="row">
   <label for="endpoint">Endpoint (empty = provider default)</label>
@@ -56,6 +61,15 @@
   <label for="anthropicKey">Anthropic API key <span id="anthropicKeyState"></span></label>
   <input id="anthropicKey" type="password" autocomplete="off" placeholder="stored in VS Code SecretStorage — never in settings">
 </div>
+<div class="row">
+  <label for="bedrockKey">Bedrock API key <span id="bedrockKeyState"></span></label>
+  <input id="bedrockKey" type="password" autocomplete="off" placeholder="from the Bedrock console → API keys → Generate API key">
+</div>
+<div class="note">Bedrock connects through its OpenAI-compatible endpoint
+(<code>https://bedrock-runtime.{region}.amazonaws.com/openai/v1</code>) with the Bedrock API key as the
+bearer token. The model field accepts a model id, an inference-profile id, or a full ARN
+(foundation-model, inference-profile, application-inference-profile, or provisioned-model).
+AWS SSO / shared-config profiles aren't supported in the extension yet.</div>
 <div class="note">Keys are written to VS Code SecretStorage and passed to the sidecar
 via environment variables. They never appear in settings JSON, events, logs, or the contract block.</div>
 <div class="row">

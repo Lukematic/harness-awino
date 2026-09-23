@@ -31,8 +31,32 @@ is a surface and cannot bypass the harness.
 | `A.W.I.N.O.: New Mission` | Start a mission (objective + done criteria). |
 | `A.W.I.N.O.: Approve Contract` | Approve DEFINE→PLAN or PLAN→BUILD (with optional scope). |
 | `A.W.I.N.O.: Reconnect Sidecar` | Restart the sidecar (e.g. after changing providers). |
-| `A.W.I.N.O.: Open Models & Providers` | Configure backends (OpenAI/Anthropic/Ollama/MCP). |
+| `A.W.I.N.O.: Open Models & Providers` | Configure backends (OpenAI/Anthropic/Bedrock/Ollama/MCP). |
+| `A.W.I.N.O.: Set Up AWS Bedrock` | Guided wizard: region → API key → connection test → model. |
 | `A.W.I.N.O.: Run Doctor` | Check sidecar health. |
+
+## AWS Bedrock
+
+The `bedrock` provider connects through Bedrock's OpenAI-compatible endpoint —
+no native Bedrock client, no new sidecar backend: the sidecar speaks the OpenAI
+chat-completions protocol to `https://bedrock-runtime.{region}.amazonaws.com/openai/v1`
+with the Bedrock API key as the bearer token.
+
+- **Setup:** run `A.W.I.N.O.: Set Up AWS Bedrock` (or the panel's
+  *Bedrock region* + *Bedrock API key* fields). The endpoint is derived from
+  the region; setting `awino.endpoint` explicitly overrides it.
+- **Model field** accepts a model id (`anthropic.claude-…`), an
+  inference-profile id (`us.anthropic.claude-…`), or a full ARN in any of the
+  four Bedrock shapes: foundation-model (no account id), system
+  inference-profile, application inference-profile, or provisioned-model.
+  Bad ARNs are rejected with a plain-language error before anything is sent.
+- **Keys** live in VS Code SecretStorage, reach the sidecar via env only, and
+  never appear in settings, events, logs, or error text.
+- **SSO / shared config (honest gap):** AWS SSO and `~/.aws` profile auth need
+  per-request SigV4 signing, which the sidecar doesn't do — so the extension
+  does not offer them as working options. Use a Bedrock API key here, or use
+  Claude Code's Bedrock integration (it speaks SSO natively) with the
+  A.W.I.N.O. skill.
 
 ## Key design facts
 
@@ -71,7 +95,8 @@ npx @vscode/vsce package   # build the .vsix (result recorded honestly)
 - Marketplace publishing needs the user's identity — steps are in
   `integrations/vscode/README.md`; the task stops at a built `.vsix`.
 - **Providers:** OpenAI (any OpenAI-compatible endpoint), Anthropic, local Ollama,
-  plus MCP servers. No native AWS Bedrock client (use its OpenAI-compatible endpoint).
-  Keys are user-supplied via SecretStorage; the agent does not configure them unasked.
+  AWS Bedrock (via its OpenAI-compatible endpoint + Bedrock API key), plus MCP
+  servers. Keys are user-supplied via SecretStorage; the agent does not configure
+  them unasked.
 - **`awino.script` is test-only:** Scripted turns still pass contract validation,
   judges, approvals, tools, and journaling — only the model text is canned.
