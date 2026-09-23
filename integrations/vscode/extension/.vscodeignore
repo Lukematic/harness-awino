@@ -1,0 +1,16 @@
+# Files excluded from the .vsix package (vsce reads this, not .gitignore).
+# bundled-sidecar/ is a gitignored build artifact that MUST ship in the
+# vsix — the negation below re-includes it (bundle-sidecar.js copies it
+# clean: no __pycache__, no *.pyc, no tests).
+.vscode/**
+.git/**
+node_modules/**
+*.vsix
+src/**
+test/**
+scripts/**
+tsconfig.json
+package-lock.json
+**/__pycache__/**
+**/*.pyc
+!bundled-sidecar/**

@@ -10,6 +10,7 @@
 
 import { spawn, ChildProcess } from "child_process";
 import { EventEmitter } from "events";
+import * as fs from "fs";
 import * as path from "path";
 
 export interface SidecarEvent {
@@ -50,6 +51,7 @@ export class SidecarClient extends EventEmitter {
   private proc: ChildProcess | null = null;
   private buf = "";
   private exited = false;
+  private closing = false; // set while close() intentionally shuts the proc down
   private stderrTail: string[] = [];
 
   get running(): boolean {
@@ -84,6 +86,7 @@ export class SidecarClient extends EventEmitter {
         return;
       }
       this.proc = proc;
+      this.closing = false; // a fresh process is not an intentional shutdown
 
       proc.stderr?.on("data", (d: Buffer) => {
         const s = d.toString();
@@ -101,6 +104,9 @@ export class SidecarClient extends EventEmitter {
       });
       proc.on("exit", (code, signal) => {
         this.exited = true;
+        if (this.closing) {
+          return; // intentional close (reconnect) — not an error
+        }
         const ev = {
           event: "error",
           message: `sidecar exited (code=${code}, signal=${signal})`,
@@ -209,6 +215,7 @@ export class SidecarClient extends EventEmitter {
     if (!proc) {
       return;
     }
+    this.closing = true;
     await new Promise<void>((resolve) => {
       const timer = setTimeout(() => {
         try {
@@ -261,7 +268,18 @@ export class SidecarClient extends EventEmitter {
   }
 }
 
-/** Default sidecar path: <repo>/prototype/awino_sidecar.py given the extension dir. */
+/**
+ * Default sidecar path, in priority order:
+ *  1. the copy bundled inside the installed extension
+ *     (<ext>/bundled-sidecar/awino_sidecar.py) — the only layout that
+ *     exists for a real .vsix install under ~/.vscode/extensions/;
+ *  2. the repo checkout layout (<repo>/prototype/awino_sidecar.py) for
+ *     development without packaging.
+ */
 export function defaultSidecarPath(extensionDir: string): string {
+  const bundled = path.join(extensionDir, "bundled-sidecar", "awino_sidecar.py");
+  if (fs.existsSync(bundled)) {
+    return bundled;
+  }
   return path.resolve(extensionDir, "..", "..", "prototype", "awino_sidecar.py");
 }

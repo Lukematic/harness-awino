@@ -36,6 +36,8 @@ interface AwinoConfig {
   timeout: number;
   pythonPath: string;
   mcpServers: Array<{ name: string; command: string; args?: string[]; env?: Record<string, string> }>;
+  /** TEST ONLY: scripted turns for the scripted provider. */
+  script?: unknown[];
 }
 
 function readConfig(): AwinoConfig {
@@ -50,6 +52,7 @@ function readConfig(): AwinoConfig {
       "mcpServers",
       []
     ),
+    script: c.get<unknown[]>("script") ?? undefined,
   };
 }
 
@@ -275,6 +278,7 @@ async function handleChatMessage(m: { type: string; [k: string]: unknown }): Pro
       session.client.cancel();
       break;
     case "approve":
+      log(`webview approve: id=${String(m.id)} decision=${m.decision}`);
       session.client.approve(String(m.id), m.decision === "deny" ? "deny" : "approve");
       break;
     case "models":
@@ -297,6 +301,7 @@ async function onSidecarEvent(ev: SidecarEvent): Promise<void> {
       postToChat({ type: "event", payload: ev });
       postToChat({ type: "state", connected: true, ready: ev });
       await refreshStatus();
+      refreshViews(); // populate tree views on connect, not just after the first turn
       break;
     case "turn_result": {
       const result = (ev["result"] ?? {}) as Record<string, unknown>;
@@ -471,6 +476,7 @@ async function connect(context: vscode.ExtensionContext): Promise<void> {
       timeout: cfg.timeout,
       env,
       mcpServers: cfg.mcpServers,
+      script: cfg.script,
     });
     log(`connected: ${JSON.stringify({ provider: ready["provider"], model: ready["model"], project: ready["project"] })}`);
   } catch (e) {
@@ -568,6 +574,26 @@ function registerCommands(context: vscode.ExtensionContext): void {
       language: "markdown",
     });
     await vscode.window.showTextDocument(doc, { preview: true });
+  });
+
+  reg("awino.approveContract", async () => {
+    mustSession();
+    const scopeRaw = await vscode.window.showInputBox({
+      prompt: "Approve contract — scope files (comma-separated, workspace-relative). Empty approves without scope.",
+      placeHolder: "notes.txt, src/app.py",
+    });
+    if (scopeRaw === undefined) {
+      return; // dismissed
+    }
+    const scope = scopeRaw
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean);
+    const r = (await query("approve-contract", { scope })) as Record<string, unknown>;
+    vscode.window.showInformationMessage(
+      `A.W.I.N.O.: contract approval — ${JSON.stringify(r).slice(0, 300)}`
+    );
+    refreshViews();
   });
 
   reg("awino.rollback", async () => {

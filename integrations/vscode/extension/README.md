@@ -15,13 +15,24 @@ is a surface and cannot bypass the harness.
 |------|------|
 | `package.json` | Extension manifest: views, commands, `awino.*` settings. Publisher placeholder `lukematic`. |
 | `tsconfig.json` | Strict TS config. `tsc` must compile clean. |
-| `src/sidecar.ts` | **vscode-free** sidecar client (JSON-lines protocol). Exercised headless by `test/harness.js`. |
+| `src/sidecar.ts` | **vscode-free** sidecar client (JSON-lines protocol). Exercised headless by `test/harness.js`. Prefers the **bundled sidecar** (`bundled-sidecar/awino_sidecar.py` inside the `.vsix`); falls back to repo-relative path for development. |
+| `scripts/bundle-sidecar.js` | Copies the Python sidecar into the `.vsix` at package time (`vscode:prepublish`). |
 | `src/views.ts` | Tree data providers: Contract, Journal, Learnings, Skills, Context, Modes. |
 | `src/extension.ts` | Activation: spawns sidecar, routes §4 events, commands, status bar, doctor, models panel. |
 | `webview/chat.html` + `chat.js` | Mission chat. Plain JS, no build step. Renders every §4 event; approval cards with diffs. |
 | `webview/models.html` + `models.js` | Models & Providers panel: provider/endpoint/model/timeout, environment switcher, keys via SecretStorage. |
 | `resources/awino.svg` | Activity bar icon. |
 | `test/harness.js` | Node harness: imports compiled `out/sidecar.js`, spawns the real sidecar, asserts hello→ready, turn_result, approval round-trip (approve + deny), fail-closed on unknown commands. |
+
+## Commands
+
+| Command | What |
+|---------|------|
+| `A.W.I.N.O.: New Mission` | Start a mission (objective + done criteria). |
+| `A.W.I.N.O.: Approve Contract` | Approve DEFINE→PLAN or PLAN→BUILD (with optional scope). |
+| `A.W.I.N.O.: Reconnect Sidecar` | Restart the sidecar (e.g. after changing providers). |
+| `A.W.I.N.O.: Open Models & Providers` | Configure backends (OpenAI/Anthropic/Ollama/MCP). |
+| `A.W.I.N.O.: Run Doctor` | Check sidecar health. |
 
 ## Key design facts
 
@@ -54,8 +65,13 @@ npx @vscode/vsce package   # build the .vsix (result recorded honestly)
 
 ## Honest gaps
 
-- The extension has **not** been exercised inside a live VS Code window —
-  the GUI half is compiled, not run. The sidecar half is fully tested
-  (295 python tests + the node harness).
+- **Live GUI tested:** The extension has been exercised inside a real VS Code
+  window (1.139.0) via Playwright/CDP under Xvfb — see `proof/vscode_live_gui_test.md`.
+  Contract progression, approved write, denied command, and zero orphans proven.
 - Marketplace publishing needs the user's identity — steps are in
   `integrations/vscode/README.md`; the task stops at a built `.vsix`.
+- **Providers:** OpenAI (any OpenAI-compatible endpoint), Anthropic, local Ollama,
+  plus MCP servers. No native AWS Bedrock client (use its OpenAI-compatible endpoint).
+  Keys are user-supplied via SecretStorage; the agent does not configure them unasked.
+- **`awino.script` is test-only:** Scripted turns still pass contract validation,
+  judges, approvals, tools, and journaling — only the model text is canned.

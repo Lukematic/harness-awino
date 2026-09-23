@@ -26,6 +26,10 @@
         "title": "A.W.I.N.O.: Inspect Contract"
       },
       {
+        "command": "awino.approveContract",
+        "title": "A.W.I.N.O.: Approve Contract"
+      },
+      {
         "command": "awino.rollback",
         "title": "A.W.I.N.O.: Rollback"
       },
@@ -147,6 +151,17 @@
           "description": "Python interpreter used to launch the A.W.I.N.O. sidecar.",
           "type": "string"
         },
+        "awino.script": {
+          "default": null,
+          "description": "TEST ONLY: scripted candidate turns for the scripted provider (set awino.provider to \"scripted\"). Each turn goes through the identical validation/judge/approval pipeline — it only feeds candidate turns instead of calling a model. Leave empty in normal use.",
+          "items": {
+            "type": "object"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "awino.timeout": {
           "default": 180,
           "description": "Model HTTP timeout in seconds.",
@@ -232,7 +247,8 @@
   "scripts": {
     "compile": "tsc -p ./",
     "test": "node ./test/harness.js",
-    "watch": "tsc -watch -p ./"
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile && node ./scripts/bundle-sidecar.js"
   },
   "version": "0.1.0"
 }

@@ -14,4 +14,5 @@ dist/
 # `npx @vscode/vsce package` in integrations/vscode/extension)
 node_modules/
 integrations/vscode/extension/out/
+integrations/vscode/extension/bundled-sidecar/
 *.vsix
