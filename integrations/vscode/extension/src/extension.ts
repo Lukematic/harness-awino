@@ -14,6 +14,9 @@ import * as os from "os";
 import * as path from "path";
 import { spawn } from "child_process";
 import { SidecarClient, SidecarEvent, defaultSidecarPath } from "./sidecar";
+import { resolvePythonInterpreter, describeSpawnFailure, ResolvedInterpreter } from "./python";
+import { keyMissingForProvider } from "./providerKeys";
+import { discoverModels } from "./modelDiscovery";
 import {
   BEDROCK_REGIONS,
   bedrockEndpointForRegion,
@@ -56,8 +59,27 @@ interface AwinoConfig {
   timeout: number;
   pythonPath: string;
   mcpServers: Array<{ name: string; command: string; args?: string[]; env?: Record<string, string> }>;
+  /**
+   * Friendly, non-secret labels for API keys (e.g. { openai: "Work" }).
+   * Labels live in settings; the keys themselves stay in SecretStorage.
+   */
+  keyLabels: Record<string, string>;
   /** TEST ONLY: scripted turns for the scripted provider. */
   script?: unknown[];
+}
+
+function readKeyLabels(): Record<string, string> {
+  const raw = vscode.workspace.getConfiguration("awino").get<unknown>("keyLabels", {});
+  const out: Record<string, string> = {};
+  if (raw && typeof raw === "object") {
+    for (const k of ["openai", "anthropic", "bedrock"]) {
+      const v = (raw as Record<string, unknown>)[k];
+      if (typeof v === "string" && v.trim()) {
+        out[k] = v.trim().slice(0, 40);
+      }
+    }
+  }
+  return out;
 }
 
 function readConfig(): AwinoConfig {
@@ -74,6 +96,7 @@ function readConfig(): AwinoConfig {
       []
     ),
     script: c.get<unknown[]>("script") ?? undefined,
+    keyLabels: readKeyLabels(),
   };
 }
 
@@ -230,7 +253,9 @@ function refreshViews(): void {
 function updateStatusBar(): void {
   if (!session?.ready) {
     statusBar.text = "$(circle-slash) Awino: not connected";
-    statusBar.tooltip = "Awino sidecar is not running";
+    statusBar.tooltip = lastConnectError
+      ? `Awino sidecar is not running\n\n${lastConnectError}`
+      : "Awino sidecar is not running";
     return;
   }
   const binding = (session.ready["binding"] ?? {}) as Record<string, unknown>;
@@ -282,6 +307,8 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       connected: !!session?.ready,
       ready: session?.ready ?? null,
       status: session?.lastStatus ?? null,
+      keyMissing: lastKeyMissing?.missing ?? false,
+      provider: lastKeyMissing?.provider ?? "echo",
     });
   }
 }
@@ -292,6 +319,12 @@ function loadWebviewHtml(ctx: vscode.ExtensionContext, file: string): string {
 }
 
 async function handleChatMessage(m: { type: string; [k: string]: unknown }): Promise<void> {
+  // "models" opens the Models & Providers panel and needs no session — it is
+  // the escape hatch when there is no model connected (e.g. missing API key).
+  if (m.type === "models") {
+    await vscode.commands.executeCommand("awino.openModels");
+    return;
+  }
   if (!session) {
     return;
   }
@@ -305,9 +338,6 @@ async function handleChatMessage(m: { type: string; [k: string]: unknown }): Pro
     case "approve":
       log(`webview approve: id=${String(m.id)} decision=${m.decision}`);
       session.client.approve(String(m.id), m.decision === "deny" ? "deny" : "approve");
-      break;
-    case "models":
-      await vscode.commands.executeCommand("awino.openModels");
       break;
     default:
       log(`unknown chat message type: ${m.type}`);
@@ -324,7 +354,13 @@ async function onSidecarEvent(ev: SidecarEvent): Promise<void> {
       }
       updateStatusBar();
       postToChat({ type: "event", payload: ev });
-      postToChat({ type: "state", connected: true, ready: ev });
+      postToChat({
+        type: "state",
+        connected: true,
+        ready: ev,
+        keyMissing: lastKeyMissing?.missing ?? false,
+        provider: lastKeyMissing?.provider ?? "echo",
+      });
       await refreshStatus();
       refreshViews(); // populate tree views on connect, not just after the first turn
       break;
@@ -461,6 +497,32 @@ async function handleCompactionProposed(ev: SidecarEvent): Promise<void> {
 
 // ------------------------------------------------------------ connection
 
+/**
+ * The user's explicit `awino.pythonPath`, or undefined when never set.
+ * `get()` would return the package default ("python3") and hide whether
+ * the user chose it, so we inspect the configuration scopes instead.
+ */
+function configuredPythonPath(): string | undefined {
+  const inspected = vscode.workspace.getConfiguration("awino").inspect<string>("pythonPath");
+  for (const v of [inspected?.workspaceFolderValue, inspected?.workspaceValue, inspected?.globalValue]) {
+    if (typeof v === "string" && v.trim().length > 0) {
+      return v;
+    }
+  }
+  return undefined;
+}
+
+/** Last sidecar start failure, shown in the status-bar tooltip until the next successful connect. */
+let lastConnectError: string | null = null;
+
+/**
+ * Whether the active provider needs an API key that is not in SecretStorage,
+ * recomputed on every connect() before any early return so the chat webview
+ * can show the "No model connected" setup card even when the sidecar never
+ * starts (e.g. Bedrock selected with no Bedrock key).
+ */
+let lastKeyMissing: { missing: boolean; provider: string } | null = null;
+
 async function connect(context: vscode.ExtensionContext): Promise<void> {
   const folder = vscode.workspace.workspaceFolders?.[0];
   if (!folder) {
@@ -479,8 +541,23 @@ async function connect(context: vscode.ExtensionContext): Promise<void> {
   let sidecarProvider = cfg.provider;
   let sidecarEndpoint = cfg.endpoint || undefined;
   let displayProvider: string | undefined;
+
+  // Read all three keys up front (SecretStorage only — never settings JSON)
+  // so the setup-card state is known before any early return below.
+  const openaiKey = await secrets.get(KEY_OPENAI);
+  const anthropicKey = await secrets.get(KEY_ANTHROPIC);
+  const bedrockKey = await secrets.get(KEY_BEDROCK);
+  const userProvider = String(cfg.provider ?? "echo");
+  lastKeyMissing = {
+    missing: keyMissingForProvider(userProvider, {
+      openai: !!openaiKey,
+      anthropic: !!anthropicKey,
+      bedrock: !!bedrockKey,
+    }),
+    provider: userProvider,
+  };
+
   if (cfg.provider === "bedrock") {
-    const bedrockKey = await secrets.get(KEY_BEDROCK);
     const resolved = resolveBedrockConnection({
       endpoint: cfg.endpoint,
       region: cfg.bedrockRegion,
@@ -489,6 +566,12 @@ async function connect(context: vscode.ExtensionContext): Promise<void> {
     if (!resolved.ok) {
       vscode.window.showErrorMessage(`Awino: ${resolved.error}`);
       log(`bedrock connect refused: ${resolved.error}`);
+      postToChat({
+        type: "state",
+        connected: false,
+        keyMissing: lastKeyMissing.missing,
+        provider: lastKeyMissing.provider,
+      });
       return;
     }
     sidecarProvider = resolved.args.sidecarProvider;
@@ -496,8 +579,6 @@ async function connect(context: vscode.ExtensionContext): Promise<void> {
     env[resolved.args.keyEnvVar] = bedrockKey as string;
     displayProvider = "bedrock";
   } else {
-    const openaiKey = await secrets.get(KEY_OPENAI);
-    const anthropicKey = await secrets.get(KEY_ANTHROPIC);
     if (openaiKey) {
       env["AWINO_API_KEY"] = openaiKey;
     }
@@ -507,6 +588,11 @@ async function connect(context: vscode.ExtensionContext): Promise<void> {
   }
 
   await disconnect();
+  // Resolve the interpreter: an explicit awino.pythonPath wins; on Windows
+  // auto-detect (py -> python -> python3 — stock Windows installs have no
+  // `python3`); otherwise the `python3` default.
+  const interp: ResolvedInterpreter = await resolvePythonInterpreter({ configured: configuredPythonPath() });
+  log(`sidecar interpreter: ${interp.python} (source: ${interp.source})`);
   const client = new SidecarClient();
   client.on("log", (s: string) => output.append(s.replace(/\n$/, "")));
   client.on("event", (ev: SidecarEvent) => void onSidecarEvent(ev));
@@ -520,7 +606,7 @@ async function connect(context: vscode.ExtensionContext): Promise<void> {
   updateStatusBar();
   try {
     const ready = await client.start({
-      python: cfg.pythonPath,
+      python: interp.python,
       sidecarPath: defaultSidecarPath(context.extensionPath),
       workspace: folder.uri.fsPath,
       provider: sidecarProvider,
@@ -531,6 +617,7 @@ async function connect(context: vscode.ExtensionContext): Promise<void> {
       mcpServers: cfg.mcpServers,
       script: cfg.script,
     });
+    lastConnectError = null;
     log(
       `connected: ${JSON.stringify({
         provider: displayProvider ?? ready["provider"],
@@ -541,8 +628,21 @@ async function connect(context: vscode.ExtensionContext): Promise<void> {
     );
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    vscode.window.showErrorMessage(`Awino: sidecar failed to start — ${msg}`);
-    log(`connect failed: ${msg}`);
+    // Surface the actual OS error + which interpreter was tried + a fix
+    // hint in the Output channel, the chat webview, and the status bar —
+    // not the bare "not connected".
+    const detail = describeSpawnFailure(interp, msg);
+    lastConnectError = detail;
+    vscode.window.showErrorMessage(`Awino: sidecar failed to start — ${detail}`);
+    log(`connect failed: ${detail}`);
+    postToChat({
+      type: "state",
+      connected: false,
+      connectError: detail,
+      status: null,
+      keyMissing: lastKeyMissing?.missing ?? false,
+      provider: lastKeyMissing?.provider ?? "echo",
+    });
     session = null;
     updateStatusBar();
   }
@@ -1297,7 +1397,33 @@ function openModelsPanel(context: vscode.ExtensionContext): void {
           openaiKeySet: !!(await context.secrets.get(KEY_OPENAI)),
           anthropicKeySet: !!(await context.secrets.get(KEY_ANTHROPIC)),
           bedrockKeySet: !!(await context.secrets.get(KEY_BEDROCK)),
+          keyLabels: readKeyLabels(),
           bedrockRegions: BEDROCK_REGIONS,
+        });
+        break;
+      }
+      case "fetchModels": {
+        // Model discovery: query the provider's list endpoint. The key comes
+        // from what the user just typed (unsaved is fine); for openai we fall
+        // back to the stored secret. Failures never block saving — the panel
+        // keeps its manual text input and shows the plain-language reason.
+        const provider = String(m.provider ?? "openai");
+        const endpoint = String(m.endpoint ?? "").trim();
+        let key = typeof m.key === "string" && m.key ? m.key : undefined;
+        if (!key && provider === "openai") {
+          key = (await context.secrets.get(KEY_OPENAI)) ?? undefined;
+        }
+        let r: { ok: boolean; models: string[]; error?: string };
+        try {
+          r = await discoverModels(provider, endpoint || undefined, key);
+        } catch (e) {
+          r = { ok: false, models: [], error: e instanceof Error ? e.message : String(e) };
+        }
+        panel.webview.postMessage({
+          type: "modelsFetched",
+          ok: r.ok,
+          models: r.models,
+          error: r.error ?? null,
         });
         break;
       }
@@ -1317,6 +1443,21 @@ function openModelsPanel(context: vscode.ExtensionContext): void {
         if (typeof m.bedrockKey === "string" && m.bedrockKey) {
           await context.secrets.store(KEY_BEDROCK, m.bedrockKey);
         }
+        // Key labels are not secret — they live in settings, next to the
+        // other awino.* values. Only non-empty labels are stored.
+        const labels: Record<string, string> = {};
+        const labelFields: Array<[string, string]> = [
+          ["openaiKeyLabel", "openai"],
+          ["anthropicKeyLabel", "anthropic"],
+          ["bedrockKeyLabel", "bedrock"],
+        ];
+        for (const [field, name] of labelFields) {
+          const v = String(m[field] ?? "").trim().slice(0, 40);
+          if (v) {
+            labels[name] = v;
+          }
+        }
+        await cfg.update("keyLabels", labels, vscode.ConfigurationTarget.Workspace);
         if (m.clearKeys) {
           await context.secrets.delete(KEY_OPENAI);
           await context.secrets.delete(KEY_ANTHROPIC);

@@ -23,6 +23,7 @@
     --awino-vibranium-deep: #0B7FA6;
     --awino-vibranium-dim: rgba(0,198,255,.12);
     --awino-gold: #D4A937;
+    --awino-on-gold: #231A05;
     --awino-gold-bright: #F0C94A;
     --awino-gold-dim: rgba(212,169,55,.12);
     --awino-text: #DCE7F7;
@@ -47,6 +48,7 @@
     --awino-vibranium-deep: #0B7FA6;
     --awino-vibranium-dim: rgba(0,198,255,.12);
     --awino-gold: #D4A937;
+    --awino-on-gold: #231A05;
     --awino-gold-bright: #F0C94A;
     --awino-gold-dim: rgba(212,169,55,.12);
     --awino-text: #DCE7F7;
@@ -70,6 +72,7 @@
     --awino-vibranium-deep: #0B5A78;
     --awino-vibranium-dim: rgba(11,127,166,.12);
     --awino-gold: #8A6D1F;
+    --awino-on-gold: #FFFFFF;
     --awino-gold-bright: #8A6D1F;
     --awino-gold-dim: rgba(138,109,31,.14);
     --awino-text: #2B2517;
@@ -99,6 +102,7 @@
     --awino-vibranium-deep: #0B7FA6;
     --awino-vibranium-dim: rgba(0,198,255,.12);
     --awino-gold: #D4A937;
+    --awino-on-gold: #231A05;
     --awino-gold-bright: #F0C94A;
     --awino-gold-dim: rgba(212,169,55,.12);
     --awino-text: #DCE7F7;
@@ -123,6 +127,7 @@
     --awino-vibranium-deep: #0B5A78;
     --awino-vibranium-dim: rgba(11,127,166,.12);
     --awino-gold: #8A6D1F;
+    --awino-on-gold: #FFFFFF;
     --awino-gold-bright: #8A6D1F;
     --awino-gold-dim: rgba(138,109,31,.14);
     --awino-text: #2B2517;
@@ -147,6 +152,7 @@
     --awino-vibranium-deep: var(--vscode-textLink-foreground, #0B7FA6);
     --awino-vibranium-dim: rgba(0,198,255,.12);
     --awino-gold: var(--vscode-editorWarning-foreground, #D4A937);
+    --awino-on-gold: #000000;
     --awino-gold-bright: var(--vscode-editorWarning-foreground, #F0C94A);
     --awino-gold-dim: rgba(212,169,55,.12);
     --awino-text: var(--vscode-foreground, #FFFFFF);
@@ -172,6 +178,31 @@
     margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh;
     position: relative;
   }
+
+  /* ---------- setup card: provider needs an API key ---------- */
+  #setup-card {
+    margin: 8px 10px 0;
+    border: 1px solid var(--awino-gold, #D4A937);
+    border-left: 4px solid var(--awino-gold, #D4A937);
+    border-radius: 10px;
+    background: var(--awino-surface-1, var(--vscode-sideBar-background, #172036));
+    flex: 0 0 auto;
+  }
+  #setup-card[hidden] { display: none; }
+  .setup-card-body { display: flex; align-items: center; gap: 10px; padding: 10px 12px; }
+  .setup-copy { flex: 1; min-width: 0; }
+  .setup-title {
+    font-weight: 700; font-size: 12.5px; letter-spacing: .02em;
+    color: var(--awino-gold, #D4A937);
+  }
+  .setup-sub { font-size: 11.5px; opacity: .8; margin-top: 3px; }
+  #setup-btn {
+    background: var(--awino-gold, #D4A937);
+    color: var(--awino-on-gold, #231A05);
+    border: none; border-radius: 8px; padding: 7px 12px;
+    font-weight: 700; cursor: pointer; white-space: nowrap;
+  }
+  #setup-btn:hover { filter: brightness(1.08); }
 
   /* ---------- banner (§2.9) ---------- */
   #banner {
@@ -205,6 +236,16 @@
     color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
   }
   #theme-toggle:hover {
+    background: var(--awino-vibranium-dim, rgba(0,198,255,.12));
+  }
+  #models-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 26px; height: 26px; font-size: 14px; border-radius: 8px;
+    background: transparent; cursor: pointer;
+    border: 1px solid var(--awino-vibranium-deep, var(--vscode-textLink-foreground, #0B7FA6));
+    color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+  }
+  #models-btn:hover {
     background: var(--awino-vibranium-dim, rgba(0,198,255,.12));
   }
   #theme-toggle:focus-visible, button:focus-visible, #chat:focus-visible {
@@ -560,6 +601,16 @@
   <span class="deco" aria-hidden="true"><span class="bead on"></span><span class="bead vdim"></span><span class="bead gdim"></span></span>
   <span class="spacer"></span>
   <button id="theme-toggle" title="Switch Savanna / Vibranium theme">◐ <span id="theme-name">Vibranium</span></button>
+  <button id="models-btn" title="Models &amp; Providers — API keys and model selection">⚙</button>
+</div>
+<div id="setup-card" hidden>
+  <div class="setup-card-body">
+    <div class="setup-copy">
+      <div class="setup-title">No model connected</div>
+      <div class="setup-sub" id="setup-sub"></div>
+    </div>
+    <button id="setup-btn">Set up provider</button>
+  </div>
 </div>
 <div id="banner"></div>
 <div id="messages"></div>

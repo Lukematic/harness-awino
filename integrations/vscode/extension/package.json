@@ -165,6 +165,26 @@
           "description": "Python interpreter used to launch the Awino sidecar.",
           "type": "string"
         },
+        "awino.keyLabels": {
+          "default": {},
+          "description": "Friendly labels for your API keys, e.g. {\"openai\": \"Work\"}. Labels are NOT secret — they are shown in the Models & Providers panel next to the key indicators. The keys themselves stay in VS Code SecretStorage and never appear here.",
+          "type": "object",
+          "properties": {
+            "openai": {
+              "description": "Label for the OpenAI-compatible API key.",
+              "type": "string"
+            },
+            "anthropic": {
+              "description": "Label for the Anthropic API key.",
+              "type": "string"
+            },
+            "bedrock": {
+              "description": "Label for the Bedrock API key.",
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
         "awino.script": {
           "default": null,
           "description": "TEST ONLY: scripted candidate turns for the scripted provider (set awino.provider to \"scripted\"). Each turn goes through the identical validation/judge/approval pipeline — it only feeds candidate turns instead of calling a model. Leave empty in normal use.",
@@ -260,7 +280,7 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
-    "test": "node ./test/harness.js && node ./test/bedrock.js && node ./test/connection_importer.js",
+    "test": "node ./test/harness.js && node ./test/bedrock.js && node ./test/connection_importer.js && node ./test/markdown.js && node ./test/streaming.js && node ./test/python.js && node ./test/providerKeys.js && node ./test/modelDiscovery.js && node ./test/modelsPanel.js",
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run compile && node ./scripts/bundle-sidecar.js"
   },

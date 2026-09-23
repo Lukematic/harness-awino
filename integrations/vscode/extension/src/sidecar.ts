@@ -52,6 +52,7 @@ export class SidecarClient extends EventEmitter {
   private buf = "";
   private exited = false;
   private closing = false; // set while close() intentionally shuts the proc down
+  private readySeen = false; // set once the sidecar emits `ready`
   private stderrTail: string[] = [];
 
   get running(): boolean {
@@ -87,6 +88,8 @@ export class SidecarClient extends EventEmitter {
       }
       this.proc = proc;
       this.closing = false; // a fresh process is not an intentional shutdown
+      this.readySeen = false;
+      this.stderrTail = [];
 
       proc.stderr?.on("data", (d: Buffer) => {
         const s = d.toString();
@@ -99,17 +102,26 @@ export class SidecarClient extends EventEmitter {
 
       proc.on("error", (e) => {
         this.exited = true;
-        this.emit("event", { event: "error", message: `sidecar spawn failed: ${e}` });
-        reject(e);
+        // Name the interpreter: on Windows the default `python3` does not
+        // exist (stock installs provide `py`/`python`), and a bare ENOENT
+        // otherwise reads as a mysterious "not connected".
+        const detail = e instanceof Error ? e.message : String(e);
+        const msg = `sidecar spawn failed: ${detail} (interpreter "${opts.python}")`;
+        this.emit("event", { event: "error", message: msg });
+        reject(new Error(msg));
       });
       proc.on("exit", (code, signal) => {
         this.exited = true;
         if (this.closing) {
           return; // intentional close (reconnect) — not an error
         }
+        const tail = this.stderrTail.slice(-20).join("").trim().slice(0, 500);
+        const when = this.readySeen ? "exited" : "exited immediately";
         const ev = {
           event: "error",
-          message: `sidecar exited (code=${code}, signal=${signal})`,
+          message:
+            `sidecar ${when} (code=${code}, signal=${signal}, interpreter "${opts.python}")` +
+            (tail ? `: ${tail}` : ""),
         };
         this.emit(`event:${ev.event}`, ev);
         this.emit("event", ev);
@@ -146,6 +158,7 @@ export class SidecarClient extends EventEmitter {
       }, timeoutMs);
       const onReady = (ev: SidecarEvent) => {
         clearTimeout(timer);
+        this.readySeen = true;
         resolve(ev);
       };
       this.once("event:ready", onReady);

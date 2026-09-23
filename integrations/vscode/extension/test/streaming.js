@@ -62,10 +62,12 @@ let ids, messageListeners, posted, messages, bodyEl, webviewState;
 function boot(bodyClasses, initialState) {
   ids = {};
   ["messages", "input", "send", "stop", "statusline", "banner", "jump-latest",
-   "theme-toggle", "theme-name"].forEach(function (id) {
+   "theme-toggle", "theme-name", "models-btn", "setup-card", "setup-sub",
+   "setup-btn"].forEach(function (id) {
     const e = new StubEl("div");
     e.id = id;
     if (id === "jump-latest") e.hidden = true; // chat.html ships it hidden
+    if (id === "setup-card") e.hidden = true; // chat.html ships it hidden
     ids[id] = e;
   });
   messageListeners = [];
@@ -260,6 +262,55 @@ ok(ids["theme-name"].textContent === "Savanna", "label follows savanna default")
 boot(["vscode-light"], { awinoTheme: "vibranium" });
 ok(bodyEl.classList.contains("awino-vibranium"), "saved manual override wins over vscode-light default");
 ok(ids["theme-name"].textContent === "Vibranium", "label follows saved override");
+
+// 15. state with connectError: failure detail in statusline + banner (spawn fix)
+function fireState(m) {
+  messageListeners.forEach(function (fn) { fn({ data: m }); });
+}
+function slText() { return byClass(ids["statusline"], "sl-text")[0]; }
+fireState({ type: "state", connected: false, connectError: 'spawn "py" ENOENT — tried: py <oops>' });
+ok(slText().textContent === "not connected — sidecar failed to start", "statusline shows failure, not bare not-connected");
+ok(byClass(ids["statusline"], "alert").length === 1, "link bead goes alert on connect failure");
+ok(ids["banner"].classList.contains("show"), "banner shown for connect failure");
+ok(ids["banner"].innerHTML.indexOf("Sidecar failed to start.") >= 0, "banner titles the failure");
+ok(ids["banner"].innerHTML.indexOf("spawn \"py\" ENOENT") >= 0, "banner shows the OS error + interpreter tried");
+ok(ids["banner"].innerHTML.indexOf("&lt;oops&gt;") >= 0, "connect error HTML-escaped in banner");
+
+// 16. plain disconnect (no error) keeps old behavior; later states clear the banner
+fireState({ type: "state", connected: false });
+ok(slText().textContent === "not connected", "plain disconnect keeps bare not-connected text");
+ok(byClass(ids["statusline"], "alert").length === 0, "no alert bead on plain disconnect");
+ok(!ids["banner"].classList.contains("show"), "banner hidden again on plain disconnect");
+fireState({ type: "state", connected: true, status: {} });
+ok(ids["banner"].classList.contains("show") && ids["banner"].innerHTML.indexOf("No active mission.") >= 0, "no-mission banner on connect");
+fireState({ type: "state", connected: true, status: { mission: {} } });
+ok(!ids["banner"].classList.contains("show"), "banner cleared once a mission exists");
+
+// 17. setup card: keyMissing shows "No model connected" + provider copy
+fireState({ type: "state", connected: true, keyMissing: true, provider: "openai", status: { mission: {} } });
+ok(ids["setup-card"].hidden === false, "setup card shown when provider key is missing");
+ok(ids["setup-sub"].textContent.indexOf('"openai"') >= 0, "setup copy names the provider");
+ok(ids["setup-sub"].textContent.indexOf("SecretStorage") >= 0, "setup copy says keys are not in settings JSON");
+
+// 18. setup card hides once the key exists
+fireState({ type: "state", connected: true, keyMissing: false, provider: "openai", status: { mission: {} } });
+ok(ids["setup-card"].hidden === true, "setup card hidden when key is present");
+
+// 19. header gear posts {type:"models"}
+const postedBefore = posted.length;
+ids["models-btn"].fire("click", {});
+ok(posted.length === postedBefore + 1 && posted[posted.length - 1].type === "models", "gear button posts {type:models}");
+
+// 20. setup-card button posts {type:"models"}
+fireState({ type: "state", connected: true, keyMissing: true, provider: "bedrock", status: { mission: {} } });
+const postedBefore2 = posted.length;
+ids["setup-btn"].fire("click", {});
+ok(posted.length === postedBefore2 + 1 && posted[postedBefore2].type === "models", "setup button posts {type:models}");
+
+// 21. setup card shows on a never-connected keyless state (bedrock early-return path)
+fireState({ type: "state", connected: false, keyMissing: true, provider: "bedrock" });
+ok(ids["setup-card"].hidden === false, "setup card shown even when never connected");
+ok(ids["setup-sub"].textContent.indexOf('"bedrock"') >= 0, "setup copy names bedrock");
 
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

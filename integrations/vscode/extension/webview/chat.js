@@ -252,6 +252,10 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
   const stopBtn = document.getElementById("stop");
   const statusline = document.getElementById("statusline");
   const banner = document.getElementById("banner");
+  const modelsBtn = document.getElementById("models-btn");
+  const setupCard = document.getElementById("setup-card");
+  const setupSub = document.getElementById("setup-sub");
+  const setupBtn = document.getElementById("setup-btn");
   let turnInFlight = false;
 
   // ---------- theme variants (user refinement 2026-09-23) ----------
@@ -351,6 +355,20 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     b.title = title;
   }
   function setStatusText(t) { slText.textContent = t; }
+
+  // Setup card: when the active provider needs an API key that is not in
+  // SecretStorage, surface "No model connected" at the top of the chat with
+  // a button that opens the Models & Providers panel. Keys never live in
+  // settings JSON — that is why there is no key field in Settings.
+  function setSetupCard(show, provider) {
+    if (!setupCard) return;
+    setupCard.hidden = !show;
+    if (show && setupSub) {
+      setupSub.textContent =
+        "The \"" + String(provider || "unknown") + "\" provider needs an API key before a model can connect. " +
+        "Keys are stored in VS Code SecretStorage — never in settings JSON.";
+    }
+  }
 
   // scroll pinning (Copilot behavior) + jump-to-latest pill
   let pinned = true;
@@ -757,6 +775,13 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
   stopBtn.addEventListener("click", function () {
     vscode.postMessage({ type: "stop" });
   });
+  // Header gear + setup-card button: both open Models & Providers, which is
+  // where API keys live (SecretStorage) since keys are not in Settings.
+  // The extension host handles "models" with no session required, so this
+  // works even when nothing is connected.
+  const openModelsPanel = function () { vscode.postMessage({ type: "models" }); };
+  if (modelsBtn) modelsBtn.addEventListener("click", openModelsPanel);
+  if (setupBtn) setupBtn.addEventListener("click", openModelsPanel);
   input.addEventListener("keydown", function (e) {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   });
@@ -767,9 +792,23 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     if (m.type === "event" && m.payload) {
       renderEvent(m.payload);
     } else if (m.type === "state") {
+      // Missing API key for the active provider -> setup card at the top of
+      // the chat, regardless of the connected flag (a keyless provider may
+      // never reach "connected").
+      setSetupCard(m.keyMissing === true, m.provider);
       if (m.connected === false) {
-        setStatusText("not connected");
-        setBead("link", "", "link: not connected");
+        if (m.connectError) {
+          // Sidecar failed to spawn/start: show the OS error + interpreter
+          // tried + fix hint in the statusline and banner, not the bare
+          // "not connected".
+          setStatusText("not connected — sidecar failed to start");
+          setBead("link", "alert", "link: " + String(m.connectError).slice(0, 200));
+          banner.innerHTML = "<b>Sidecar failed to start.</b> " + esc(String(m.connectError));
+          banner.classList.add("show");
+        } else {
+          setStatusText("not connected");
+          setBead("link", "", "link: not connected");
+        }
       } else if (m.ready) {
         renderEvent(m.ready);
       }
@@ -779,7 +818,7 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
         banner.innerHTML = "<b>No active mission.</b> Say what you want to build and the harness opens its discovery interview. " +
           "Or run <b>Awino: New Mission</b> / <b>New Mission from Seed</b> from the command palette.";
         banner.classList.add("show");
-      } else {
+      } else if (!(m.connected === false && m.connectError)) {
         banner.classList.remove("show");
       }
     }

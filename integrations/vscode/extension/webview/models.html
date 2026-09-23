@@ -5,15 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Awino: Models &amp; Providers</title>
 <style>
-  /* Awino Wakandan tokens (§1.1) — scoped to this panel */
-  :root {
+  /* Awino Wakandan tokens (§1.1) — scoped to this panel.
+     :root covers the default (dark/Vibranium); body.awino-vibranium pins the
+     Vibranium variant, body.vscode-light / body.awino-savanna the Savanna one. */
+  :root, body.awino-vibranium {
     --awino-vibranium: #00C6FF; --awino-vibranium-deep: #0B7FA6;
     --awino-vibranium-dim: rgba(0,198,255,.12);
     --awino-gold: #D4A937; --awino-gold-bright: #F0C94A;
     --awino-ok: #4EC9B0;
     --awino-text: #DCE7F7; --awino-muted: #8B98B0;
   }
-  body.vscode-light {
+  body.vscode-light, body.awino-savanna {
     --awino-vibranium: #0B7FA6; --awino-vibranium-deep: #0B5A78;
     --awino-vibranium-dim: rgba(11,127,166,.10);
     --awino-gold: #8A6D1F; --awino-gold-bright: #8A6D1F;
@@ -51,6 +53,14 @@
   .warn { color: var(--vscode-testing-iconFailed, #f14c4c); }
   .key-stored { color: var(--awino-ok, #4EC9B0); }
   .key-unset { color: var(--awino-muted, var(--vscode-descriptionForeground)); }
+  .keyrow { display: flex; gap: 8px; }
+  .keyrow input[type="password"] { flex: 1; min-width: 0; }
+  .keylabel { flex: 0 0 150px; width: 150px; }
+  #fetchRow { margin-top: 6px; display: flex; gap: 8px; align-items: center; }
+  #fetchRow[hidden] { display: none; }
+  #fetchModels { white-space: nowrap; }
+  #fetchNote { margin: 0; flex: 1; }
+  #modelSelect[hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -78,6 +88,11 @@
 <div class="row">
   <label for="model">Model (empty = provider default)</label>
   <input id="model" type="text" placeholder="qwen2.5:1.5b">
+  <select id="modelSelect" hidden></select>
+  <div id="fetchRow" hidden>
+    <button id="fetchModels" class="secondary">Fetch models</button>
+    <span id="fetchNote" class="note"></span>
+  </div>
 </div>
 <div class="row">
   <label for="timeout">Timeout (seconds)</label>
@@ -85,15 +100,24 @@
 </div>
 <div class="row">
   <label for="openaiKey">OpenAI-compatible API key <span id="openaiKeyState"></span></label>
-  <input id="openaiKey" type="password" autocomplete="off" placeholder="stored in VS Code SecretStorage — never in settings">
+  <div class="keyrow">
+    <input id="openaiKey" type="password" autocomplete="off" placeholder="stored in VS Code SecretStorage — never in settings">
+    <input id="openaiKeyLabel" type="text" class="keylabel" maxlength="40" placeholder="Label (e.g. Work)" aria-label="Label for the OpenAI-compatible API key">
+  </div>
 </div>
 <div class="row">
   <label for="anthropicKey">Anthropic API key <span id="anthropicKeyState"></span></label>
-  <input id="anthropicKey" type="password" autocomplete="off" placeholder="stored in VS Code SecretStorage — never in settings">
+  <div class="keyrow">
+    <input id="anthropicKey" type="password" autocomplete="off" placeholder="stored in VS Code SecretStorage — never in settings">
+    <input id="anthropicKeyLabel" type="text" class="keylabel" maxlength="40" placeholder="Label (e.g. Personal)" aria-label="Label for the Anthropic API key">
+  </div>
 </div>
 <div class="row">
   <label for="bedrockKey">Bedrock API key <span id="bedrockKeyState"></span></label>
-  <input id="bedrockKey" type="password" autocomplete="off" placeholder="from the Bedrock console → API keys → Generate API key">
+  <div class="keyrow">
+    <input id="bedrockKey" type="password" autocomplete="off" placeholder="from the Bedrock console → API keys → Generate API key">
+    <input id="bedrockKeyLabel" type="text" class="keylabel" maxlength="40" placeholder="Label (e.g. Prod)" aria-label="Label for the Bedrock API key">
+  </div>
 </div>
 <div class="note">Bedrock connects through its OpenAI-compatible endpoint
 (<code>https://bedrock-runtime.{region}.amazonaws.com/openai/v1</code>) with the Bedrock API key as the
