@@ -10,6 +10,7 @@
 
 import * as vscode from "vscode";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { spawn } from "child_process";
 import { SidecarClient, SidecarEvent, defaultSidecarPath } from "./sidecar";
@@ -21,6 +22,14 @@ import {
   resolveBedrockConnection,
   probeBedrockModels,
 } from "./bedrock";
+import {
+  scanSources,
+  applicableFindings,
+  informationalFindings,
+  buildConfigWrites,
+  summarizeWrites,
+  ImportFinding,
+} from "./connection_importer";
 import {
   QueryFn,
   ContractView,
@@ -1046,6 +1055,125 @@ function registerCommands(context: vscode.ExtensionContext): void {
   });
 
   reg("awino.openModels", () => openModelsPanel(context));
+
+  reg("awino.importConnections", async () => {
+    await importConnectionsFlow(context);
+  });
+}
+
+// --------------------------------------------- connection importer (UI)
+
+// Permission-first import of model connection details from other tools.
+// Nothing on disk is read before the user consents; nothing is written
+// before the user ticks findings AND confirms. Secrets are never imported
+// (see src/connection_importer.ts).
+
+async function importConnectionsFlow(context: vscode.ExtensionContext): Promise<void> {
+  const consent = await vscode.window.showWarningMessage(
+    "A.W.I.N.O.: may I read your Claude Code, Kilo CLI, and project .env configs to find model connection details? " +
+      "I only read non-secret facts (provider, region, model, endpoint) — never keys or tokens — and nothing is applied without your approval.",
+    { modal: true },
+    "Yes, scan my configs",
+    "No"
+  );
+  if (consent !== "Yes, scan my configs") {
+    vscode.window.showInformationMessage("A.W.I.N.O.: no problem — nothing was read.");
+    return;
+  }
+
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  const result = scanSources(
+    (p) => {
+      try {
+        return fs.readFileSync(p, "utf8");
+      } catch {
+        return null;
+      }
+    },
+    os.homedir(),
+    folder?.uri.fsPath ?? null
+  );
+  log(`connection import scan: ${result.scanned.length} files read, ${result.findings.length} findings`);
+
+  const applicable = applicableFindings(result.findings);
+  const informational = informationalFindings(result.findings);
+  if (applicable.length === 0) {
+    const scannedList = result.scanned.length ? result.scanned.join(", ") : "(none found)";
+    vscode.window.showInformationMessage(
+      `A.W.I.N.O.: no importable connection details found. Scanned: ${scannedList}.`
+    );
+    return;
+  }
+
+  const items: Array<vscode.QuickPickItem & { finding: ImportFinding }> = applicable.map((f) => ({
+    label: `${f.provider} · ${f.kind}`,
+    description: f.value,
+    detail: `${f.source} — ${f.note}`,
+    picked: true,
+    finding: f,
+  }));
+  const picked = await vscode.window.showQuickPick(items, {
+    canPickMany: true,
+    placeHolder: "Tick the connection details to import into A.W.I.N.O.",
+  });
+  if (!picked || picked.length === 0) {
+    return; // user-confirm step: no selection, no writes
+  }
+
+  const writes = buildConfigWrites(picked.map((p) => p.finding));
+  const infoNotes = informational
+    .map((f) => `• ${f.note}`)
+    .join("\n");
+  const detail =
+    "This will set:\n" +
+    summarizeWrites(writes) +
+    (infoNotes ? `\n\nAlso found (not imported):\n${infoNotes}` : "");
+  const confirm = await vscode.window.showWarningMessage(
+    "A.W.I.N.O.: apply these settings?",
+    { modal: true, detail },
+    "Apply",
+    "Cancel"
+  );
+  if (confirm !== "Apply") {
+    return; // user-confirm step: no confirm, no writes
+  }
+
+  const cfg = vscode.workspace.getConfiguration("awino");
+  for (const w of writes) {
+    await cfg.update(w.key, w.value, vscode.ConfigurationTarget.Workspace);
+  }
+  log(`connection import applied: ${summarizeWrites(writes).replace(/\n/g, "; ")}`);
+  const reconnect = await vscode.window.showInformationMessage(
+    "A.W.I.N.O.: imported connection settings applied. Reconnect the sidecar to use them?",
+    "Reconnect",
+    "Later"
+  );
+  if (reconnect === "Reconnect") {
+    await connect(context);
+  }
+}
+
+/** First-run offer: shown once ever. "Not now" still counts as offered. */
+async function offerConnectionImportOnce(context: vscode.ExtensionContext): Promise<void> {
+  const FLAG = "awino.importOfferShown";
+  if (context.globalState.get<boolean>(FLAG)) {
+    return;
+  }
+  await context.globalState.update(FLAG, true);
+  const cfg = readConfig();
+  if (cfg.provider && cfg.provider !== "echo") {
+    return; // already configured — no need to offer
+  }
+  const choice = await vscode.window.showInformationMessage(
+    "A.W.I.N.O.: I can import model connections from Claude Code, Kilo CLI, or your project's .env file so you don't retype them. May I scan those configs?",
+    "Import connections",
+    "Not now",
+    "Don't ask again"
+  );
+  if (choice === "Import connections") {
+    await importConnectionsFlow(context);
+  }
+  // Every other choice (including dismiss) leaves the flag set: offered once.
 }
 
 // --------------------------------------------------------------- doctor
@@ -1246,6 +1374,9 @@ export function activate(context: vscode.ExtensionContext): void {
   updateStatusBar();
 
   registerCommands(context);
+
+  // First-run offer: import connections from other tools (once ever).
+  void offerConnectionImportOnce(context);
 
   // context-file / mode tree item commands (view/item)
   context.subscriptions.push(

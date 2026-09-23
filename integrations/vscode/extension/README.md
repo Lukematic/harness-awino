@@ -33,6 +33,7 @@ is a surface and cannot bypass the harness.
 | `A.W.I.N.O.: Reconnect Sidecar` | Restart the sidecar (e.g. after changing providers). |
 | `A.W.I.N.O.: Open Models & Providers` | Configure backends (OpenAI/Anthropic/Bedrock/Ollama/MCP). |
 | `A.W.I.N.O.: Set Up AWS Bedrock` | Guided wizard: region → API key → connection test → model. |
+| `A.W.I.N.O.: Import connections from other tools` | Permission-first scan of Claude Code / Kilo CLI / project `.env` configs; you tick what to import, confirm, and only then is it applied. Also offered once on first run. |
 | `A.W.I.N.O.: Run Doctor` | Check sidecar health. |
 
 ## AWS Bedrock
@@ -57,6 +58,35 @@ with the Bedrock API key as the bearer token.
   does not offer them as working options. Use a Bedrock API key here, or use
   Claude Code's Bedrock integration (it speaks SSO natively) with the
   A.W.I.N.O. skill.
+
+## Importing connections from other tools
+
+`A.W.I.N.O.: Import connections from other tools` ports model connection
+details you already have elsewhere, so you don't retype them. Permission
+first: nothing on disk is read before you say yes, and nothing is written
+before you tick findings and confirm.
+
+Sources (researched, not guessed):
+
+- `~/.claude/settings.json`, `~/.claude/settings.local.json` (user) and
+  `<project>/.claude/` (project) — AWS profile/region, model / ARN.
+- `<project>/.env`, `<project>/.env.local` — regions, base URLs, model ids.
+- Kilo **CLI** configs: `~/.config/kilo/kilo.jsonc`,
+  `~/.config/kilo/opencode.json`, `<project>/.kilo/kilo.jsonc`,
+  `<project>/kilo.jsonc` — provider base URLs, model ids.
+
+What it extracts: provider kind, region(s), model ids / ARNs (validated with
+the Bedrock ARN parsers), base URLs, AWS profile names. Secrets are NEVER
+imported, copied, stored, logged, or displayed — a secret-looking value
+becomes a note ("found a credential reference in <file> — enter it yourself
+in the providers panel") and nothing more.
+
+Kilo honesty: the Kilo **VS Code extension** keeps provider profiles in its
+own VS Code globalState + SecretStorage — there is no file to read, and we
+do not reach into another extension's storage. Kilo CLI's
+`~/.local/share/kilo/auth.json` is a credential store by design and is
+deliberately never read.
+
 
 ## Key design facts
 
