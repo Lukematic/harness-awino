@@ -219,6 +219,58 @@ class OpenAICompatibleBackend(OllamaBackend):
                             "bytes_out": len(body), "bytes_in": len(raw)}
         return payload["choices"][0]["message"]["content"]
 
+    def _chat_stream(self, prompt: str, system: str):
+        """SSE streaming over the OpenAI-compatible chat-completions
+        endpoint ("stream": true). Yields ("said", delta) for each
+        choices[0].delta.content; skips the terminal [DONE] line.
+
+        The API key (if any) travels only in the Authorization header —
+        it never appears in events, logs, or the journal."""
+        body = json.dumps({
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+            "stream": True,
+            "temperature": 0.2,
+            "max_tokens": self.num_predict,
+        }).encode()
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = "Bearer " + self.api_key
+        req = urllib.request.Request(self.chat_url, data=body,
+                                     headers=headers)
+        # urlopen raising here (HTTP 401/403/429/5xx, unreachable) propagates
+        # to generate() -> safe fallback turn, with no egress recorded.
+        resp = urllib.request.urlopen(req, timeout=self.timeout)
+        raw_in = 0
+        try:
+            with resp:
+                for raw_line in resp:
+                    raw_in += len(raw_line)
+                    line = raw_line.decode("utf-8", "replace").strip()
+                    if not line.startswith("data:"):
+                        continue  # SSE comments / keep-alives
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        obj = json.loads(data)
+                    except ValueError:
+                        continue
+                    try:
+                        delta = obj["choices"][0]["delta"]
+                    except (KeyError, IndexError, TypeError):
+                        continue
+                    content = delta.get("content")
+                    if content:
+                        yield ("said", content)
+        finally:
+            # Track C: report the network I/O so the loop can journal it.
+            self.last_egress = {"destination": self.chat_url,
+                                "bytes_out": len(body), "bytes_in": raw_in}
+
 
 class AnthropicBackend(OllamaBackend):
     """Anthropic Messages API. Key from ANTHROPIC_API_KEY (env only)."""
@@ -262,6 +314,61 @@ class AnthropicBackend(OllamaBackend):
         self.last_egress = {"destination": self.messages_url,
                             "bytes_out": len(body), "bytes_in": len(raw)}
         return payload["content"][0]["text"]
+
+    def _chat_stream(self, prompt: str, system: str):
+        """SSE streaming over the Anthropic Messages API ("stream": true).
+
+        Yields ("thinking", text) for content_block_delta events whose
+        delta.type is "thinking_delta", and ("said", text) for "text_delta".
+        redacted_thinking blocks yield nothing (thinking stays null) —
+        thinking text is UI-only and never enters the turn dict or journal.
+
+        The API key travels only in the x-api-key header — it never
+        appears in events, logs, or the journal."""
+        body = json.dumps({
+            "model": self.model,
+            "max_tokens": self.num_predict,
+            "system": system,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": True,
+        }).encode()
+        headers = {"Content-Type": "application/json",
+                   "x-api-key": self.api_key or "",
+                   "anthropic-version": "2023-06-01"}
+        req = urllib.request.Request(self.messages_url, data=body,
+                                     headers=headers)
+        # urlopen raising here propagates to generate() -> safe fallback
+        # turn, with no egress recorded.
+        resp = urllib.request.urlopen(req, timeout=self.timeout)
+        raw_in = 0
+        try:
+            with resp:
+                for raw_line in resp:
+                    raw_in += len(raw_line)
+                    line = raw_line.decode("utf-8", "replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    try:
+                        obj = json.loads(line[5:].strip())
+                    except ValueError:
+                        continue
+                    if obj.get("type") != "content_block_delta":
+                        continue
+                    delta = obj.get("delta") or {}
+                    dtype = delta.get("type")
+                    if dtype == "thinking_delta":
+                        text = delta.get("thinking")
+                        if text:
+                            yield ("thinking", text)
+                    elif dtype == "text_delta":
+                        text = delta.get("text")
+                        if text:
+                            yield ("said", text)
+                    # signature_delta / redacted_thinking: yield nothing.
+        finally:
+            # Track C: report the network I/O so the loop can journal it.
+            self.last_egress = {"destination": self.messages_url,
+                                "bytes_out": len(body), "bytes_in": raw_in}
 
 
 # ---------------------------------------------------------------------------
@@ -856,10 +963,35 @@ class _ModeAwareBackend:
     def __getattr__(self, name):
         return getattr(self._inner, name)
 
-    def generate(self, contract_block, history, feedback=None):
-        return self._inner.generate(
-            contract_block, history, feedback=feedback,
-            temperature=self._sidecar._active_temperature())
+    def generate(self, contract_block, history, feedback=None,
+                 stream_cb=None):
+        """stream_cb(kind, text): optional streaming sink for the sidecar
+        protocol (spec §3.2–3.3). kind is "thinking" or "said". Default
+        None preserves today's behavior exactly: the inner backend is
+        called as before and no chunks are emitted.
+
+        Backends that speak streaming define _chat_stream and accept
+        stream_cb in generate(). Base fallback: a backend without
+        _chat_stream (echo, hostile, plain scripted) runs its existing
+        generate() untouched and the turn's progress_delta goes out as
+        one ("said", ...) chunk — those providers keep working with zero
+        changes to their code."""
+        temperature = self._sidecar._active_temperature()
+        inner = self._inner
+        if stream_cb is None:
+            return inner.generate(
+                contract_block, history, feedback=feedback,
+                temperature=temperature)
+        if hasattr(inner, "_chat_stream"):
+            return inner.generate(
+                contract_block, history, feedback=feedback,
+                temperature=temperature, stream_cb=stream_cb)
+        turn = inner.generate(contract_block, history, feedback=feedback,
+                              temperature=temperature)
+        said = (turn or {}).get("progress_delta") or ""
+        if said:
+            stream_cb("said", said)
+        return turn
 
 
 # ---------------------------------------------------------------------------

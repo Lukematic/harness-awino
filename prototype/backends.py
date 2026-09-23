@@ -57,22 +57,67 @@ def _base_turn(**kw) -> dict:
 
 
 class ScriptedBackend(ModelBackend):
-    """Pops queued turns; when exhausted, emits a benign clarifying turn."""
+    """Pops queued turns; when exhausted, emits a benign clarifying turn.
+
+    Streaming (sidecar protocol, spec §3): a queued turn may carry a
+    "chunks" list of [kind, text] pairs (kind "thinking" or "said") that
+    are delivered to stream_cb during generate(). Without "chunks" the
+    turn's progress_delta goes out as one ("said", ...) chunk. With
+    stream_cb=None the behavior is exactly the historical one.
+    """
 
     def __init__(self, script: list[dict]):
         self.script = [copy.deepcopy(t) for t in script]
         self.calls: list[dict] = []
 
+    def _chat_stream(self, prompt, system):
+        """Streaming capability marker: yields the next queued turn's
+        scripted chunks (peeks; generate() pops). Lets _ModeAwareBackend
+        route stream_cb into generate()."""
+        entry = self.script[0] if self.script else None
+        chunks = entry.get("chunks") if isinstance(entry, dict) else None
+        if chunks:
+            for pair in chunks:
+                kind = pair[0] if len(pair) > 0 else "said"
+                text = pair[1] if len(pair) > 1 else ""
+                if kind in ("thinking", "said") and text:
+                    yield (kind, text)
+        else:
+            said = (entry.get("progress_delta")
+                    if isinstance(entry, dict) else "") or ""
+            if said:
+                yield ("said", said)
+
     def generate(self, contract_block, history, feedback=None,
-                 temperature=None):
+                 temperature=None, stream_cb=None):
         self.calls.append({"contract": contract_block, "feedback": feedback,
                            "history_len": len(history),
                            "temperature": temperature})
         if self.script:
-            return _fill_echo(copy.deepcopy(self.script.pop(0)), contract_block)
-        return _fill_echo(_base_turn(plan=[], questions=["What should we work on next?"],
-                                    progress_delta="Script exhausted; awaiting direction."),
-                          contract_block)
+            entry = copy.deepcopy(self.script.pop(0))
+        else:
+            entry = _base_turn(plan=[], questions=["What should we work on next?"],
+                               progress_delta="Script exhausted; awaiting direction.")
+        chunks = (entry.pop("chunks", None)
+                  if isinstance(entry, dict) else None)
+        turn = _fill_echo(entry, contract_block)
+        if stream_cb is not None:
+            if chunks:
+                for kind, text in self._iter_chunks(chunks):
+                    stream_cb(kind, text)
+            else:
+                said = turn.get("progress_delta") or ""
+                if said:
+                    stream_cb("said", said)
+        return turn
+
+    @staticmethod
+    def _iter_chunks(chunks):
+        for pair in chunks or []:
+            kind = pair[0] if len(pair) > 0 else "said"
+            text = pair[1] if len(pair) > 1 else ""
+            if kind in ("thinking", "said") and text:
+                yield (kind, text)
 
 
 class HostileBackend(ModelBackend):
@@ -311,21 +356,80 @@ class OllamaBackend(ModelBackend):
         self.last_egress: dict | None = None
 
     def generate(self, contract_block, history, feedback=None,
-                 temperature=None):
+                 temperature=None, stream_cb=None):
         self.calls.append({"contract": contract_block[:200], "feedback": feedback,
                            "history_len": len(history),
                            "temperature": temperature})
         expected_header = contract_block.split("\n", 1)[0]
         system = _OLLAMA_SYSTEM.replace("{header}", expected_header)
+        prompt = self._user_prompt(contract_block, history, feedback)
         try:
-            text = self._chat(self._user_prompt(contract_block, history, feedback),
-                              system)
+            if stream_cb is not None:
+                text = self._stream_text(prompt, system, stream_cb)
+            else:
+                text = self._chat(prompt, system)
         except Exception as e:  # server down, timeout, bad payload: safe fallback
             return self._fallback(expected_header, f"backend error: {type(e).__name__}")
         turn = _extract_json(text)
         if not isinstance(turn, dict):
             return self._fallback(expected_header, "model output was not a JSON object")
         return self._normalize(turn, expected_header)
+
+    def _stream_text(self, prompt: str, system: str, stream_cb) -> str:
+        """Drive _chat_stream, forwarding ("thinking"|"said", chunk) to
+        stream_cb as chunks arrive. Returns the accumulated ("said", ...)
+        text for turn parsing. Thinking chunks are UI-only: they never
+        enter the turn dict, the journal, or the contract."""
+        parts = []
+        for kind, chunk in self._chat_stream(prompt, system):
+            if kind not in ("thinking", "said") or not chunk:
+                continue
+            stream_cb(kind, chunk)
+            if kind == "said":
+                parts.append(chunk)
+        return "".join(parts)
+
+    def _chat_stream(self, prompt: str, system: str):
+        """Ollama native /api/chat streaming ("stream": true): the server
+        sends one JSON object per line; each line's message.content is
+        yielded as ("said", content)."""
+        body = json.dumps({
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+            "stream": True,
+            "options": {"num_predict": self.num_predict,
+                        "temperature": self.temperature},
+        }).encode()
+        url = self.host + "/api/chat"
+        req = urllib.request.Request(url, data=body,
+                                     headers={"Content-Type": "application/json"})
+        # urlopen raising here (unreachable server) propagates to generate()
+        # -> safe fallback turn, with no egress recorded (same as _chat).
+        resp = urllib.request.urlopen(req, timeout=self.timeout)
+        raw_in = 0
+        try:
+            with resp:
+                for raw_line in resp:
+                    raw_in += len(raw_line)
+                    line = raw_line.decode("utf-8", "replace").strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except ValueError:
+                        continue  # tolerate keep-alive / malformed lines
+                    content = (obj.get("message") or {}).get("content")
+                    if content:
+                        yield ("said", content)
+                    if obj.get("done"):
+                        break
+        finally:
+            # Track C: report the network I/O so the loop can journal it.
+            self.last_egress = {"destination": url,
+                                "bytes_out": len(body), "bytes_in": raw_in}
 
     def _user_prompt(self, contract_block, history, feedback):
         lines = [contract_block, "", "--- recent history ---"]
