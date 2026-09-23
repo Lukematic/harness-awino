@@ -1,0 +1,24 @@
+{
+  // A.W.I.N.O. gate hook — merge the "hooks" block into your .claude/settings.json
+  // (project: .claude/settings.json, or global: ~/.claude/settings.json).
+  // NOTE: JSON does not officially allow comments; strip the // lines if your
+  // tooling complains. The hook command itself is plain JSON.
+  "hooks": {
+    "PreToolUse": [
+      {
+        // No "matcher": runs before EVERY tool call. The hook is opt-in —
+        // it exits 0 immediately unless <project>/.awino/contract.json exists,
+        // so projects without .awino/ are completely unaffected.
+        "hooks": [
+          {
+            "type": "command",
+            // Point at the wrapper (it locates prototype/awino_gate.py itself),
+            // or point directly at prototype/awino_gate.py — it is stdlib-only
+            // and works as a single copied file.
+            "command": "python3 /ABS/PATH/TO/harness-awino/integrations/claude/hooks/awino_gate.py"
+          }
+        ]
+      }
+    ]
+  }
+}
