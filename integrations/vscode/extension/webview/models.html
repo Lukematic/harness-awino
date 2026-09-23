@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>A.W.I.N.O.: Models &amp; Providers</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: var(--vscode-font-family, system-ui); font-size: 13px;
+    color: var(--vscode-foreground); background: var(--vscode-editor-background);
+    margin: 0; padding: 16px; max-width: 640px; }
+  h2 { margin-top: 0; }
+  .row { margin-bottom: 12px; }
+  label { display: block; margin-bottom: 4px; color: var(--vscode-descriptionForeground); }
+  input, select { width: 100%; box-sizing: border-box; padding: 8px;
+    background: var(--vscode-input-background); color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border); border-radius: 4px; font: inherit; }
+  button { background: var(--vscode-button-background); color: var(--vscode-button-foreground);
+    border: none; padding: 8px 18px; border-radius: 4px; cursor: pointer; margin-right: 8px; }
+  button.secondary { background: var(--vscode-button-secondaryBackground); }
+  .note { font-size: 12px; color: var(--vscode-descriptionForeground); margin: 8px 0; }
+  #status { margin: 12px 0; padding: 10px; border: 1px solid var(--vscode-panel-border); border-radius: 6px; }
+  .warn { color: var(--vscode-testing-iconFailed, #f14c4c); }
+</style>
+</head>
+<body>
+<h2>Models &amp; Providers</h2>
+<div id="status"><i>loading…</i></div>
+
+<div class="row">
+  <label for="provider">Provider</label>
+  <select id="provider">
+    <option value="echo">echo (safe default, no model)</option>
+    <option value="ollama">ollama (local, no key)</option>
+    <option value="openai">openai-compatible (endpoint + AWINO_API_KEY)</option>
+    <option value="anthropic">anthropic (ANTHROPIC_API_KEY)</option>
+  </select>
+</div>
+<div class="row">
+  <label for="endpoint">Endpoint (empty = provider default)</label>
+  <input id="endpoint" type="text" placeholder="http://localhost:11434">
+</div>
+<div class="row">
+  <label for="model">Model (empty = provider default)</label>
+  <input id="model" type="text" placeholder="qwen2.5:1.5b">
+</div>
+<div class="row">
+  <label for="timeout">Timeout (seconds)</label>
+  <input id="timeout" type="number" min="10" max="3600" value="180">
+</div>
+<div class="row">
+  <label for="openaiKey">OpenAI-compatible API key <span id="openaiKeyState"></span></label>
+  <input id="openaiKey" type="password" autocomplete="off" placeholder="stored in VS Code SecretStorage — never in settings">
+</div>
+<div class="row">
+  <label for="anthropicKey">Anthropic API key <span id="anthropicKeyState"></span></label>
+  <input id="anthropicKey" type="password" autocomplete="off" placeholder="stored in VS Code SecretStorage — never in settings">
+</div>
+<div class="note">Keys are written to VS Code SecretStorage and passed to the sidecar
+via environment variables. They never appear in settings JSON, events, logs, or the contract block.</div>
+<div class="row">
+  <button id="save">Save &amp; Reconnect</button>
+  <button id="clearKeys" class="secondary">Clear stored keys</button>
+</div>
+
+<h3>Environment (per-project provider bindings)</h3>
+<div class="note">Environments come from <code>.awino/providers.yaml</code>. Switching
+changes which provider + model + key the harness uses — project A can never see
+project B's key. Keys stay in secret storage; only key <i>references</i> live in the file.</div>
+<div class="row">
+  <label for="env">Active environment</label>
+  <select id="env"></select>
+</div>
+<div class="row">
+  <button id="switchEnv">Switch environment</button>
+</div>
+<div id="envResult" class="note"></div>
+
+<script src="{{MODELS_JS}}"></script>
+</body>
+</html>

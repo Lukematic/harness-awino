@@ -1,0 +1,238 @@
+{
+  "activationEvents": [
+    "onView:awino.chat"
+  ],
+  "categories": [
+    "AI",
+    "Chat",
+    "Other"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "awino.newMission",
+        "title": "A.W.I.N.O.: New Mission"
+      },
+      {
+        "command": "awino.newMissionFromSeed",
+        "title": "A.W.I.N.O.: New Mission from Seed"
+      },
+      {
+        "command": "awino.saveSeed",
+        "title": "A.W.I.N.O.: Save Current Mission as Seed"
+      },
+      {
+        "command": "awino.inspectContract",
+        "title": "A.W.I.N.O.: Inspect Contract"
+      },
+      {
+        "command": "awino.rollback",
+        "title": "A.W.I.N.O.: Rollback"
+      },
+      {
+        "command": "awino.housekeep",
+        "title": "A.W.I.N.O.: Housekeep Project"
+      },
+      {
+        "command": "awino.doctor",
+        "title": "A.W.I.N.O.: Doctor Project"
+      },
+      {
+        "command": "awino.addSkill",
+        "title": "A.W.I.N.O.: Add Skill"
+      },
+      {
+        "command": "awino.addContext",
+        "title": "A.W.I.N.O.: Add Context File"
+      },
+      {
+        "command": "awino.removeContext",
+        "title": "A.W.I.N.O.: Remove Context File"
+      },
+      {
+        "command": "awino.setApiKey",
+        "title": "A.W.I.N.O.: Set API Key"
+      },
+      {
+        "command": "awino.clearApiKey",
+        "title": "A.W.I.N.O.: Clear API Key"
+      },
+      {
+        "command": "awino.invokeMode",
+        "title": "A.W.I.N.O.: Invoke Mode"
+      },
+      {
+        "command": "awino.dismissMode",
+        "title": "A.W.I.N.O.: Dismiss Mode (back to stage default)"
+      },
+      {
+        "command": "awino.assumePersona",
+        "title": "A.W.I.N.O.: Assume Skill as Persona"
+      },
+      {
+        "command": "awino.dismissPersona",
+        "title": "A.W.I.N.O.: Dismiss Persona"
+      },
+      {
+        "command": "awino.switchEnvironment",
+        "title": "A.W.I.N.O.: Switch Environment"
+      },
+      {
+        "command": "awino.reconnect",
+        "title": "A.W.I.N.O.: Reconnect Sidecar"
+      },
+      {
+        "command": "awino.refreshViews",
+        "title": "A.W.I.N.O.: Refresh Views"
+      },
+      {
+        "command": "awino.openModels",
+        "title": "A.W.I.N.O.: Models & Providers"
+      }
+    ],
+    "configuration": {
+      "properties": {
+        "awino.endpoint": {
+          "default": "",
+          "description": "OpenAI-compatible base URL or Anthropic base URL. Empty = provider default.",
+          "type": "string"
+        },
+        "awino.mcpServers": {
+          "default": [],
+          "description": "MCP servers the sidecar spawns over stdio. Each: {name, command, args?, env?}. Their tools enter the harness registry under the same contract and approval gates.",
+          "items": {
+            "properties": {
+              "args": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "command": {
+                "type": "string"
+              },
+              "env": {
+                "type": "object"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "command"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "awino.model": {
+          "default": "",
+          "description": "Model name. Empty = provider default.",
+          "type": "string"
+        },
+        "awino.provider": {
+          "default": "echo",
+          "description": "Model source for the harness. API keys are NOT stored here \u2014 use 'A.W.I.N.O.: Set API Key'.",
+          "enum": [
+            "echo",
+            "ollama",
+            "openai",
+            "anthropic"
+          ],
+          "type": "string"
+        },
+        "awino.pythonPath": {
+          "default": "python3",
+          "description": "Python interpreter used to launch the A.W.I.N.O. sidecar.",
+          "type": "string"
+        },
+        "awino.timeout": {
+          "default": 180,
+          "description": "Model HTTP timeout in seconds.",
+          "type": "number"
+        }
+      },
+      "title": "A.W.I.N.O."
+    },
+    "views": {
+      "awino": [
+        {
+          "id": "awino.chat",
+          "name": "Mission Chat",
+          "type": "webview"
+        },
+        {
+          "id": "awino.contract",
+          "name": "Contract"
+        },
+        {
+          "id": "awino.journal",
+          "name": "Journal"
+        },
+        {
+          "id": "awino.learnings",
+          "name": "Learnings"
+        },
+        {
+          "id": "awino.skills",
+          "name": "Skills"
+        },
+        {
+          "id": "awino.context",
+          "name": "Context"
+        },
+        {
+          "id": "awino.modes",
+          "name": "Modes"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "icon": "resources/awino.svg",
+          "id": "awino",
+          "title": "A.W.I.N.O."
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "contents": "No sidecar connected.\nOpen a workspace folder and the A.W.I.N.O. sidecar will start automatically.\n[Open Folder](command:vscode.openFolder)",
+        "view": "awino.chat"
+      }
+    ]
+  },
+  "description": "A mission-driven agent IDE: the loop-owner harness owns every turn \u2014 contract, validation, judge, approvals \u2014 while the editor is just the surface. Kilo-class UX, harness-grade engine.",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  },
+  "displayName": "A.W.I.N.O. Loop Owner",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "keywords": [
+    "awino",
+    "agent",
+    "mission",
+    "harness",
+    "llm"
+  ],
+  "license": "SEE LICENSE IN REPOSITORY",
+  "main": "./out/extension.js",
+  "name": "awino-loop-owner",
+  "publisher": "lukematic",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Lukematic/harness-awino"
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "test": "node ./test/harness.js",
+    "watch": "tsc -watch -p ./"
+  },
+  "version": "0.1.0"
+}

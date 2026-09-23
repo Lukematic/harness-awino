@@ -9,3 +9,9 @@ build/
 dist/
 *.egg-info/
 *.egg-info/
+
+# VS Code extension build outputs (regenerable via `npx tsc -p ./` /
+# `npx @vscode/vsce package` in integrations/vscode/extension)
+node_modules/
+integrations/vscode/extension/out/
+*.vsix
