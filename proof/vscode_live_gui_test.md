@@ -1,124 +1,162 @@
-# A.W.I.N.O. VS Code Extension — Live GUI Test Proof
+# A.W.I.N.O. VS Code extension — live GUI test proof
 
-**Date:** 2026-09-23  
-**VS Code version:** 1.139.0 (commit 2242ebbb54efeeb0129e08e919e7e8d43033cd83, x64)  
-**Extension:** awino-loop-owner-0.1.0.vsix (installed via official `bin/code --install-extension --force`)  
-**Test driver:** `~/workspace/vscode-test-env/gui_test.py` (Playwright 1.63.0 + CDP, Xvfb)  
-**Result:** 28/30 checks passed. The 2 failures are brittle UI-text assertions
-(`status_bar` exact string, `scripted_plan_turn` wording), not product bugs.
-All mission-critical proofs passed.
+**Status: PROVEN — 34/34 checks green, process exit 0.**
 
-## What was proven
+> **Correction (2026-09-23).** An earlier draft of this document claimed a
+> 28/30 pass and described "the denied write" as the denied-command proof.
+> That claim was wrong: the earlier run's deny step acted on a stale
+> `write_file` approval card and never exercised `run_command` at all. This
+> document replaces it. The proof below shows a genuine `run_command`
+> approval card (`touch deny-check.txt`), a real click of the webview **Deny**
+> button, the file remaining absent, and the denial journaled with the exact
+> approval id — all inside the official VS Code GUI.
 
-This document proves the A.W.I.N.O. VS Code extension works end-to-end in a real,
-official VS Code desktop window — not a mock, not a unit test.
+## Environment
 
-### 1. Extension installs via official CLI ✅
+- **VS Code (official, unmodified):** 1.139.0, commit
+  `2242ebbb54efeeb0129e08e919e7e8d43033cd83`, x64 — launched under Xvfb
+  (`:99`), driven with Playwright.
+- **Extension:** `awino-loop-owner-0.1.0.vsix` (47 files, ~135.21 KB),
+  installed through the **official VS Code CLI**
+  (`code --install-extension …` → `Extension 'awino-loop-owner-0.1.0.vsix'
+  was successfully installed.`), verified as
+  `lukematic.awino-loop-owner@0.1.0`. The vsix bundles the real sidecar
+  (`bundled-sidecar/`).
+- **Backend:** scripted provider (deterministic), isolated `AWINO_HOME`,
+  fresh test workspace. No network, no model keys.
+- **Determinism pre-proof:** the scripted sidecar run passes **15/15**
+  headless (`/tmp/headless_proof.py`, log `/tmp/headless_proof3.log`),
+  covering DEFINE→PLAN→BUILD→VERIFY, approved write, denied command with
+  no effect, and the journal chain.
 
-```bash
-./VSCode-linux-x64/bin/code --no-sandbox \
-  --user-data-dir "$PWD/user-data-official" \
-  --extensions-dir "$PWD/ext-official" \
-  --install-extension ~/workspace/awino-rebuild/integrations/vscode/extension/awino-loop-owner-0.1.0.vsix --force
-# Output: Extension 'awino-loop-owner-0.1.0.vsix' was successfully installed.
-./VSCode-linux-x64/bin/code --list-extensions --show-versions | grep awino
-# Output: lukematic.awino-loop-owner@0.1.0
+## What the GUI run proves
+
+The driver (`~/workspace/vscode-test-env/gui_test.py`) performs the whole
+workflow through the real GUI — command palette, input boxes, webview
+buttons — and asserts 34 checks. Full log: `/tmp/gui_test_run23.log`.
+
+### 1. Contract progression (DEFINE → PLAN → BUILD → VERIFY)
+
+- Mission created via `A.W.I.N.O.: New Mission` (palette + input boxes).
+- "begin" → DEFINE → **PLAN** approved via real Approve click.
+- Scripted PLAN turn renders with `MARKER-PLAN` and **no** `MARKER-WRITE`
+  (no retry cascade, no drift).
+- "proceed to code with notes.txt scope" → PLAN → **BUILD** approved.
+- Real `write_file` approval card appears; **Approve** clicked → `notes.txt`
+  created with the exact bytes `Hello from the GUI test\n`; the write is
+  journaled.
+- The BUILD exit gate moves the mission to **VERIFY** once write effects
+  exist — the journal records
+  `phase_changed: PLAN → BUILD → VERIFY` in order
+  (`phase_progression_journal`).
+- The VERIFY turn card renders with the **VERIFY** phase chip and the
+  contract header `[A.W.I.N.O. | phase: VERIFY | mode: verify |
+  stance: devil's-advocate | skills: testing | …]` (`run_turn_in_verify`).
+
+### 2. Approved write
+
+`approval_card_write_file`, `approve_writes_file`,
+`approve_write_content_exact`, `approve_journal_entry` — all green.
+
+### 3. Denied `run_command` — the real proof
+
+On the VERIFY floor, "run the check" produces a genuine **`run_command`**
+approval card:
+
+```
+Approval requested: run_command
+{ "cmd": "touch deny-check.txt" }
+[Approve] [Deny]
 ```
 
-The `.vsix` bundles the Python sidecar (`bundled-sidecar/awino_sidecar.py`, 34 files).
-No repo checkout needed on the target machine.
+- The driver clicks the **actual webview Deny button** (not a simulated
+  decision); the button reports disabled after the click.
+- `deny-check.txt` **remains absent** from the workspace
+  (`deny_blocks_run_command`) — the command never executed.
+- The sidecar journal (`awino-home/projects/test-workspace/events.jsonl`)
+  records the exact chain:
+  `approval_requested` for `run_command` with
+  `args.cmd = "touch deny-check.txt"`,
+  followed by `approval_denied` with the **same approval id**
+  (`deny_journal_entry`).
+- The turn finalizes safely; the mission stays coherent; no orphan
+  sidecar or VS Code processes remain
+  (`no_orphan_sidecar`, `no_lingering_vscode` — `pids=[]`).
 
-### 2. GUI workflow (all in the real workbench) ✅
+### 4. Result
 
-- [x] Activity bar icon renders; chat webview loads (iframe with `#input`)
-- [x] Echo turn renders; phase/mode chips visible
-- [x] All six tree views populate: Contract, Journal, Learnings, Skills, Context, Modes
-- [x] Models & Providers webview saves without crash; reconnect works
-- [x] Scripted test backend binds (`connected · scripted · env (global) · model scripted`)
+**34/34 passed, 0 failed, exit code 0.**
 
-### 3. Contract progression (DEFINE → PLAN → BUILD) ✅
-
-Via `A.W.I.N.O.: New Mission` and `A.W.I.N.O.: Approve Contract` commands:
-
-- [x] Mission created with objective + `artifact:notes.txt` criteria
-- [x] DEFINE → PLAN approved (`approve_contract_define_plan`)
-- [x] PLAN → BUILD approved with `notes.txt` scope (`approve_contract_plan_build`)
-
-### 4. Approved write (the critical proof) ✅
-
-- [x] Scripted backend returns `write_file` turn for `notes.txt`
-- [x] Approval card appears in webview with diff preview (`approval_modal_write_file`)
-- [x] User clicks **Approve** (button disables after click)
-- [x] `notes.txt` is created with exact expected content (`approve_writes_file`)
-- [x] Journal records the effect (`approve_journal_entry`)
-
-### 5. Denied command (no effect) ✅
-
-- [x] Second `write_file` approval card appears (`approval_modal_deny`)
-- [x] User clicks **Deny**
-- [x] `notes.txt` is NOT modified — still has original content from the approve test
-      (`deny_blocks_execution`: "notes.txt unchanged after deny (len=24)")
-- [x] This proves the deny path prevents the tool effect.
-
-### 6. Zero orphan processes ✅
-
-After quitting VS Code:
-
-- [x] Zero `awino_sidecar.py` processes (`no_orphan_sidecar`)
-- [x] Zero lingering VS Code processes (`no_lingering_vscode`)
+| # | Check | Result |
+|---|-------|--------|
+| 1 | vscode_launched | PASS |
+| 2 | activity_bar_icon | PASS |
+| 3 | chat_webview_renders | PASS |
+| 4 | interview_banner_not_blank | PASS |
+| 5 | echo_turn_renders | PASS |
+| 6 | phase_mode_chips | PASS |
+| 7–12 | tree_view_Contract/Journal/Learnings/Skills/Context/Modes | PASS |
+| 13 | status_bar | PASS |
+| 14 | models_webview_renders | PASS |
+| 15 | models_save_reconnect | PASS |
+| 16 | chat_visible_after_models | PASS |
+| 17 | reconnect_scripted | PASS |
+| 18 | scripted_provider_active | PASS |
+| 19 | mission_created_flow | PASS |
+| 20 | approve_contract_define_plan | PASS |
+| 21 | scripted_plan_turn | PASS |
+| 22 | approve_contract_plan_build | PASS |
+| 23 | approval_card_write_file | PASS |
+| 24 | approve_writes_file | PASS |
+| 25 | approve_write_content_exact | PASS |
+| 26 | approve_journal_entry | PASS |
+| 27 | approval_card_run_command | PASS |
+| 28 | run_turn_in_verify | PASS |
+| 29 | deny_blocks_run_command | PASS |
+| 30 | deny_journal_entry | PASS |
+| 31 | phase_progression_journal | PASS |
+| 32 | journal_view | PASS |
+| 33 | no_orphan_sidecar | PASS |
+| 34 | no_lingering_vscode | PASS |
 
 ## Screenshots
 
-Clean screenshots in `proof/vscode_gui/`:
+`proof/vscode_gui/` (numbered set from the green run):
 
-| File | Shows |
-|------|-------|
-| `01_startup.png` | VS Code workbench with A.W.I.N.O. loaded |
-| `02_activity_bar_open.png` | A.W.I.N.O. container open |
-| `03_chat_banner.png` | Chat webview, no active mission |
-| `04_turn_result.png` | Echo turn with phase/mode chips |
-| `05_tree_views.png` | All six tree views |
-| `06_statusbar.png` | Status bar provider indicator |
-| `07_models_providers.png` | Models & Providers webview |
-| `08_models_saved.png` | After save & reconnect |
-| `09_mission_created.png` | Mission created via command |
-| `10_approval_requested.png` | Contract approval flow |
-| `11_approval_card_diff.png` | write_file approval card with diff |
-| `12_deny_modal.png` | run_command approval card (Deny clicked) |
-| `13_journal_view.png` | Journal tree view with entries |
-| `14_final.png` | Final state |
+1. `01_launch.png` — workbench with the A.W.I.N.O. activity-bar icon
+2. `02_chat.png` — A.W.I.N.O. container open, chat webview rendered
+3. `03_banner.png` — discovery-interview banner ("No active mission…")
+4. `04_echo.png` — echo turn + phase/mode chips
+5. `05_treeviews.png` — all six tree views
+6. `06_statusbar.png` — status bar provider readout
+7. `07_models_providers.png` — Models & Providers webview
+8. `08_models_saved.png` — saved + reconnected
+9. `09_mission_created.png` — mission live
+10. `10_plan_turn.png` — scripted PLAN turn card
+11. `11_approval_card_write.png` — real `write_file` approval card
+12. `12_approval_card_run_command.png` — real `run_command` approval card
+    (`touch deny-check.txt`) with Approve/Deny
+13. `13_after_deny.png` — finalized denied turn, VERIFY phase chip
+14. `14_journal_view.png` — Journal tree view
+15. `15_final.png` — final state
 
-## Bugs fixed during GUI testing
+Every screenshot was visually inspected. Stale or misleading files from
+earlier runs were removed; the set above is the one clean numbered set.
 
-1. **Webview iframe refused to load** — `asWebviewUri` fix for local resources.
-2. **Quick-input fuzzy matching broken by `fill()`** — driver now types character-by-character.
-3. **Quick-input DOM reuse** — VS Code hides/reuses the widget; driver accepts hidden as success.
-4. **Provider precedence** — project `providers.yaml` overrides hello globals by design; driver removes stale file before scripted test.
-5. **Approval staleness** — sidecar correctly refuses stale approvals if revision/scope changes; test avoids extra messages while approval is pending.
-6. **Intentional reconnect** — added `closing` flag so intentional close doesn't emit false "sidecar exited" error.
-7. **View refresh on ready** — added `refreshViews()` when sidecar becomes ready.
+## Reproduce
 
-## Honest limitations
+```bash
+cd ~/workspace/vscode-test-env
+./pwvenv/bin/python gui_test.py   # DISPLAY=:99 Xvfb; ~15 min; exits 0 at 34/34
+```
 
-- **Provider backends:** The extension supports OpenAI (any OpenAI-compatible endpoint),
-  Anthropic, local Ollama, and MCP servers. There is **no native AWS Bedrock client** —
-  Bedrock is reachable via its OpenAI-compatible endpoint. Provider keys are user-supplied.
-- **`awino.script` is test-only:** Scripted turns still pass through contract validation,
-  judges, approval gates, tools, and journaling — only the model text is canned. Not for production.
-- **Small-model judge noise:** The 1.5B judges are conservative; deterministic judge's R2
-  heuristic keys on the `[ ]`/`[x]` checkbox format.
+Requirements: official VS Code `code` CLI on PATH, the `.vsix` installed
+from `~/workspace/awino-rebuild/integrations/vscode/extension/`,
+`AWINO_HOME` isolation handled by the driver itself.
 
-## Test environment
+## Scope notes
 
-See `~/workspace/vscode-test-env/INSTALL.md` for full setup instructions.
-
-## Result
-
-**28/30 checks passed** (test log: `/tmp/gui_test_run18.log`).
-
-The 2 failures are brittle UI-text assertions, not product bugs:
-- `status_bar`: expected exact string, got `echo · (global) · interview` (mode text differs)
-- `scripted_plan_turn`: expected "Planning the change" wording, got actual PLAN card text
-
-All mission-critical proofs passed: contract progression, approved write with file
-creation, denied write with no effect, journal evidence, zero orphans.
+- The scripted provider stands in for a real model backend; the harness
+  contract, approvals, journal, and phase gates are the real code paths.
+- No Marketplace publication, signing, or release was performed — install
+  and proof only, per the publish gate.
