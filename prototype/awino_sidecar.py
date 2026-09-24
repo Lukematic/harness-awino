@@ -3001,8 +3001,14 @@ class Sidecar:
                 reg.add_task(f"execute seed '{name}' ({p.name})",
                              source=f"seed:{slug}", state="open")
                 task_registered = True
-            except Exception:
-                pass
+            except Exception as e:  # noqa: BLE001 — log, don't silently fail
+                import sys
+                print(f"seed_save: add_task failed: {type(e).__name__}: {e}",
+                      file=sys.stderr)
+        else:
+            import sys
+            print("seed_save: no registry attached (loop.registry is None)",
+                  file=sys.stderr)
         self.loop.state.persist_snapshot()
         return {"status": "ok", "seed": p.name, "overwrote": existed,
                 "task_registered": task_registered}
