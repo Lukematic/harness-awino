@@ -136,21 +136,31 @@ class ProtocolTest(unittest.TestCase):
         self.assertIn("mcp", e)
 
     def test_hello_auto_inits_fresh_workspace(self):
-        # Track A/H: session start in a fresh dir runs the full init flow
-        # automatically — no `awino init` was ever typed — and the ready
-        # event carries the one brief plain-language summary.
+        # Track A/H: session start in a fresh dir runs the init flow
+        # automatically in the background — no `awino init` was ever typed.
+        # The ready event is emitted immediately (must not block on init);
+        # auto_init is None in ready, and the workspace is initialized
+        # asynchronously. In sidecar mode (AWINO_SIDECAR=1) no .venv is
+        # created — the sidecar ships its own bundled Python.
         e = self.c.hello()
         self.assertEqual(e["event"], "ready")
-        summary = e.get("auto_init")
-        self.assertIsInstance(summary, list, "ready event must carry auto_init")
-        joined = "\n".join(summary)
-        self.assertIn("Set up this project", joined)
-        self.assertNotIn("Traceback", joined)
+        self.assertIsNone(e.get("auto_init"),
+                          "ready must not block on auto-init")
         ws = self.c.ws
-        self.assertTrue(os.path.isfile(os.path.join(ws, ".awino", "project.yaml")))
-        self.assertTrue(os.path.isdir(os.path.join(ws, ".venv")))
+        # Wait for the background auto-init thread (up to 30s).
+        deadline = time.time() + 30
+        proj_yaml = os.path.join(ws, ".awino", "project.yaml")
+        while time.time() < deadline:
+            if os.path.isfile(proj_yaml):
+                break
+            time.sleep(0.5)
+        self.assertTrue(os.path.isfile(proj_yaml),
+                        "background auto-init must create project.yaml")
         self.assertTrue(os.path.isfile(os.path.join(ws, "justfile")))
         self.assertTrue(os.path.isdir(os.path.join(ws, ".awino", "registry")))
+        # Sidecar mode: no .venv (bundled Python is used instead).
+        self.assertFalse(os.path.isdir(os.path.join(ws, ".venv")),
+                         "sidecar must not create a project venv")
         # second hello in the same workspace: already a project -> silent
         e2 = self.c.hello()
         self.assertEqual(e2["event"], "ready")
