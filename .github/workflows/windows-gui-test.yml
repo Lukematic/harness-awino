@@ -47,9 +47,13 @@ jobs:
         working-directory: integrations/vscode/extension
         run: node scripts/fetch-python-runtimes.js
 
-      - name: TypeScript check
+      - name: TypeScript build
+        # NOTE: must EMIT (no --noEmit). Ten test files require(../out/*.js);
+        # out/ is gitignored, so on a fresh runner --noEmit leaves nothing for
+        # npm test and the suite dies with MODULE_NOT_FOUND. npx tsc still
+        # fails the step on type errors.
         working-directory: integrations/vscode/extension
-        run: npx tsc --noEmit
+        run: npx tsc
 
       - name: Node unit tests
         working-directory: integrations/vscode/extension
