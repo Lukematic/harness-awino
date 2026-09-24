@@ -262,13 +262,14 @@ def main():
                 with z.open(info) as src, open(target, "wb") as out:
                     shutil.copyfileobj(src, out)
     log(f"extracted {ext_id} ({sum(len(f) for _, _, f in os.walk(dest))} files)")
-    r2 = subprocess.run([a.code, "--list-extensions",
-                         "--user-data-dir=" + user_data,
-                         "--extensions-dir=" + ext_dir],
-                        capture_output=True, text=True, timeout=120)
-    installed = "lukematic.awino-loop-owner" in (r2.stdout or "")
+    # Verify via filesystem (the VS Code CLI --list-extensions hangs on
+    # Windows CI, like --install-extension did). The extension is installed
+    # if the directory exists with package.json and the bundled runtime.
+    pkg_json = os.path.join(dest, "package.json")
+    bundled_py = os.path.join(dest, "python", "win32-x64", "python.exe")
+    installed = (os.path.isfile(pkg_json) and os.path.isfile(bundled_py))
     if not check("win_ext_installed", installed,
-                 "lukematic.awino-loop-owner in --list-extensions"):
+                 f"extension dir {ext_id} with package.json + bundled python.exe"):
         logf.close()
         sys.exit(1)
 
