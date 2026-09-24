@@ -23,6 +23,13 @@ const { SidecarClient } = require("../out/sidecar.js");
 const REPO = path.resolve(__dirname, "..", "..", "..", "..", "prototype");
 const SIDECAR = path.join(REPO, "awino_sidecar.py");
 
+// Windows CI: the interpreter on PATH is `python` (setup-python), not
+// `python3` — which does not exist on stock Windows.
+const PYTHON = process.platform === "win32" ? "python" : "python3";
+// run_command executes with shell=True (cmd.exe on Windows), so `touch`
+// — a Unix-only command — must become a cmd-native file creation.
+const touchCmd = (f) => (process.platform === "win32" ? `type nul > ${f}` : `touch ${f}`);
+
 // Step 3 streaming fixtures: >4096 chars so the 4KB payload split is exercised.
 const BIG_THINK = "THINK-" + "t".repeat(5000);
 const BIG_SAID = "SAID-" + "s".repeat(5000);
@@ -71,7 +78,7 @@ async function main() {
       progress_delta: "Creating notes.txt.",
     }),
     turn({
-      tool_calls: [{ name: "run_command", args: { cmd: "touch ran-check.txt" } }],
+      tool_calls: [{ name: "run_command", args: { cmd: touchCmd("ran-check.txt") } }],
       assumptions: ["Attack: the command could fail silently, so its absence afterwards is the falsifier."],
       progress_delta: "Running the check command.",
     }),
@@ -91,7 +98,7 @@ async function main() {
       progress_delta: "Confirming workspace state.",
     }),
     turn({
-      tool_calls: [{ name: "run_command", args: { cmd: "touch streamed-run.txt" } }],
+      tool_calls: [{ name: "run_command", args: { cmd: touchCmd("streamed-run.txt") } }],
       chunks: [
         ["thinking", "The command needs approval; I will present it."],
         ["said", "Preparing the check command for approval."],
@@ -105,7 +112,7 @@ async function main() {
 
   // 1. spawn hello -> ready (the extension host code path)
   const ready = await client.start({
-    python: "python3",
+    python: PYTHON,
     sidecarPath: SIDECAR,
     workspace: ws,
     provider: "scripted",
@@ -154,7 +161,10 @@ async function main() {
   client.approve(item.id, "approve");
   tr = await p;
   assert.strictEqual(tr.result.status, "ok", "resumed turn ok");
-  assert.strictEqual(fs.readFileSync(path.join(ws, "notes.txt"), "utf8"), "Hello from the harness\n");
+  // write_file uses Python text mode: on Windows the \n becomes \r\n on
+  // disk, so normalize before comparing.
+  const notesOnDisk = fs.readFileSync(path.join(ws, "notes.txt"), "utf8").replace(/\r\n/g, "\n");
+  assert.strictEqual(notesOnDisk, "Hello from the harness\n");
   const j = await commandResult(client, "journal", {});
   const tools = j.result.journal.map((x) => x.tool);
   assert.ok(tools.includes("write_file"), "journal records write_file");
