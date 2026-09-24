@@ -156,7 +156,8 @@ class ProtocolTest(unittest.TestCase):
             time.sleep(0.5)
         self.assertTrue(os.path.isfile(proj_yaml),
                         "background auto-init must create project.yaml")
-        self.assertTrue(os.path.isfile(os.path.join(ws, "justfile")))
+        # Sidecar mode skips the task runner (justfile) — it's a CLI
+        # workstation concern. The sidecar's auto-init never creates one.
         self.assertTrue(os.path.isdir(os.path.join(ws, ".awino", "registry")))
         # Sidecar mode: no .venv (bundled Python is used instead).
         self.assertFalse(os.path.isdir(os.path.join(ws, ".venv")),
