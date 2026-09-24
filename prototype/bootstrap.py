@@ -682,22 +682,29 @@ def run_startup_checklist(project_root: str | Path,
     checks: list[dict] = []
     breadcrumbs: list[str] = []
     venv_bin: Path | None = None
+    # Sidecar mode (VS Code extension): skip the slow environment checks
+    # (uv, venv creation, just install, ruff install, git). The sidecar
+    # ships its own Python; these are CLI workstation concerns. Only the
+    # fast project scaffolding (awino_dir, project.yaml, dirs, seeds)
+    # runs here — the mission command must return promptly.
+    _sidecar = os.environ.get("AWINO_SIDECAR") == "1"
     seed_tasks: list[dict] = []
     project_yaml: Path | None = None
     try:
         checks.append(check_python(root))
-        checks.append(check_uv(root))
+        if not _sidecar:
+            checks.append(check_uv(root))
 
-        venv_check, venv_bin = ensure_venv(root)
-        checks.append(venv_check)
+            venv_check, venv_bin = ensure_venv(root)
+            checks.append(venv_check)
 
-        runner_check, crumb = ensure_task_runner(root)
-        checks.append(runner_check)
-        if crumb:
-            breadcrumbs.append(crumb)
+            runner_check, crumb = ensure_task_runner(root)
+            checks.append(runner_check)
+            if crumb:
+                breadcrumbs.append(crumb)
 
-        checks.append(check_ruff(root, venv_bin))
-        checks.append(check_git(root))
+            checks.append(check_ruff(root, venv_bin))
+            checks.append(check_git(root))
 
         awino_check, awino_dir = ensure_awino_dir(root)
         checks.append(awino_check)
