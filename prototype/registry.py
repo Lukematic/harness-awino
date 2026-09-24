@@ -316,7 +316,11 @@ class Registry:
         """Import checklist tasks from seed files; dedupe by (text, source).
 
         seed_tasks: [{"text", "done" (bool), "source"}] from
-        bootstrap.collect_seed_tasks. Done items import as done.
+        bootstrap.collect_seed_tasks. Done items import as done — but a
+        checked box is human attestation, not harness verification, so done
+        imports carry an evidence entry saying exactly that. Without it the
+        Tasks panel (which presents completed states as verified) would
+        mislead.
         """
         existing = {(t["text"], t["source"]) for t in self.tasks()}
         n = 0
@@ -324,8 +328,13 @@ class Registry:
             key = (st["text"], st.get("source", "seed"))
             if key in existing:
                 continue
-            self.add_task(st["text"], source=st.get("source", "seed"),
-                          state="done" if st.get("done") else "open")
+            done = bool(st.get("done"))
+            source = st.get("source", "seed")
+            evidence = ([f"{source} checklist [x] (human attestation, "
+                         "not verified)"] if done else None)
+            self.add_task(st["text"], source=source,
+                          state="done" if done else "open",
+                          evidence=evidence)
             existing.add(key)
             n += 1
         return n

@@ -15,7 +15,9 @@ import * as path from "path";
 import { spawn } from "child_process";
 import { SidecarClient, SidecarEvent, defaultSidecarPath } from "./sidecar";
 import { resolvePythonInterpreter, describeSpawnFailure, isInterpreterNotFound, ResolvedInterpreter } from "./python";
+import { bundledRuntimePath, prepareBundledRuntime } from "./bundledPython";
 import { offerPythonRecovery, pickPythonPathWriteLevel } from "./pythonRecovery";
+import { ConnectGuard } from "./connectGuard";
 import { keyMissingForProvider } from "./providerKeys";
 import { discoverModels } from "./modelDiscovery";
 import {
@@ -198,24 +200,29 @@ function log(s: string): void {
 
 // ------------------------------------------------- sidecar query plumbing
 
-type Waiter = { name: string; resolve: (r: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout };
+type Waiter = { name: string; id: string; resolve: (r: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout };
 let waiters: Waiter[] = [];
+let querySeq = 0;
 
-/** Send a `command` verb and resolve with the next matching command_result. */
+/** Send a `command` verb and resolve with the matching command_result. */
 function query(name: string, args: Record<string, unknown> = {}): Promise<unknown> {
   return new Promise((resolve, reject) => {
     if (!session) {
       reject(new Error("not connected"));
       return;
     }
+    // Unique request id per query: the sidecar echoes it in command_result
+    // so concurrent same-name queries resolve the right waiter instead of
+    // matching on the command name alone (which could misroute).
+    const id = `q${++querySeq}`;
     const timer = setTimeout(() => {
       waiters = waiters.filter((w) => w !== waiter);
-      reject(new Error(`timed out waiting for command_result:${name}`));
+      reject(new Error(`timed out waiting for command_result:${name} (id ${id})`));
     }, 120_000);
-    const waiter: Waiter = { name, resolve, reject, timer };
+    const waiter: Waiter = { name, id, resolve, reject, timer };
     waiters.push(waiter);
     try {
-      session.client.command(name, args);
+      session.client.command(name, args, id);
     } catch (e) {
       clearTimeout(timer);
       waiters = waiters.filter((w) => w !== waiter);
@@ -225,7 +232,12 @@ function query(name: string, args: Record<string, unknown> = {}): Promise<unknow
 }
 
 function routeCommandResult(ev: SidecarEvent): void {
-  const idx = waiters.findIndex((w) => w.name === String(ev.name));
+  const evId = ev["id"];
+  // Prefer the echoed request id; fall back to name matching for results
+  // that carry none (older sidecars, or error paths that never saw one).
+  const idx = waiters.findIndex((w) =>
+    evId !== undefined && evId !== null ? w.id === String(evId) : w.name === String(ev.name)
+  );
   if (idx >= 0) {
     const [w] = waiters.splice(idx, 1);
     clearTimeout(w.timer);
@@ -368,6 +380,7 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
       localResourceRoots: [webviewDir],
     };
     view.webview.html = loadWebviewHtml(this.ctx, "chat.html")
+      .replace(/\{\{CSP_SOURCE\}\}/g, view.webview.cspSource)
       .replace(
         "{{SETUP_SHARED_JS}}",
         String(view.webview.asWebviewUri(vscode.Uri.joinPath(webviewDir, "setup-shared.js")))
@@ -510,12 +523,19 @@ async function onSidecarEvent(ev: SidecarEvent): Promise<void> {
     case "turn_result": {
       const result = (ev["result"] ?? {}) as Record<string, unknown>;
       if (session) {
-        session.lastStatus = {
-          active_mode: result["active_mode"],
-          persona: result["persona"],
-          provider: result["provider"],
-          phase: result["phase"],
-        };
+        // Merge into lastStatus, never replace: a partial turn_result must
+        // not wipe fields (mission, phase) that only refreshStatus()
+        // repopulates — replacing blanks the header transiently between the
+        // two. Only defined values are merged so a missing key can't
+        // clobber a known one with undefined.
+        const merged: Record<string, unknown> = { ...(session.lastStatus ?? {}) };
+        for (const k of ["active_mode", "persona", "provider", "phase"] as const) {
+          const v = result[k];
+          if (v !== undefined) {
+            merged[k] = v;
+          }
+        }
+        session.lastStatus = merged;
       }
       updateStatusBar();
       postToChat({ type: "event", payload: ev });
@@ -696,7 +716,28 @@ function computeShowWizard(context: vscode.ExtensionContext): boolean {
   return lastKeyMissing?.missing ?? false;
 }
 
+/**
+ * Connect (or reconnect) the sidecar, serialized through a ConnectGuard.
+ * connect() is reachable from auto-connect, the Reconnect command, and the
+ * Locate-Python recovery retry: without the guard, overlapping runs each
+ * spawn a sidecar — the losing process leaks, and when the first run's
+ * start() finally rejects its catch sets `session = null`, destroying the
+ * newer live session. Concurrent callers now join the in-flight run, and a
+ * stale (superseded) run never mutates the session.
+ */
+const connectGuard = new ConnectGuard();
+
 async function connect(context: vscode.ExtensionContext): Promise<void> {
+  return connectGuard.run((generation, isCurrent) =>
+    doConnectInner(context, generation, isCurrent)
+  );
+}
+
+async function doConnectInner(
+  context: vscode.ExtensionContext,
+  generation: number,
+  isCurrent: () => boolean
+): Promise<void> {
   const folder = vscode.workspace.workspaceFolders?.[0];
   if (!folder) {
     log("no workspace folder open — sidecar not started");
@@ -757,10 +798,18 @@ async function connect(context: vscode.ExtensionContext): Promise<void> {
   }
 
   await disconnect();
-  // Resolve the interpreter: an explicit awino.pythonPath wins; on Windows
+  // Resolve the interpreter: an explicit awino.pythonPath wins; then the
+  // interpreter bundled inside the VSIX (0.5.0+, zero setup); on Windows
   // auto-detect (py -> python -> python3 — stock Windows installs have no
   // `python3`); otherwise the `python3` default.
-  const interp: ResolvedInterpreter = await resolvePythonInterpreter({ configured: configuredPythonPath() });
+  const bundled = bundledRuntimePath(process.platform, process.arch, context.extensionPath);
+  if (bundled) {
+    prepareBundledRuntime(bundled, process.platform);
+  }
+  const interp: ResolvedInterpreter = await resolvePythonInterpreter({
+    configured: configuredPythonPath(),
+    bundledPath: bundled ?? undefined,
+  });
   log(`sidecar interpreter: ${interp.python} (source: ${interp.source})`);
   const client = new SidecarClient();
   client.on("log", (s: string) => output.append(s.replace(/\n$/, "")));
@@ -801,6 +850,13 @@ async function connect(context: vscode.ExtensionContext): Promise<void> {
     // hint in the Output channel, the chat webview, and the status bar —
     // not the bare "not connected".
     const detail = describeSpawnFailure(interp, msg);
+    if (!isCurrent()) {
+      // Superseded: a newer connect run claimed the guard while this run
+      // was parked (e.g. the recovery dialog's retry started a fresh run).
+      // Never touch the live session from a stale run.
+      log(`stale connect run (generation ${generation}) failed after being superseded — leaving the current session alone`);
+      return;
+    }
     lastConnectError = detail;
     log(`connect failed: ${detail}`);
     postChatState({ connected: false, connectError: detail });
@@ -810,27 +866,43 @@ async function connect(context: vscode.ExtensionContext): Promise<void> {
       // Missing interpreter (ENOENT): offer the Locate-Python recovery
       // flow — per-platform install locations, a file picker, save to
       // awino.pythonPath, then retry — instead of a dead-end error.
+      // Release the guard BEFORE the dialog: the dialog's retryConnect must
+      // start a genuinely new run — re-awaiting this run's own in-flight
+      // promise from inside itself would deadlock.
+      connectGuard.release();
       await offerPythonRecovery(
         {
           showErrorMessage: (m, ...items) =>
             Promise.resolve(vscode.window.showErrorMessage(m, ...items)),
           showOpenDialog: (o) => Promise.resolve(vscode.window.showOpenDialog(o)),
           savePythonPath: (exe) => {
-            const cfg = vscode.workspace.getConfiguration("awino");
-            // Write to the level that already holds a value: a stale
-            // workspace-level pythonPath would otherwise keep winning at
-            // resolve time and the freshly picked interpreter would
-            // silently not take effect.
-            const target =
-              pickPythonPathWriteLevel(cfg.inspect("pythonPath")) ===
-              "workspace"
-                ? vscode.ConfigurationTarget.Workspace
-                : vscode.ConfigurationTarget.Global;
+            // Write to the most specific level that already holds a value:
+            // at resolve time workspaceFolderValue beats workspaceValue
+            // beats globalValue, so a stale folder-level pythonPath (common
+            // in multi-root workspaces) would otherwise keep winning and
+            // the freshly picked interpreter would silently not take
+            // effect.
+            const folder = vscode.workspace.workspaceFolders?.[0];
+            const level = pickPythonPathWriteLevel(
+              vscode.workspace.getConfiguration("awino").inspect("pythonPath")
+            );
+            let target: vscode.ConfigurationTarget;
+            let cfg = vscode.workspace.getConfiguration("awino");
+            if (level === "workspaceFolder" && folder) {
+              // WorkspaceFolder-targeted writes need a folder-scoped config.
+              cfg = vscode.workspace.getConfiguration("awino", folder.uri);
+              target = vscode.ConfigurationTarget.WorkspaceFolder;
+            } else if (level === "workspace") {
+              target = vscode.ConfigurationTarget.Workspace;
+            } else {
+              target = vscode.ConfigurationTarget.Global;
+            }
             return Promise.resolve(cfg.update("pythonPath", exe, target)).then(
               () => undefined
             );
           },
-          retryConnect: () => connect(context),
+          // Never let a retry rejection escape as an unhandled promise.
+          retryConnect: () => connect(context).catch(log),
           log,
         },
         detail
@@ -934,7 +1006,14 @@ function registerCommands(context: vscode.ExtensionContext): void {
       vscode.window.showErrorMessage(`Awino: seed save failed — ${String(r["said"] ?? r["status"])}`);
       return;
     }
-    vscode.window.showInformationMessage(`Awino: seed saved as ${name}`);
+    // The seed file is written even when registry task registration fails —
+    // say so instead of reporting a clean save.
+    const trackingNote =
+      r["task_registered"] === false ? " (task tracking failed — see log)" : "";
+    if (r["task_registered"] === false) {
+      log("seed_save: seed file written but registry task registration failed");
+    }
+    vscode.window.showInformationMessage(`Awino: seed saved as ${name}${trackingNote}`);
     refreshViews(); // the Tasks panel mirrors the seed-registered task
   });
 
@@ -1515,25 +1594,36 @@ async function doctorProject(): Promise<void> {
   }
   const isPython = exists("requirements.txt") || exists("pyproject.toml") || exists("setup.py");
   if (isPython && !exists(".venv") && !exists("venv")) {
+    // Windows: stock installs provide `py` (the launcher), not `python3` —
+    // a hard-coded `python3` spawn is a guaranteed ENOENT there.
+    const venvCmd = process.platform === "win32" ? "py" : "python3";
     findings.push({
       label: "No Python virtualenv (.venv)",
-      fix: "Create with python3 -m venv .venv",
+      fix: `Create with ${venvCmd} -m venv .venv`,
       run: () =>
         new Promise((resolve, reject) => {
-          const p = spawn("python3", ["-m", "venv", ".venv"], { cwd: root });
+          const p = spawn(venvCmd, ["-m", "venv", ".venv"], { cwd: root, windowsHide: true });
           let err = "";
           p.stderr.on("data", (d) => (err += d));
+          // Without an "error" listener a spawn failure (e.g. ENOENT)
+          // throws inside the extension host and this promise never
+          // settles — the doctor UI hangs.
+          p.on("error", (e) => reject(e instanceof Error ? e : new Error(String(e))));
           p.on("close", (code) => (code === 0 ? resolve("created .venv") : reject(new Error(err.slice(0, 200) || `venv failed (code ${code})`))));
         }),
     });
   }
   if (exists("package.json") && !exists("node_modules")) {
+    // Windows: `npm` is npm.cmd — CreateProcess only appends `.exe`, so a
+    // bare "npm" spawn is a guaranteed ENOENT without shell:true.
+    const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
     findings.push({
       label: "node_modules missing",
       fix: "Run npm install",
       run: () =>
         new Promise((resolve, reject) => {
-          const p = spawn("npm", ["install", "--no-audit", "--no-fund"], { cwd: root });
+          const p = spawn(npmCmd, ["install", "--no-audit", "--no-fund"], { cwd: root, windowsHide: true });
+          p.on("error", (e) => reject(e instanceof Error ? e : new Error(String(e))));
           p.on("close", (code) => (code === 0 ? resolve("npm install done") : reject(new Error(`npm install failed (code ${code})`))));
         }),
     });
@@ -1544,7 +1634,8 @@ async function doctorProject(): Promise<void> {
       fix: "Run git init",
       run: () =>
         new Promise((resolve, reject) => {
-          const p = spawn("git", ["init"], { cwd: root });
+          const p = spawn("git", ["init"], { cwd: root, windowsHide: true });
+          p.on("error", (e) => reject(e instanceof Error ? e : new Error(String(e))));
           p.on("close", (code) => (code === 0 ? resolve("git init done") : reject(new Error(`git init failed (code ${code})`))));
         }),
     });
@@ -1592,6 +1683,7 @@ function openModelsPanel(context: vscode.ExtensionContext): void {
   );
   modelsPanel = panel;
   panel.webview.html = loadWebviewHtml(context, "models.html")
+    .replace(/\{\{CSP_SOURCE\}\}/g, panel.webview.cspSource)
     .replace(
       "{{SETUP_SHARED_JS}}",
       String(panel.webview.asWebviewUri(vscode.Uri.joinPath(webviewDir, "setup-shared.js")))

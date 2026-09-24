@@ -115,7 +115,7 @@
         },
         "awino.mcpServers": {
           "default": [],
-          "description": "MCP servers the sidecar spawns over stdio. Each: {name, command, args?, env?}. Their tools enter the harness registry under the same contract and approval gates.",
+          "description": "MCP servers the sidecar spawns over stdio. Each: {name, command, args?, env?}. Their tools enter the harness registry under the same contract and approval gates. Note: env values are stored as plaintext workspace settings — never put secrets there; provider API keys belong in VS Code SecretStorage (Awino: Set Provider Key).",
           "items": {
             "properties": {
               "args": {
@@ -288,9 +288,9 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
-    "test": "node ./test/harness.js && node ./test/bedrock.js && node ./test/connection_importer.js && node ./test/markdown.js && node ./test/streaming.js && node ./test/python.js && node ./test/pythonRecovery.js && node ./test/tasksView.js && node ./test/providerKeys.js && node ./test/modelDiscovery.js && node ./test/modelsPanel.js && node ./test/setupShared.js && node ./test/chatSetup.js && node ./test/bundleSidecar.js",
+    "test": "node ./test/harness.js && node ./test/bedrock.js && node ./test/connection_importer.js && node ./test/markdown.js && node ./test/streaming.js && node ./test/python.js && node ./test/pythonRecovery.js && node ./test/tasksView.js && node ./test/providerKeys.js && node ./test/modelDiscovery.js && node ./test/modelsPanel.js && node ./test/setupShared.js && node ./test/chatSetup.js && node ./test/bundleSidecar.js && node ./test/bundledPython.js && node ./test/bundlePython.js && node ./test/connectGuard.js && node ./test/cspPlaceholders.js && node ./test/vsixContents.js",
     "watch": "tsc -watch -p ./",
-    "vscode:prepublish": "npm run compile && node ./scripts/bundle-sidecar.js"
+    "vscode:prepublish": "npm run compile && node ./scripts/bundle-sidecar.js && node ./scripts/fetch-python-runtimes.js"
   },
-  "version": "0.4.1"
+  "version": "0.5.0"
 }

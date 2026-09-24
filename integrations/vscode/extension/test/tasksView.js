@@ -107,8 +107,8 @@ async function main() {
   {
     const { q } = fakeQuery({ attached: false, tasks: [] });
     const kids = await new TasksView(q).getChildren();
-    ok(kids.length === 1 && kids[0].label.indexOf("no mission yet") >= 0,
-      "unattached registry shows the no-mission message, not a fabricated list");
+    ok(kids.length === 1 && kids[0].label.indexOf("no registry attached") >= 0,
+      "unattached registry shows the no-registry message, not a fabricated list");
   }
   // 4. attached but no tasks tracked
   {
@@ -134,6 +134,36 @@ async function main() {
     ok(kids.length === 1 && kids[0].label === "other (1)",
       "unknown task state grouped under 'other'");
     ok(kids[0] instanceof Group, "'other' is an expandable group");
+  }
+  // 7. RISK 1: a hello-time registry re-attach failure renders the error —
+  // never a misleadingly empty list, and distinct from "not attached".
+  {
+    const { q } = fakeQuery({ attached: false, tasks: [], error: "OSError: simulated attach failure" });
+    const kids = await new TasksView(q).getChildren();
+    ok(kids.length === 1 && kids[0].label === "registry failed to load",
+      "attach failure renders 'registry failed to load'");
+    ok(String(kids[0].description).indexOf("OSError") >= 0,
+      "the attach error text is shown, not swallowed");
+  }
+  // 8. BUG 2: seed-imported tasks must not be presented as harness-verified.
+  {
+    const { q } = fakeQuery({
+      attached: true,
+      tasks: [
+        { id: "t1", text: "Checked box", state: "done", source: "seed:plan", done_criteria: "", depends_on: [], evidence: ["seed:plan checklist [x] (human attestation, not verified)"] },
+        { id: "t2", text: "Verified work", state: "done", source: "manual", done_criteria: "", depends_on: [], evidence: ["judge: pass"] },
+      ],
+    });
+    const kids = await new TasksView(q).getChildren();
+    const doneKids = await new TasksView(q).getChildren(kids[0]);
+    const seedTip = doneKids.find((k) => String(k.label).indexOf("Checked box") >= 0).tooltip;
+    const manualTip = doneKids.find((k) => String(k.label).indexOf("Verified work") >= 0).tooltip;
+    ok(seedTip.indexOf("human attestation, not harness-verified") >= 0,
+      "seed task tooltip says human attestation, not harness-verified");
+    ok(seedTip.indexOf("states change only when the harness verifies completion") < 0,
+      "seed task tooltip does not claim harness verification");
+    ok(manualTip.indexOf("states change only when the harness verifies completion") >= 0,
+      "non-seed task tooltip keeps the harness-verification wording");
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

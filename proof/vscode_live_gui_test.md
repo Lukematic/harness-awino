@@ -407,3 +407,64 @@ panel with `open (7)` — six DAG tasks plus
   is required; `/tmp` is a 512 MB tmpfs).
 - 0.4.0's approval-card GUI path was not proven (scripted mission never
   reached BUILD); protocol tests remain green.
+
+## 0.5.0 — bundled Python, zero setup
+
+### Runtime pins (verified 2026-09-24)
+
+Release `20260901` from `astral-sh/python-build-standalone`, CPython
+`3.12.14`, variant `install_only_stripped`. Every archive below was
+SHA-256-verified against the publisher's `SHA256SUMS` before unpacking:
+
+| RID | Archive SHA-256 |
+|---|---|
+| darwin-arm64 | `81a359f1cfadd4da11766534c5913791cea55f26e1bb902cacd2a531bb1e4b2b` |
+| darwin-x64 | `65b195c9cedc1fef6767f044f9822069adbd1bd9204d424ece4628776fdc04bb` |
+| win32-x64 | `7c45c9622400d578709a9b2cddbe8124cc21d382409d9f13406d706d28e31b14` |
+| linux-x64 | `72748da13197c1fb161e3afeef20a6a385ff24f2165e6e2758e47008e7faba4c` |
+
+Linux spot-check: the bundled `python/linux-x64/bin/python3` runs as
+`Python 3.12.14` and imports the sidecar's stdlib set. Interpreter
+resolution order is now: explicit `awino.pythonPath` → bundled runtime →
+system detection → Locate-Python recovery.
+
+### Linux zero-setup GUI proof
+
+**Status: 13/16 passed 2026-09-24; 3 webview checks failed on a real
+0.5.0 regression (fixed, re-proving).** The driver
+(`vscode-test-env/gui_test_050.py`) launched real VS Code with system
+Python removed from PATH and proved the extension selects the bundled
+`python/linux-x64/bin/python3` (sidecar command line observed), connects,
+creates a mission, approves the contract, saves a seed, and lists it in the
+Tasks panel — 13/16 green.
+
+The 3 failures (mission header, turn rendering, and a spuriously-passing
+"connected" check) root-caused to a CSP bug: the 0.5.0 webview HTML gained
+a restrictive CSP whose `{{CSP_SOURCE}}` placeholder appeared TWICE — once
+in an explanatory comment, once in the real meta tag. `String.replace`
+with a string pattern replaces only the FIRST occurrence, so the comment
+ate the replacement and the served CSP kept the literal
+`{{CSP_SOURCE}}` (invalid source, ignored by the browser). The chat
+webview went deaf: no state messages, no header, no turns — while the
+host-side tree views kept working. Fix: placeholder removed from the
+comment, replacement changed to a global regex, regression test
+`test/cspPlaceholders.js` (8 checks) added. The driver's `"connected" in
+status` assertion was also fixed (it matched "not connected"); it now
+requires `"connected ·"` and rejects `"not connected"`.
+
+### Windows zero-setup GUI proof
+
+**Status: pending first green CI run.** See
+`proof/windows_test_checklist_050.md` and the driver
+`.github/workflows/scripts/win_gui_proof.py` run by
+`.github/workflows/windows-gui-test.yml`. Driver fixes applied 2026-09-24:
+install and launch now share `--extensions-dir`/`--user-data-dir`, and the
+connected assertion requires `"connected ·"` (not a substring).
+
+### Honest gaps (0.5.0)
+
+- Linux GUI proof not yet run (this section).
+- Windows GUI proof not yet green (CI pending).
+- No paid-provider calls; Bedrock/Ollama discovery is unit-tested.
+- The suite-wide temp-dir cleanup defect remains (`TMPDIR=~/workspace/.tmp`
+  is required; `/tmp` is a 512 MB tmpfs).

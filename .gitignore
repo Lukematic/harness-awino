@@ -15,4 +15,8 @@ dist/
 node_modules/
 integrations/vscode/extension/out/
 integrations/vscode/extension/bundled-sidecar/
+# Portable CPython runtimes (regenerable via
+# `node ./scripts/fetch-python-runtimes.js` — pinned release + SHA-256).
+integrations/vscode/extension/python/
+integrations/vscode/extension/.pbs-cache/
 *.vsix

@@ -107,6 +107,15 @@ function pushFinding(
 ): void {
   const v = value.trim();
   if (!v) return;
+  // A URL can still carry a secret: userinfo (user:password@) before the
+  // host. looksLikeSecretValue exempts http(s) URLs, so check userinfo
+  // first — never emit `https://user:s3cr3t@proxy:8080/v1` as a plain
+  // endpoint value (it would land in plaintext settings and Output).
+  // The userinfo itself is never copied anywhere, not even into the note.
+  if (/^https?:\/\/[^/\s]*@/i.test(v)) {
+    credentialRef(out, source, "URL with embedded credentials (userinfo)");
+    return;
+  }
   if (looksLikeSecretValue(v)) return; // defense in depth: never emit secret-shaped values
   out.push({ source, provider, kind, value: v, note });
 }

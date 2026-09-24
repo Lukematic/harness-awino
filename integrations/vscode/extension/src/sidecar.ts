@@ -81,6 +81,9 @@ export class SidecarClient extends EventEmitter {
           stdio: ["pipe", "pipe", "pipe"],
           env,
           cwd: opts.workspace,
+          // Windows: without this, every sidecar start pops a visible
+          // console window out of GUI VS Code. Ignored on non-Windows.
+          windowsHide: true,
         });
       } catch (e) {
         reject(e);
@@ -213,8 +216,13 @@ export class SidecarClient extends EventEmitter {
     this.send({ cmd: "approve", id, decision });
   }
 
-  command(name: string, args: Record<string, unknown> = {}): void {
-    this.send({ cmd: "command", name, args });
+  /**
+   * Send a `command` verb. `id` is a client-chosen request id the sidecar
+   * echoes in its command_result so concurrent same-name commands route to
+   * the right waiter; omit it and routing falls back to the command name.
+   */
+  command(name: string, args: Record<string, unknown> = {}, id?: string): void {
+    this.send(id === undefined ? { cmd: "command", name, args } : { cmd: "command", name, args, id });
   }
 
   cancel(): void {

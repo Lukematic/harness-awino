@@ -3,6 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- Restrictive CSP per VS Code webview guidance: scripts may only load from
+     this webview's own resource origin (the placeholder below is replaced with
+     webview.cspSource at serve time); styles are inline; no network, no
+     plugins, no inline scripts. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src {{CSP_SOURCE}}; style-src 'unsafe-inline'; img-src data: https:; font-src data:; connect-src 'none';">
 <title>Awino Mission Chat</title>
 <style>
   /* ============================================================

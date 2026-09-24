@@ -1,0 +1,7 @@
+# Local-only build artifacts (never committed):
+# - python/: staged CPython runtimes from scripts/fetch-python-runtimes.js
+#   (shipped inside the VSIX via .vscodeignore, but not stored in git)
+# - .pbs-cache/: downloaded runtime tarballs (also excluded from the VSIX
+#   via .vscodeignore — vsce never reads .gitignore)
+python/
+.pbs-cache/

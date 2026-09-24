@@ -106,8 +106,11 @@ class SidecarClient:
                    "provider": provider, **kw})
         return self.recv()
 
-    def cmd(self, name, args=None, timeout=30):
-        self.send({"cmd": "command", "name": name, "args": args or {}})
+    def cmd(self, name, args=None, timeout=30, cmd_id=None):
+        payload = {"cmd": "command", "name": name, "args": args or {}}
+        if cmd_id is not None:
+            payload["id"] = cmd_id
+        self.send(payload)
         return self.recv(timeout)
 
     def close(self):
@@ -180,6 +183,30 @@ class ProtocolTest(unittest.TestCase):
         r = self.c.cmd("status")
         self.assertEqual(r["event"], "command_result")
         self.assertTrue(r["ok"])
+
+    def test_command_result_echoes_request_id(self):
+        # RISK 3: concurrent same-name commands route by request id, not by
+        # name alone — the sidecar must echo the id it was given.
+        self.c.hello()
+        r = self.c.cmd("status", {}, cmd_id="q42")
+        self.assertEqual(r["event"], "command_result")
+        self.assertEqual(r["name"], "status")
+        self.assertEqual(r["id"], "q42")
+
+    def test_command_result_echoes_request_id_on_unknown_command(self):
+        self.c.hello()
+        r = self.c.cmd("no_such_command_xyz", {}, cmd_id="q7")
+        self.assertEqual(r["event"], "command_result")
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["id"], "q7")
+
+    def test_command_without_id_still_resolves(self):
+        # Backward compatibility: no id sent -> null echoed, still routes.
+        self.c.hello()
+        r = self.c.cmd("status")
+        self.assertEqual(r["event"], "command_result")
+        self.assertTrue(r["ok"])
+        self.assertIsNone(r.get("id"))
 
     def test_approve_unknown_id(self):
         self.c.hello(provider="scripted", script=[])
@@ -498,6 +525,50 @@ class ContextSeedsTest(unittest.TestCase):
         st = self.c.cmd("status")
         self.assertEqual(st["result"]["status"]["mission"],
                          "Fix the login bug")
+
+    def test_seed_save_reports_task_registered(self):
+        # RISK 2: the result says whether registry tracking succeeded.
+        r = self.c.cmd("mission", {"text": "Track me",
+                                   "criteria": ["manual"]})
+        self.assertTrue(r["ok"], r)
+        r = self.c.cmd("seed_save", {"name": "Reg Seed"})
+        self.assertTrue(r["ok"], r)
+        self.assertTrue(r["result"]["task_registered"])
+
+    def test_seed_save_reports_task_registration_failure(self):
+        # RISK 2 (in-process): a mission exists but the registry never
+        # attached (e.g. hello-time re-attach failed) — the save succeeds
+        # but task_registered must read False, not clean.
+        import shutil
+        import tempfile
+        import types
+        from pathlib import Path
+        import awino_sidecar
+
+        class _FakeState:
+            def __init__(self):
+                self.snapshot = {"mission": {
+                    "text": "Do things",
+                    "done_criteria": [{"kind": "manual"}]}}
+
+            def record(self, *a, **k):
+                pass
+
+            def persist_snapshot(self):
+                pass
+
+        tmp = tempfile.mkdtemp(prefix="awino-seedreg-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        s = awino_sidecar.Sidecar()
+        s.workspace = Path(tmp)
+        s.loop = types.SimpleNamespace(registry=None, state=_FakeState())
+        r = s._cmd_seed_save({"name": "No Registry Seed"})
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(r["seed"], "no-registry-seed.md")
+        self.assertFalse(r["task_registered"])
+        # The seed file itself still saved.
+        self.assertTrue((Path(tmp) / ".awino" / "seeds" /
+                         "no-registry-seed.md").exists())
 
     def test_bad_seed_reported(self):
         seeds_dir = os.path.join(self.c.ws, ".awino", "seeds")
@@ -887,6 +958,56 @@ class TasksAndResumeTest(unittest.TestCase):
         self.assertEqual(len(after["tasks"]), 7)
         self.assertTrue(any("reconnect-seed" in t["text"]
                             for t in after["tasks"]), after)
+
+
+class _FakeRegistry:
+    """Minimal stand-in for registry.Registry for in-process tests."""
+    def __init__(self, tasks):
+        self._tasks = tasks
+
+    def tasks(self):
+        return self._tasks
+
+
+class TasksListAttachErrorTest(unittest.TestCase):
+    """RISK 1 (in-process): a hello-time registry re-attach failure must
+    surface as an explicit error from tasks_list — never a misleadingly
+    empty list, and distinct from 'no registry attached yet'."""
+
+    def _sidecar(self, attach_error=None, tasks=None):
+        import types
+        import awino_sidecar
+        s = awino_sidecar.Sidecar()
+        s.loop = types.SimpleNamespace(
+            registry=None if tasks is None else _FakeRegistry(tasks))
+        s._registry_attach_error = attach_error
+        return s
+
+    def test_attach_failure_reported_as_error(self):
+        s = self._sidecar(attach_error="OSError: simulated disk failure")
+        r = s._cmd_tasks_list({})
+        self.assertEqual(r["tasks"], [])
+        self.assertFalse(r["attached"])
+        self.assertEqual(r["error"], "OSError: simulated disk failure")
+
+    def test_no_registry_no_error_is_not_a_failure(self):
+        # No .awino dir yet: attached False, error None — the "no registry
+        # attached yet" empty state, not the failure state.
+        s = self._sidecar(attach_error=None)
+        r = s._cmd_tasks_list({})
+        self.assertEqual(r["tasks"], [])
+        self.assertFalse(r["attached"])
+        self.assertIsNone(r["error"])
+
+    def test_attached_registry_lists_tasks_cleanly(self):
+        tasks = [{"id": "t-1", "text": "x", "state": "open",
+                  "source": "manual", "done_criteria": "",
+                  "depends_on": [], "evidence": []}]
+        s = self._sidecar(tasks=tasks)
+        r = s._cmd_tasks_list({})
+        self.assertTrue(r["attached"])
+        self.assertEqual(len(r["tasks"]), 1)
+        self.assertIsNone(r.get("error"))
 
 
 if __name__ == "__main__":

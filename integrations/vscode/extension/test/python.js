@@ -2,7 +2,7 @@
 // test/python.js — unit tests for src/python.ts (interpreter resolution).
 // The probe is mocked: no real processes are spawned.
 
-const { resolvePythonInterpreter, describeSpawnFailure, isInterpreterNotFound, commonPythonLocations } = require("../out/python.js");
+const { resolvePythonInterpreter, describeSpawnFailure, isInterpreterNotFound, commonPythonLocations, defaultProbe, isPython3VersionOutput, interpreterFixHint } = require("../out/python.js");
 
 let pass = 0, fail = 0;
 function ok(cond, name) {
@@ -134,6 +134,77 @@ async function main() {
     ok(mac.some((l) => l.indexOf("Xcode") >= 0), "macOS lists Xcode CLT");
     const lin = commonPythonLocations("linux");
     ok(lin.indexOf("/usr/bin/python3") >= 0, "linux lists /usr/bin/python3");
+  }
+
+  // 12. bundled beats auto-detect; probe never runs when bundled is present
+  {
+    const probe = mockProbe({ py: true, python: true, python3: true });
+    const r = await resolvePythonInterpreter({
+      platform: "win32",
+      probe,
+      bundledPath: "C:\\ext\\python\\win32-x64\\python.exe",
+    });
+    ok(r.python === "C:\\ext\\python\\win32-x64\\python.exe", "bundled interpreter used when present");
+    ok(r.source === "bundled", "source is bundled");
+    ok(probe.calls.length === 0, "probe not called when bundled runtime is present");
+  }
+
+  // 13. explicit configuration still wins over the bundled runtime
+  {
+    const probe = mockProbe({ py: true });
+    const r = await resolvePythonInterpreter({
+      configured: "C:\\Python311\\python.exe",
+      platform: "win32",
+      probe,
+      bundledPath: "C:\\ext\\python\\win32-x64\\python.exe",
+    });
+    ok(r.python === "C:\\Python311\\python.exe", "configured wins over bundled");
+    ok(r.source === "configured", "source is configured when both set");
+  }
+
+  // 14. bundled absent -> legacy auto-detect still used
+  {
+    const probe = mockProbe({ py: false, python: true });
+    const r = await resolvePythonInterpreter({ platform: "win32", probe });
+    ok(r.python === "python", "auto-detect used when no bundled runtime");
+    ok(r.source === "auto-detected", "source is auto-detected");
+  }
+
+  // 15. bundled blank/whitespace is treated as absent
+  {
+    const probe = mockProbe({ py: true });
+    const r = await resolvePythonInterpreter({ platform: "win32", probe, bundledPath: "   " });
+    ok(r.python === "py", "blank bundledPath falls through to auto-detect");
+    ok(r.source === "auto-detected", "source is auto-detected");
+  }
+
+  // 16. isPython3VersionOutput: exit code alone is not trusted (LIKELY-BREAK 5)
+  ok(isPython3VersionOutput("Python 3.12.14\n", ""), "stdout 'Python 3.12.14' accepted");
+  ok(isPython3VersionOutput("", "Python 3.9.1\n"), "stderr 'Python 3.9.1' accepted (2.x prints to stderr)");
+  ok(isPython3VersionOutput("warning: foo\nPython 3.11.0\n", ""), "multiline output with a prefix line accepted");
+  ok(!isPython3VersionOutput("Python 2.7.18\n", ""), "Python 2.7 in stdout rejected");
+  ok(!isPython3VersionOutput("", "Python 2.7.18\n"), "Python 2.7 in stderr rejected");
+  ok(!isPython3VersionOutput("", ""), "empty output (Windows Store stub) rejected");
+  ok(!isPython3VersionOutput("v20.19.0\n", ""), "non-Python version string rejected");
+
+  // 17. defaultProbe: real --version runs; never throws; version-gated
+  {
+    const bogus = await defaultProbe("definitely-not-a-real-binary-awino-xyz");
+    ok(bogus === false, "defaultProbe false for a nonexistent binary (never throws)");
+    // The node binary answers --version with "vNN.N.N" — not Python 3.
+    const nodeBin = await defaultProbe(process.execPath);
+    ok(nodeBin === false, "defaultProbe rejects a non-Python binary that exits 0");
+  }
+
+  // 18. interpreterFixHint: bundled source must not say "install Python 3"
+  {
+    const hint = interpreterFixHint({ python: "/x/python", source: "bundled", tried: [] });
+    ok(hint.indexOf("bundled") >= 0, "bundled hint names the bundled runtime");
+    ok(hint.indexOf("install Python 3") < 0, "bundled hint does not tell a zero-setup user to install Python");
+    const def = interpreterFixHint({ python: "python3", source: "default", tried: [] });
+    ok(def.indexOf("install Python 3") >= 0, "default hint still advises installing Python 3");
+    const cfg = interpreterFixHint({ python: "/x", source: "configured", tried: [] });
+    ok(cfg.indexOf("awino.pythonPath") >= 0, "configured hint points at awino.pythonPath");
   }
 
   console.log("\n" + pass + " passed, " + fail + " failed");

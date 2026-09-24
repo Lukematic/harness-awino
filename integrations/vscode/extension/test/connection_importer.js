@@ -197,6 +197,27 @@ test(".env: quoted values and export prefix handled", () => {
   assert(f.some((x) => x.kind === "model" && x.value === "opus"), "quoted model");
 });
 
+test(".env: URL with embedded userinfo becomes a credential ref, never an endpoint value", () => {
+  // looksLikeSecretValue exempts http(s) URLs — without the userinfo
+  // check, https://user:s3cr3t@proxy:8080/v1 would ship as a plaintext
+  // endpoint into settings and Output.
+  const FAKE_PASSWORD = "s3cr3t-pw-9x";
+  const f = parseDotEnv(
+    `OPENAI_BASE_URL=https://user:${FAKE_PASSWORD}@proxy.example.com:8080/v1`,
+    "<project>/.env"
+  );
+  assert(!f.some((x) => x.kind === "endpoint"), "no endpoint finding for a credential-bearing URL");
+  const creds = f.filter((x) => x.kind === "credentialRef");
+  assert(creds.length === 1, "exactly one credential reference instead");
+  noSecretsLeak(f, [FAKE_PASSWORD, `user:${FAKE_PASSWORD}`, "proxy.example.com:8080"]);
+});
+
+test(".env: plain https URL without userinfo still imports as an endpoint", () => {
+  const f = parseDotEnv("OPENAI_BASE_URL=https://proxy.example.com/v1", "x");
+  const ep = f.find((x) => x.kind === "endpoint");
+  assert(ep && ep.value === "https://proxy.example.com/v1", "clean URL still imports as endpoint");
+});
+
 // ------------------------------------------------------------------- kilo
 
 test("stripJsonc removes comments but keeps // inside strings", () => {

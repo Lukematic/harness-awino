@@ -1165,6 +1165,9 @@ class Sidecar:
         self._worker: threading.Thread | None = None
         self._turn_out: queue.Queue = queue.Queue()
         self._pending_says: list = []  # per-command _say() buffer
+        # RISK 1: hello-time registry re-attach failure, if any. Recorded
+        # (never swallowed) so tasks_list can report it honestly.
+        self._registry_attach_error: str | None = None
         self._mcp_clients: list[McpClient] = []
         self._mcp_status: list[dict] = []
         # Scope #4 state: provider binding, mode overlay, skill persona.
@@ -1289,7 +1292,10 @@ class Sidecar:
         # The registry persists under <workspace>/.awino/registry/, but a
         # fresh sidecar process starts with loop.registry = None — without
         # this re-attach, tasks_list/seed_save see an empty registry after
-        # every reconnect. Never breaks hello.
+        # every reconnect. Never breaks hello: an attach failure is recorded
+        # (not swallowed) so tasks_list can report it instead of showing a
+        # misleadingly empty panel.
+        self._registry_attach_error: str | None = None
         try:
             from registry import Registry
             _awd = wsp / ".awino"
@@ -1297,8 +1303,8 @@ class Sidecar:
                 _reg = Registry(_awd)
                 _reg.ensure()
                 self.loop.registry = _reg
-        except Exception:  # noqa: BLE001 - never break hello
-            pass
+        except Exception as e:  # noqa: BLE001 - never break hello
+            self._registry_attach_error = f"{type(e).__name__}: {e}"
         self.provider = binding["provider"]
         self.model_desc = getattr(backend, "model", self.provider)
         self._binding = dict(binding)
@@ -2650,6 +2656,11 @@ class Sidecar:
     def _do_command(self, cmd: dict) -> None:
         name = cmd.get("name")
         args = cmd.get("args") or {}
+        # Request id: echoed back in command_result so the client can route
+        # concurrent same-name commands to the right waiter instead of
+        # matching on the command name alone. Absent on old clients — the
+        # extension falls back to name matching when no id is echoed.
+        req_id = cmd.get("id")
         if not isinstance(name, str) or not isinstance(args, dict):
             _err('command requires "name" (string) and "args" (object)')
             return
@@ -2697,7 +2708,8 @@ class Sidecar:
         }
         fn = handlers.get(name)
         if fn is None:
-            _emit({"event": "command_result", "name": name, "ok": False,
+            _emit({"event": "command_result", "name": name, "id": req_id,
+                   "ok": False,
                    "result": {"error": f"unknown command {name!r}"}})
             return
         self._pending_says = []
@@ -2719,7 +2731,7 @@ class Sidecar:
             result["said"] = (extra + "\n" + prev) if prev else extra
             result["says"] = self._pending_says
         self._pending_says = []
-        _emit({"event": "command_result", "name": name, "ok": ok,
+        _emit({"event": "command_result", "name": name, "id": req_id, "ok": ok,
                "result": result})
 
     def _cmd_mission(self, args: dict) -> dict:
@@ -2951,16 +2963,21 @@ class Sidecar:
                                {"name": name, "file": p.name,
                                 "overwrote": existed})
         # Track B: seed_save also registers tasks — the seed becomes a task
-        # in the registry tracker so progress on it is tracked.
+        # in the registry tracker so progress on it is tracked. The caller
+        # is told whether registration succeeded; a silent failure here
+        # used to read as a clean save.
         reg = getattr(self.loop, "registry", None)
+        task_registered = False
         if reg is not None:
             try:
                 reg.add_task(f"execute seed '{name}' ({p.name})",
                              source=f"seed:{slug}", state="open")
+                task_registered = True
             except Exception:
                 pass
         self.loop.state.persist_snapshot()
-        return {"status": "ok", "seed": p.name, "overwrote": existed}
+        return {"status": "ok", "seed": p.name, "overwrote": existed,
+                "task_registered": task_registered}
 
     def _cmd_bootstrap(self, args: dict) -> dict:
         """Re-run the project startup checklist on demand (Track A)."""
@@ -3241,10 +3258,14 @@ class Sidecar:
         Returns exactly what the registry believes — states change only
         through registry.set_task_state in code (verified completion), never
         from the UI. Empty when no registry is attached yet (no mission
-        started in this project)."""
+        started in this project). When the hello-time registry re-attach
+        failed, `attached` is False and `error` names the failure so the UI
+        can show "registry failed to load" instead of a misleadingly empty
+        task list."""
         reg = getattr(self.loop, "registry", None)
         if reg is None:
-            return {"tasks": [], "attached": False}
+            return {"tasks": [], "attached": False,
+                    "error": getattr(self, "_registry_attach_error", None)}
         try:
             tasks = reg.tasks()
         except Exception as e:  # noqa: BLE001 - read path never breaks chat

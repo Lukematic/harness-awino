@@ -2,6 +2,16 @@
 # bundled-sidecar/ is a gitignored build artifact that MUST ship in the
 # vsix — the negation below re-includes it (bundle-sidecar.js copies it
 # clean: no __pycache__, no *.pyc, no tests).
+# .pbs-cache/ holds the downloaded CPython tarballs (fetch-python-runtimes.js
+# cache) — vsce globs dotfiles and never reads .gitignore, so without this
+# the ~200MB of duplicate tarballs would ship alongside the unpacked trees.
+# python/darwin-x64/ (Intel Mac) is omitted: with all four runtimes the VSIX
+# exceeds ~170MB; dropping the legacy Intel tree (Apple Silicon is
+# darwin-arm64) brings it under the ~120MB guidance. The runtime is still
+# fetched and hash-verified by fetch-python-runtimes.js — it just doesn't
+# ship in the VSIX.
+.pbs-cache/**
+python/darwin-x64/**
 .vscode/**
 .git/**
 node_modules/**

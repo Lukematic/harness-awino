@@ -301,12 +301,18 @@ export class TasksView extends BaseView {
       return [new Leaf("sidecar unavailable", esc(e))];
     }
     const tasks = (r["tasks"] ?? []) as Array<Record<string, unknown>>;
+    // Registry failed to load (hello-time re-attach blew up): show the
+    // error, not a misleadingly empty list. This is distinct from "no
+    // registry attached yet" below.
+    if (r["error"]) {
+      return [new Leaf("registry failed to load", esc(r["error"]))];
+    }
     if (!tasks.length) {
       return [
         new Leaf(
           r["attached"]
             ? "(no tasks tracked yet)"
-            : "(no mission yet — the harness tracks tasks once a mission starts)"
+            : "(no registry attached yet — the harness tracks tasks once a mission starts)"
         ),
       ];
     }
@@ -328,6 +334,9 @@ export class TasksView extends BaseView {
         }
         const deps = (t["depends_on"] ?? []) as unknown[];
         const item = new Leaf(label, descBits.join(" · ") || undefined);
+        // Seed-imported checklist items are human attestation, not harness
+        // verification — the tooltip must not claim otherwise.
+        const isSeedTask = String(t["source"] ?? "").startsWith("seed:");
         item.tooltip =
           `state: ${state}\n` +
           `id: ${esc(t["id"])}\n` +
@@ -335,7 +344,9 @@ export class TasksView extends BaseView {
           (dc ? `done criteria: ${dc}\n` : "") +
           (deps.length ? `depends on: ${deps.map(esc).join(", ")}\n` : "") +
           `evidence: ${(t["evidence"] as unknown[] ?? []).length} item(s)\n` +
-          `(read-only — states change only when the harness verifies completion)`;
+          (isSeedTask
+            ? `(read-only — seed-imported checklist item: human attestation, not harness-verified)`
+            : `(read-only — states change only when the harness verifies completion)`);
         g.children.push(item);
       }
       out.push(g);

@@ -14,16 +14,42 @@ import { execFile } from "child_process";
 
 export type ProbeFn = (cmd: string) => Promise<boolean>;
 
-/** Real probe: does `cmd --version` exit 0 within 10s? Never throws. */
+/**
+ * True when `--version` output identifies a Python 3 interpreter.
+ * Both streams are checked: `python --version` prints to stdout on 3.4+
+ * but to stderr on 2.x, and either stream alone can mislead.
+ */
+export function isPython3VersionOutput(stdout: string, stderr: string): boolean {
+  return /^Python 3\.\d+/m.test(`${stdout}\n${stderr}`);
+}
+
+/**
+ * Real probe: `cmd --version` must exit 0 within 5s AND identify as
+ * Python 3. Never throws. The version check rejects Windows Store stubs
+ * (which can pop the Store GUI with unreliable exit codes) and Python 2
+ * interpreters — exit code alone would accept both.
+ */
 export function defaultProbe(cmd: string): Promise<boolean> {
   return new Promise((resolve) => {
-    execFile(cmd, ["--version"], { timeout: 10_000 }, (err) => resolve(!err));
+    execFile(cmd, ["--version"], { timeout: 5_000 }, (err, stdout, stderr) => {
+      if (err) {
+        resolve(false);
+        return;
+      }
+      resolve(isPython3VersionOutput(String(stdout), String(stderr)));
+    });
   });
 }
 
 export interface ResolveOptions {
   /** Explicitly configured interpreter (awino.pythonPath, only when the user set it). */
   configured?: string;
+  /**
+   * Bundled VSIX interpreter (0.5.0+). Pass the absolute path returned by
+   * bundledRuntimePath(), or omit when no bundled runtime ships for this
+   * platform. A deliberate user configuration still wins over it.
+   */
+  bundledPath?: string;
   /** Override for tests; defaults to process.platform. */
   platform?: NodeJS.Platform;
   /** Candidate interpreters tried on win32, in order. */
@@ -32,7 +58,7 @@ export interface ResolveOptions {
   probe?: ProbeFn;
 }
 
-export type InterpreterSource = "configured" | "auto-detected" | "default";
+export type InterpreterSource = "configured" | "bundled" | "auto-detected" | "default";
 
 export interface ResolvedInterpreter {
   python: string;
@@ -43,15 +69,20 @@ export interface ResolvedInterpreter {
 
 /**
  * Resolve the interpreter to spawn:
- * 1. explicit user configuration wins;
- * 2. on win32, probe `py` -> `python` -> `python3`, first `--version` win;
- * 3. otherwise the built-in `python3` default (spawn errors then surface
+ * 1. explicit user configuration wins (a deliberate choice beats everything);
+ * 2. the interpreter bundled inside the VSIX (0.5.0+), when present;
+ * 3. on win32, probe `py` -> `python` -> `python3`, first `--version` win;
+ * 4. otherwise the built-in `python3` default (spawn errors then surface
  *    through the normal failure path with the interpreter named).
  */
 export async function resolvePythonInterpreter(opts: ResolveOptions = {}): Promise<ResolvedInterpreter> {
   const configured = (opts.configured ?? "").trim();
   if (configured) {
     return { python: configured, source: "configured", tried: [] };
+  }
+  const bundled = (opts.bundledPath ?? "").trim();
+  if (bundled) {
+    return { python: bundled, source: "bundled", tried: [] };
   }
   const tried: string[] = [];
   if ((opts.platform ?? process.platform) === "win32") {
@@ -77,6 +108,11 @@ export async function resolvePythonInterpreter(opts: ResolveOptions = {}): Promi
 export function interpreterFixHint(resolved: ResolvedInterpreter): string {
   if (resolved.source === "configured") {
     return 'Fix: check the "awino.pythonPath" setting — it must be a Python 3 interpreter on PATH or an absolute path.';
+  }
+  if (resolved.source === "bundled") {
+    // Zero-setup promise: the user never installed Python, so "install
+    // Python 3" is the wrong advice — the bundled runtime itself failed.
+    return 'Fix: the Python bundled with Awino failed to start — please report this; as a workaround, set "awino.pythonPath" to a system Python 3.';
   }
   return 'Fix: install Python 3 and make sure it is on PATH, or set "awino.pythonPath" to your interpreter.';
 }
