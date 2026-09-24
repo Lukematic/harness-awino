@@ -78,7 +78,7 @@ jobs:
               $failed += "$f (exit $LASTEXITCODE :: $tail)"
             }
           }
-          if ($failed.Count -gt 0) { throw "NODE TEST FAILURES: $($failed -join ' ;; ')" }
+          if ($failed.Count -gt 0) { Write-Output "::error::NODE TEST FAILURES: $($failed -join ' ;; ')"; exit 1 }
           Write-Host "ALL NODE TEST FILES PASSED"
 
       - name: Package VSIX
