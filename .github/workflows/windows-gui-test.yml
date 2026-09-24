@@ -60,6 +60,12 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Sidecar hello smoke test (Windows diagnostic)
+        # Runs the sidecar directly with a hello command and shows exactly
+        # where it stalls on Windows (stdout/stderr captured, 30s cap) —
+        # so a hello->ready failure stops being a blind timeout.
+        run: python .github/workflows/scripts/win_sidecar_smoke.py
+
       - name: Node unit tests
         # Runs each test file separately (same files/order as `npm test`) so
         # a failure names the file AND its tail output in the error

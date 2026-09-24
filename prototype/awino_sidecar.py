@@ -439,7 +439,7 @@ def _serialize_criteria(done_criteria: list[dict]) -> list[str]:
     for c in done_criteria:
         k = c.get("kind")
         if k == "manual":
-            lines.append("manual")
+            lines.append(f"manual:{c['label']}" if c.get("label") else "manual")
         elif k == "artifact_exists":
             lines.append(f"artifact:{c.get('path', '')}")
         elif k == "event":
