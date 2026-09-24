@@ -1,0 +1,7 @@
+# The packaged skills (prototype/skills/*.md + manifest.json) are
+# SHA-256-pinned by byte content. Force LF on checkout so Windows clones
+# (core.autocrlf=true) don't get CRLF bytes that would invalidate the
+# manifest. SkillStore also normalizes CRLF before hashing as defense in
+# depth, but the canonical on-disk form stays LF.
+/prototype/skills/*.md text eol=lf
+/prototype/skills/manifest.json text eol=lf
