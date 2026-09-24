@@ -16,6 +16,8 @@ import time
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))))
 SIDECAR = os.path.join(REPO, "prototype", "awino_sidecar.py")
+WRAPPER = os.path.join(REPO, ".github", "workflows", "scripts",
+                       "win_sidecar_wrap.py")
 
 ws = tempfile.mkdtemp(prefix="awino-smoke-ws-")
 home = tempfile.mkdtemp(prefix="awino-smoke-home-")
@@ -26,8 +28,10 @@ env["AWINO_HOME"] = home
 env["PYTHONUNBUFFERED"] = "1"
 
 t0 = time.time()
+# Wrap with faulthandler: if the sidecar stalls silently, the wrapper dumps
+# every thread's traceback to stderr after 25s (before our 30s deadline).
 proc = subprocess.Popen(
-    [sys.executable, "-u", SIDECAR],
+    [sys.executable, "-u", WRAPPER, "25", SIDECAR],
     stdin=subprocess.PIPE,
     stdout=subprocess.PIPE,
     stderr=subprocess.PIPE,
