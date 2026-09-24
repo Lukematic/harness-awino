@@ -61,8 +61,25 @@ jobs:
           python-version: '3.12'
 
       - name: Node unit tests
+        # Runs each test file separately (same files/order as `npm test`) so
+        # a failure names the file AND its tail output in the error
+        # annotation — full step logs are not always retrievable, but
+        # annotations are.
         working-directory: integrations/vscode/extension
-        run: npm test
+        run: |
+          $files = @("harness","bedrock","connection_importer","markdown","streaming","python","pythonRecovery","tasksView","providerKeys","modelDiscovery","modelsPanel","setupShared","chatSetup","bundleSidecar","bundledPython","bundlePython","connectGuard","cspPlaceholders","vsixContents")
+          $failed = @()
+          foreach ($f in $files) {
+            Write-Host "===== test/$f.js ====="
+            $out = node ./test/$f.js 2>&1 | Out-String
+            Write-Host $out
+            if ($LASTEXITCODE -ne 0) {
+              $tail = (($out -split "`r?`n" | Select-Object -Last 12) -join " | ").Substring(0, [Math]::Min(600, (($out -split "`r?`n" | Select-Object -Last 12) -join " | ").Length))
+              $failed += "$f (exit $LASTEXITCODE :: $tail)"
+            }
+          }
+          if ($failed.Count -gt 0) { throw "NODE TEST FAILURES: $($failed -join ' ;; ')" }
+          Write-Host "ALL NODE TEST FILES PASSED"
 
       - name: Package VSIX
         working-directory: integrations/vscode/extension
