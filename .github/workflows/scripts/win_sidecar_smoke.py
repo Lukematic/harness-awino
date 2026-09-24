@@ -41,40 +41,19 @@ proc.stdin.flush()
 ready = None
 out_lines: list[str] = []
 deadline = t0 + 30
-try:
-    import select
-
-    while time.time() < deadline and ready is None:
-        # poll stdout without blocking forever
-        r, _, _ = select.select([proc.stdout], [], [], 1.0)
-        if r:
-            line = proc.stdout.readline()
-            if not line:
-                break
-            out_lines.append(line.rstrip("\n"))
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if obj.get("event") == "ready":
-                ready = obj
-                break
-        if proc.poll() is not None:
-            # process exited — drain what is left
-            rest = proc.stdout.read() or ""
-            out_lines.extend(rest.splitlines())
-            break
-except ImportError:
-    # Windows: select() does not support pipes; read with a helper thread.
+if sys.platform == "win32":
+    # Windows select() does not support pipes — use a drain thread.
     import queue
     import threading
 
     q: queue.Queue = queue.Queue()
 
     def _drain():
-        for line in proc.stdout:
-            q.put(line.rstrip("\n"))
-        q.put(None)
+        try:
+            for line in proc.stdout:
+                q.put(line.rstrip("\n"))
+        finally:
+            q.put(None)
 
     threading.Thread(target=_drain, daemon=True).start()
     while time.time() < deadline and ready is None:
@@ -93,6 +72,27 @@ except ImportError:
             continue
         if obj.get("event") == "ready":
             ready = obj
+            break
+else:
+    import select
+
+    while time.time() < deadline and ready is None:
+        r, _, _ = select.select([proc.stdout], [], [], 1.0)
+        if r:
+            line = proc.stdout.readline()
+            if not line:
+                break
+            out_lines.append(line.rstrip("\n"))
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if obj.get("event") == "ready":
+                ready = obj
+                break
+        if proc.poll() is not None:
+            rest = proc.stdout.read() or ""
+            out_lines.extend(rest.splitlines())
             break
 
 elapsed = time.time() - t0
