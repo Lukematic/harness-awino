@@ -169,6 +169,13 @@ def ensure_venv(root: Path, timeout: int = 120) -> tuple[dict, Path | None]:
     if cfg.is_file():
         return (_check("venv", CHECK_OK, f"using existing {venv}"),
                 venv_bin_dir(venv))
+    # Sidecar mode (VS Code extension): the sidecar ships with its own
+    # bundled Python and must never create a project venv. `python -m venv`
+    # hangs on Windows (ensurepip network stall) — skip creation entirely.
+    if os.environ.get("AWINO_SIDECAR") == "1":
+        return (_check("venv", CHECK_WARN,
+                       "sidecar mode: using bundled python, no project venv "
+                       "created"), None)
     if venv.exists() and not cfg.is_file():
         # half-created venv: move aside, don't delete, don't build on top
         import time as _t

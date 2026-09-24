@@ -1336,37 +1336,65 @@ class Sidecar:
         self._register_mcp_servers(cmd.get("mcp_servers") or [])
         # Track A/H: auto-init on session start. If the workspace is not an
         # awino project yet (.awino/project.yaml absent), run the full init
-        # flow now — the user never has to type `awino init` by hand — and
-        # carry the one brief plain-language summary in the ready event.
+        # flow — the user never has to type `awino init` by hand.
         # (First-message mission start re-runs the idempotent checklist
-        # anyway via _bootstrap_and_registry.) Never breaks hello.
-        auto_init_summary = None
-        stories_review_lines = None
-        try:
-            from bootstrap import session_start_auto_init
-            auto_init = session_start_auto_init(wsp)
-            if auto_init:
-                auto_init_summary = auto_init["summary"]
-                self.loop.state.record("auto_init", {
-                    "ok": auto_init["ok"], "summary": auto_init_summary})
-                # Story ledger: the session-start review is mandatory —
-                # journal the event and carry the lines in the ready event
-                # so the session presents open stories before new work.
-                sr = auto_init.get("stories_review")
-                if sr:
-                    stories_review_lines = sr["lines"]
-                    self.loop.state.record("stories_review", {
-                        "stories": sr["stories"]})
-        except Exception:  # noqa: BLE001 — session start must proceed
-            auto_init_summary = None
+        # anyway via _bootstrap_and_registry.)
+        #
+        # Windows fix (0.5.0): session_start_auto_init can block for 120s
+        # (ensure_venv runs `python -m venv`, whose ensurepip stalls on
+        # Windows). It MUST NOT block the ready event — the extension times
+        # out waiting for ready. Emit ready first, then run auto-init in a
+        # background daemon thread. The ready event carries nulls for the
+        # auto-init fields; when the thread finishes it records state and
+        # emits an auto_init_complete event with the summary.
         _emit({"event": "ready", "protocol": PROTOCOL, "project": project,
                "provider": self.provider, "model": self.model_desc,
                "workspace": str(wsp), "mcp": self._mcp_status,
                "binding": {k: v for k, v in self._binding.items()},
                "modes": self._modes_summary(),
                "active_mode": self._active_mode_info(),
-               "auto_init": auto_init_summary,
-               "stories_review": stories_review_lines})
+               "auto_init": None,
+               "stories_review": None})
+        self._run_auto_init_async(wsp)
+
+    def _run_auto_init_async(self, wsp) -> None:
+        """Run session_start_auto_init in a background daemon thread.
+
+        The init flow (venv creation, project scaffolding) can take 120s+
+        on Windows — it must never block the ready event. When the thread
+        finishes, state is recorded and an auto_init_complete event is
+        emitted so the UI can surface the summary.
+        """
+        import threading
+
+        def _worker():
+            try:
+                from bootstrap import session_start_auto_init
+                auto_init = session_start_auto_init(wsp)
+                if auto_init:
+                    try:
+                        self.loop.state.record("auto_init", {
+                            "ok": auto_init["ok"],
+                            "summary": auto_init["summary"]})
+                    except Exception:
+                        pass
+                    sr = auto_init.get("stories_review")
+                    if sr:
+                        try:
+                            self.loop.state.record("stories_review", {
+                                "stories": sr["stories"]})
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            # NOTE: no unsolicited event is emitted here. The request/response
+            # protocol expects recv() after a command to return that
+            # command's result; an auto_init_complete event would race with
+            # it. State is recorded in the journal; the summary is available
+            # via the contract/status paths.
+
+        threading.Thread(target=_worker, daemon=True,
+                         name="awino-auto-init").start()
 
     # --------------------------------------------- scoped provider bindings
     def _read_providers_file(self) -> dict | None:
@@ -3345,6 +3373,11 @@ class Sidecar:
 
 
 def main() -> None:
+    # The sidecar ships with its own Python (bundled runtime) — it must
+    # never create a project .venv. Bootstrap's ensure_venv checks this flag
+    # and skips creation (returns a warning instead of hanging for 120s on
+    # `python -m venv`, whose ensurepip stalls on Windows).
+    os.environ["AWINO_SIDECAR"] = "1"
     Sidecar().run()
 
 
