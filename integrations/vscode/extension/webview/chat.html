@@ -228,6 +228,35 @@
   }
   #chatheader .deco { display: inline-flex; gap: 4px; align-items: center; }
   #chatheader .spacer { flex: 1; }
+  /* Persistent mission header (0.4.1): one line — mission, phase,
+   * verified done-criteria x/y, mission revision. Rendered from the live
+   * sidecar status query; hidden when there is no mission. */
+  #mission-header {
+    flex: 0 0 auto;
+    padding: 5px 10px;
+    font-size: 11px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    color: var(--awino-text, var(--vscode-foreground, #DCE7F7));
+    background: var(--awino-bg-2, var(--vscode-sideBar-background, #172036));
+    border-bottom: 1px solid var(--vscode-panel-border, #232F45);
+  }
+  #mission-header .mh-phase { color: var(--awino-gold-bright, var(--vscode-editorWarning-foreground, #F0C94A)); font-weight: 700; }
+  #mission-header .mh-crit { color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF)); }
+  /* Session-focus/resume block (0.4.1): read-only reconstruction from the
+   * event log — mission, verified criteria, last progress, next action.
+   * Rendered once on (re)connect and on demand via the command palette. */
+  #session-resume {
+    flex: 0 0 auto;
+    margin: 6px 10px; padding: 8px 10px;
+    font-size: 11px; line-height: 1.5;
+    color: var(--awino-text, var(--vscode-foreground, #DCE7F7));
+    background: var(--awino-bg-2, var(--vscode-sideBar-background, #172036));
+    border: 1px solid var(--vscode-panel-border, #232F45);
+    border-radius: 6px;
+  }
+  #session-resume .sr-title { font-weight: 700; margin-bottom: 4px; }
+  #session-resume .sr-row { margin: 2px 0; color: var(--awino-muted, var(--vscode-descriptionForeground, #8B98B0)); }
+  #session-resume .sr-row b { color: var(--awino-text, var(--vscode-foreground, #DCE7F7)); font-weight: 600; }
   #theme-toggle {
     display: inline-flex; align-items: center; gap: 5px;
     font-size: 11px; padding: 3px 9px; border-radius: 10px;
@@ -692,6 +721,8 @@
   <button id="theme-toggle" title="Switch Savanna / Vibranium theme">◐ <span id="theme-name">Vibranium</span></button>
   <button id="models-btn" title="Models &amp; Providers — API keys and model selection">⚙</button>
 </div>
+<div id="mission-header" hidden></div>
+<div id="session-resume" hidden></div>
 <div id="setup-card" hidden>
   <div class="setup-card-body">
     <div class="setup-copy">

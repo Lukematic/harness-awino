@@ -14,7 +14,8 @@ import * as os from "os";
 import * as path from "path";
 import { spawn } from "child_process";
 import { SidecarClient, SidecarEvent, defaultSidecarPath } from "./sidecar";
-import { resolvePythonInterpreter, describeSpawnFailure, ResolvedInterpreter } from "./python";
+import { resolvePythonInterpreter, describeSpawnFailure, isInterpreterNotFound, ResolvedInterpreter } from "./python";
+import { offerPythonRecovery, pickPythonPathWriteLevel } from "./pythonRecovery";
 import { keyMissingForProvider } from "./providerKeys";
 import { discoverModels } from "./modelDiscovery";
 import {
@@ -31,6 +32,7 @@ import {
   informationalFindings,
   buildConfigWrites,
   summarizeWrites,
+  formatScannedLine,
   ImportFinding,
 } from "./connection_importer";
 import {
@@ -41,6 +43,7 @@ import {
   SkillsView,
   ContextView,
   ModesView,
+  TasksView,
 } from "./views";
 
 const EXT_ID = "awino-loop-owner";
@@ -240,6 +243,7 @@ let learningsView: LearningsView;
 let skillsView: SkillsView;
 let contextView: ContextView;
 let modesView: ModesView;
+let tasksView: TasksView;
 
 function refreshViews(): void {
   contractView?.refresh();
@@ -248,6 +252,7 @@ function refreshViews(): void {
   skillsView?.refresh();
   contextView?.refresh();
   modesView?.refresh();
+  tasksView?.refresh();
 }
 
 function updateStatusBar(): void {
@@ -377,6 +382,10 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     });
     // initial state push (connect() re-pushes with fresh key/wizard state)
     postChatState();
+    // reopening the view while connected: re-render the resume block too
+    if (session?.ready) {
+      void postSessionResume();
+    }
   }
 }
 
@@ -493,8 +502,9 @@ async function onSidecarEvent(ev: SidecarEvent): Promise<void> {
       }
       updateStatusBar();
       postToChat({ type: "event", payload: ev });
-      postChatState();
       await refreshStatus();
+      postChatState(); // after refreshStatus: the header needs fresh status
+      await postSessionResume(); // session-focus summary on (re)connect
       refreshViews(); // populate tree views on connect, not just after the first turn
       break;
     case "turn_result": {
@@ -510,6 +520,7 @@ async function onSidecarEvent(ev: SidecarEvent): Promise<void> {
       updateStatusBar();
       postToChat({ type: "event", payload: ev });
       await refreshStatus();
+      postChatState(); // header must reflect the post-turn status
       refreshViews();
       break;
     }
@@ -550,6 +561,23 @@ async function refreshStatus(): Promise<void> {
     updateStatusBar();
   } catch (e) {
     log(`status refresh failed: ${e}`);
+  }
+}
+
+// Session-focus/resume: read-only reconstruction of where the session
+// stands — mission, phase, verified criteria, last progress, next action —
+// posted to the chat webview to render as a static summary block. Pure
+// read path (session_resume never writes); failures are logged, never
+// surfaced as chat noise.
+async function postSessionResume(): Promise<void> {
+  if (!session) {
+    return;
+  }
+  try {
+    const summary = (await query("session_resume")) as Record<string, unknown>;
+    postToChat({ type: "sessionResume", summary });
+  } catch (e) {
+    log(`session resume failed: ${e}`);
   }
 }
 
@@ -774,11 +802,42 @@ async function connect(context: vscode.ExtensionContext): Promise<void> {
     // not the bare "not connected".
     const detail = describeSpawnFailure(interp, msg);
     lastConnectError = detail;
-    vscode.window.showErrorMessage(`Awino: sidecar failed to start — ${detail}`);
     log(`connect failed: ${detail}`);
     postChatState({ connected: false, connectError: detail });
     session = null;
     updateStatusBar();
+    if (isInterpreterNotFound(msg)) {
+      // Missing interpreter (ENOENT): offer the Locate-Python recovery
+      // flow — per-platform install locations, a file picker, save to
+      // awino.pythonPath, then retry — instead of a dead-end error.
+      await offerPythonRecovery(
+        {
+          showErrorMessage: (m, ...items) =>
+            Promise.resolve(vscode.window.showErrorMessage(m, ...items)),
+          showOpenDialog: (o) => Promise.resolve(vscode.window.showOpenDialog(o)),
+          savePythonPath: (exe) => {
+            const cfg = vscode.workspace.getConfiguration("awino");
+            // Write to the level that already holds a value: a stale
+            // workspace-level pythonPath would otherwise keep winning at
+            // resolve time and the freshly picked interpreter would
+            // silently not take effect.
+            const target =
+              pickPythonPathWriteLevel(cfg.inspect("pythonPath")) ===
+              "workspace"
+                ? vscode.ConfigurationTarget.Workspace
+                : vscode.ConfigurationTarget.Global;
+            return Promise.resolve(cfg.update("pythonPath", exe, target)).then(
+              () => undefined
+            );
+          },
+          retryConnect: () => connect(context),
+          log,
+        },
+        detail
+      );
+    } else {
+      vscode.window.showErrorMessage(`Awino: sidecar failed to start — ${detail}`);
+    }
   }
 }
 
@@ -813,6 +872,10 @@ function registerCommands(context: vscode.ExtensionContext): void {
 
   reg("awino.reconnect", () => connect(context));
   reg("awino.refreshViews", () => refreshViews());
+  reg("awino.sessionResume", async () => {
+    mustSession();
+    await postSessionResume();
+  });
 
   reg("awino.newMission", async () => {
     const s = mustSession();
@@ -829,7 +892,14 @@ function registerCommands(context: vscode.ExtensionContext): void {
       .map((x) => x.trim())
       .filter(Boolean);
     const r = (await query("mission", { text, criteria: criteria.length ? criteria : ["manual"] })) as Record<string, unknown>;
+    if (r["status"] === "error") {
+      vscode.window.showErrorMessage(`Awino: mission failed — ${String(r["said"] ?? r["status"])}`);
+      return;
+    }
     vscode.window.showInformationMessage(`Awino: mission started — ${String(r["status"] ?? "ok")}`);
+    await refreshStatus();
+    postChatState();
+    await postSessionResume();
     refreshViews();
   });
 
@@ -847,6 +917,9 @@ function registerCommands(context: vscode.ExtensionContext): void {
     }
     const r = (await query("mission_from_seed", { name: pick })) as Record<string, unknown>;
     vscode.window.showInformationMessage(`Awino: mission from seed — ${String(r["status"] ?? "ok")}`);
+    await refreshStatus();
+    postChatState();
+    await postSessionResume();
     refreshViews();
   });
 
@@ -856,8 +929,13 @@ function registerCommands(context: vscode.ExtensionContext): void {
     if (!name) {
       return;
     }
-    await query("seed_save", { name });
+    const r = (await query("seed_save", { name })) as Record<string, unknown>;
+    if (r["status"] === "error") {
+      vscode.window.showErrorMessage(`Awino: seed save failed — ${String(r["said"] ?? r["status"])}`);
+      return;
+    }
     vscode.window.showInformationMessage(`Awino: seed saved as ${name}`);
+    refreshViews(); // the Tasks panel mirrors the seed-registered task
   });
 
   reg("awino.inspectContract", async () => {
@@ -1331,10 +1409,12 @@ async function importConnectionsFlow(context: vscode.ExtensionContext): Promise<
 
   const applicable = applicableFindings(result.findings);
   const informational = informationalFindings(result.findings);
+  // Source transparency: the results UI names exactly which files were
+  // read — paths only, never values or secrets.
+  const lookedIn = `Looked in: ${formatScannedLine(result.scanned)}`;
   if (applicable.length === 0) {
-    const scannedList = result.scanned.length ? result.scanned.join(", ") : "(none found)";
     vscode.window.showInformationMessage(
-      `Awino: no importable connection details found. Scanned: ${scannedList}.`
+      `Awino: no importable connection details found. ${lookedIn}.`
     );
     return;
   }
@@ -1359,6 +1439,7 @@ async function importConnectionsFlow(context: vscode.ExtensionContext): Promise<
     .map((f) => `• ${f.note}`)
     .join("\n");
   const detail =
+    `${lookedIn}\n\n` +
     "This will set:\n" +
     summarizeWrites(writes) +
     (infoNotes ? `\n\nAlso found (not imported):\n${infoNotes}` : "");
@@ -1634,6 +1715,7 @@ export function activate(context: vscode.ExtensionContext): void {
   skillsView = new SkillsView(queryFn);
   contextView = new ContextView(queryFn);
   modesView = new ModesView(queryFn);
+  tasksView = new TasksView(queryFn);
 
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider("awino.contract", contractView),
@@ -1642,6 +1724,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerTreeDataProvider("awino.skills", skillsView),
     vscode.window.registerTreeDataProvider("awino.context", contextView),
     vscode.window.registerTreeDataProvider("awino.modes", modesView),
+    vscode.window.registerTreeDataProvider("awino.tasks", tasksView),
     vscode.window.registerWebviewViewProvider("awino.chat", new ChatViewProvider(context))
   );
 

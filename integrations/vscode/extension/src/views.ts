@@ -272,3 +272,86 @@ export class ModesView extends BaseView {
     return m ?? null;
   }
 }
+
+/**
+ * Tasks view: the harness registry task tracker (Track B).
+ *
+ * Read-only mirror of exactly what the registry believes. Task states
+ * change only in code (registry.set_task_state on verified completion) —
+ * this view never invents, edits, or checks off tasks. When no registry
+ * is attached yet (no mission started in the project), it says so
+ * instead of showing a stale or fabricated list.
+ */
+const TASK_STATE_MARK: Record<string, string> = {
+  doing: "◐",
+  open: "○",
+  blocked: "✕",
+  done: "☑",
+};
+
+export class TasksView extends BaseView {
+  async getChildren(element?: vscode.TreeItem): Promise<vscode.TreeItem[]> {
+    if (element instanceof Group) {
+      return element.children;
+    }
+    let r: Record<string, unknown>;
+    try {
+      r = (await this.query("tasks_list")) as Record<string, unknown>;
+    } catch (e) {
+      return [new Leaf("sidecar unavailable", esc(e))];
+    }
+    const tasks = (r["tasks"] ?? []) as Array<Record<string, unknown>>;
+    if (!tasks.length) {
+      return [
+        new Leaf(
+          r["attached"]
+            ? "(no tasks tracked yet)"
+            : "(no mission yet — the harness tracks tasks once a mission starts)"
+        ),
+      ];
+    }
+    const order = ["doing", "open", "blocked", "done"];
+    const out: vscode.TreeItem[] = [];
+    for (const state of order) {
+      const group_tasks = tasks.filter((t) => String(t["state"]) === state);
+      if (!group_tasks.length) {
+        continue;
+      }
+      const g = new Group(`${state} (${group_tasks.length})`);
+      for (const t of group_tasks) {
+        const mark = TASK_STATE_MARK[state] ?? "?";
+        const label = `${mark} ${esc(t["text"])}`;
+        const descBits = [esc(t["source"] ?? "")].filter(Boolean);
+        const dc = String(t["done_criteria"] ?? "").trim();
+        if (dc) {
+          descBits.push(dc.slice(0, 60));
+        }
+        const deps = (t["depends_on"] ?? []) as unknown[];
+        const item = new Leaf(label, descBits.join(" · ") || undefined);
+        item.tooltip =
+          `state: ${state}\n` +
+          `id: ${esc(t["id"])}\n` +
+          `source: ${esc(t["source"])}\n` +
+          (dc ? `done criteria: ${dc}\n` : "") +
+          (deps.length ? `depends on: ${deps.map(esc).join(", ")}\n` : "") +
+          `evidence: ${(t["evidence"] as unknown[] ?? []).length} item(s)\n` +
+          `(read-only — states change only when the harness verifies completion)`;
+        g.children.push(item);
+      }
+      out.push(g);
+    }
+    // Any task in an unexpected state still shows up rather than vanishing.
+    const known = new Set(order);
+    const other = tasks.filter((t) => !known.has(String(t["state"])));
+    if (other.length) {
+      const g = new Group(`other (${other.length})`);
+      for (const t of other) {
+        g.children.push(
+          new Leaf(`? ${esc(t["text"])}`, `state: ${esc(t["state"])}`)
+        );
+      }
+      out.push(g);
+    }
+    return out;
+  }
+}

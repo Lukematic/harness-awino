@@ -1285,6 +1285,20 @@ class Sidecar:
         # The IDE loop works on the real workspace, not a demo sandbox.
         loop.sandbox = WorkspaceSandbox(wsp)
         self.loop = loop
+        # Track B: re-attach the file-backed memory registry on (re)connect.
+        # The registry persists under <workspace>/.awino/registry/, but a
+        # fresh sidecar process starts with loop.registry = None — without
+        # this re-attach, tasks_list/seed_save see an empty registry after
+        # every reconnect. Never breaks hello.
+        try:
+            from registry import Registry
+            _awd = wsp / ".awino"
+            if _awd.is_dir():
+                _reg = Registry(_awd)
+                _reg.ensure()
+                self.loop.registry = _reg
+        except Exception:  # noqa: BLE001 - never break hello
+            pass
         self.provider = binding["provider"]
         self.model_desc = getattr(backend, "model", self.provider)
         self._binding = dict(binding)
@@ -2672,6 +2686,8 @@ class Sidecar:
             "context_reorder": self._cmd_context_reorder,
             "skills_list": self._cmd_skills_list,
             "skill_add": self._cmd_skill_add,
+            "tasks_list": self._cmd_tasks_list,
+            "session_resume": self._cmd_session_resume,
             "mode_list": self._cmd_mode_list,
             "mode_invoke": self._cmd_mode_invoke,
             "mode_dismiss": self._cmd_mode_dismiss,
@@ -3218,6 +3234,70 @@ class Sidecar:
                                {"name": name, "code": code, "detail": detail,
                                 "via": "skill_add"})
         self.loop.state.persist_snapshot()
+
+    def _cmd_tasks_list(self, args: dict) -> dict:
+        """Read-only: tasks from the harness registry tracker (Track B).
+
+        Returns exactly what the registry believes — states change only
+        through registry.set_task_state in code (verified completion), never
+        from the UI. Empty when no registry is attached yet (no mission
+        started in this project)."""
+        reg = getattr(self.loop, "registry", None)
+        if reg is None:
+            return {"tasks": [], "attached": False}
+        try:
+            tasks = reg.tasks()
+        except Exception as e:  # noqa: BLE001 - read path never breaks chat
+            return {"tasks": [], "attached": True,
+                    "error": f"{type(e).__name__}: {e}"}
+        out = []
+        for t in tasks:
+            out.append({
+                "id": t.get("id"), "text": t.get("text"),
+                "state": t.get("state"), "source": t.get("source"),
+                "done_criteria": t.get("done_criteria", ""),
+                "depends_on": list(t.get("depends_on", [])),
+                "evidence": list(t.get("evidence", [])),
+            })
+        return {"tasks": out, "attached": True}
+
+    def _cmd_session_resume(self, args: dict) -> dict:
+        """Read-only session-focus summary, reconstructed from real state.
+
+        Mission, phase, verified done criteria, last progress deltas, next
+        expected action — all from loop.status() — plus the registry's last
+        stop point and recent milestones when a registry is attached.
+        Nothing is written: this is a pure reconstruction for the chat view
+        to render on open or on demand."""
+        st = self.loop.status()
+        crit = st.get("criteria", []) or []
+        verified = [c for c in crit if c.get("ok")]
+        summary = {
+            "mission": st.get("mission"),
+            "phase": st.get("phase"),
+            "mission_revision": st.get("mission_revision", 0),
+            "criteria_total": len(crit),
+            "criteria_verified": len(verified),
+            "verified_labels": [c.get("label") for c in verified],
+            "last_progress": st.get("progress", []) or [],
+            "next_action": st.get("next_action"),
+            "turns": st.get("turns", 0),
+            "last_stop_point": "",
+            "recent_milestones": [],
+        }
+        reg = getattr(self.loop, "registry", None)
+        mission = self.loop.state.snapshot.get("mission") or {}
+        if reg is not None and mission.get("id"):
+            try:
+                summary["last_stop_point"] = reg.last_stop_point(mission["id"])
+                ms = reg.milestones()
+                summary["recent_milestones"] = [
+                    {"kind": m.get("kind"), "text": m.get("text")}
+                    for m in ms[-5:]
+                ]
+            except Exception:  # noqa: BLE001 - read path never breaks chat
+                pass
+        return summary
 
     def _cmd_contract(self, args: dict) -> dict:
         # The compiled contract block, including operator context and

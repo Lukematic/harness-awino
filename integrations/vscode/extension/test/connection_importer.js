@@ -22,6 +22,7 @@ const {
   informationalFindings,
   buildConfigWrites,
   summarizeWrites,
+  formatScannedLine,
 } = require("../out/connection_importer.js");
 
 // Fake-but-shaped secrets. If any of these ever appear in an import result,
@@ -271,6 +272,17 @@ test("summarizeWrites renders one line per write for the confirm dialog", () => 
     { key: "bedrockRegion", value: "us-west-2" },
   ]);
   assert(s.includes("provider = bedrock") && s.includes("bedrockRegion = us-west-2"));
+});
+
+test("formatScannedLine joins scanned labels for the 'Looked in' UI line", () => {
+  assert.strictEqual(
+    formatScannedLine(["~/.config/kilo/kilo.jsonc", "<project>/.env"]),
+    "~/.config/kilo/kilo.jsonc, <project>/.env"
+  );
+  assert.strictEqual(formatScannedLine([]), "(none found)");
+  // Paths only — the labels carry no values or secrets.
+  const line = formatScannedLine(["~/.claude/settings.json"]);
+  assert(!line.includes(FAKE_OPENAI_KEY), "no secret values in the scanned line");
 });
 
 console.log(`\nALL CONNECTION-IMPORTER UNIT TESTS PASSED (${passed} checks)`);

@@ -1692,6 +1692,7 @@ class Loop:
             "premortem_completed": s["premortem_completed"],
             "ship_requested": s["ship_requested"],
             "mission": s["mission"]["text"] if s["mission"] else None,
+            "mission_revision": s["mission_revision"],
             "criteria": crit, "open_questions": s["open_questions"],
             "progress": [p["delta"] for p in s["progress"][-3:]],
             "pending_approvals": [a["id"] for a in s["approvals"]

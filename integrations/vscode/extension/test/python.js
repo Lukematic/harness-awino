@@ -2,7 +2,7 @@
 // test/python.js — unit tests for src/python.ts (interpreter resolution).
 // The probe is mocked: no real processes are spawned.
 
-const { resolvePythonInterpreter, describeSpawnFailure } = require("../out/python.js");
+const { resolvePythonInterpreter, describeSpawnFailure, isInterpreterNotFound, commonPythonLocations } = require("../out/python.js");
 
 let pass = 0, fail = 0;
 function ok(cond, name) {
@@ -111,6 +111,29 @@ async function main() {
     );
     ok(detail.indexOf("C:\\py.exe") >= 0, "detail names the configured interpreter");
     ok(detail.indexOf("awino.pythonPath") >= 0, "configured failure hint points at the setting");
+  }
+
+  // 10. isInterpreterNotFound: only missing-interpreter errors trigger recovery
+  {
+    ok(isInterpreterNotFound("spawn python3 ENOENT") === true, "bare ENOENT counts as not-found");
+    ok(isInterpreterNotFound("Error: spawn C:\\Python311\\python.exe ENOENT") === true, "configured-path ENOENT counts as not-found");
+    ok(isInterpreterNotFound("spawn python3 EACCES") === false, "EACCES is not not-found");
+    ok(isInterpreterNotFound("sidecar exited with code 1") === false, "exit code is not not-found");
+    ok(isInterpreterNotFound("") === false, "empty error is not not-found");
+  }
+
+  // 11. commonPythonLocations: per-platform install hints for the recovery message
+  {
+    const win = commonPythonLocations("win32");
+    ok(win.some((l) => l.indexOf("py") >= 0), "win32 lists the py launcher");
+    ok(win.some((l) => l.indexOf("LOCALAPPDATA") >= 0), "win32 lists %LOCALAPPDATA%\\Programs\\Python");
+    ok(win.some((l) => l.indexOf("Microsoft Store") >= 0), "win32 lists Microsoft Store Python");
+    const mac = commonPythonLocations("darwin");
+    ok(mac.indexOf("/usr/local/bin/python3") >= 0, "macOS lists /usr/local/bin/python3");
+    ok(mac.some((l) => l.indexOf("/opt/homebrew/bin/python3") >= 0), "macOS lists Homebrew /opt/homebrew/bin/python3");
+    ok(mac.some((l) => l.indexOf("Xcode") >= 0), "macOS lists Xcode CLT");
+    const lin = commonPythonLocations("linux");
+    ok(lin.indexOf("/usr/bin/python3") >= 0, "linux lists /usr/bin/python3");
   }
 
   console.log("\n" + pass + " passed, " + fail + " failed");

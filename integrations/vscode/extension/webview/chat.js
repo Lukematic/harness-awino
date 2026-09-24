@@ -258,6 +258,10 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
   const setupBtn = document.getElementById("setup-btn");
   const providerPill = document.getElementById("provider-pill");
   const inputbarEl = document.getElementById("inputbar");
+  // 0.4.1: persistent mission header + session-resume block (may be absent
+  // in older test shims — guarded).
+  const missionHeader = document.getElementById("mission-header");
+  const sessionResumeEl = document.getElementById("session-resume");
   // Onboarding wizard elements (may be absent in older test shims — guarded).
   const wizardEl = document.getElementById("wizard");
   const wProvider = document.getElementById("w-provider");
@@ -421,6 +425,90 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     if (providerPill.classList && providerPill.classList.toggle) {
       providerPill.classList.toggle("none", none);
     }
+  }
+
+  // ---------- persistent mission header (0.4.1) ----------
+  // One line from the live sidecar status query: mission, phase, verified
+  // done-criteria x/y, mission revision. Hidden when there is no mission.
+  // Pure render of what the harness reports — never edited here.
+  function setMissionHeader(st) {
+    if (!missionHeader) return;
+    var mission = st && st.mission;
+    if (!mission) {
+      missionHeader.hidden = true;
+      missionHeader.innerHTML = "";
+      return;
+    }
+    var crit = (st && st.criteria) || [];
+    var done = 0;
+    for (var i = 0; i < crit.length; i++) {
+      if (crit[i] && crit[i].ok) done++;
+    }
+    var phase = String((st && st.phase) || "?").toUpperCase();
+    var rev = st && st.mission_revision != null ? st.mission_revision : null;
+    var label = String(mission);
+    if (label.length > 90) label = label.slice(0, 87) + "...";
+    missionHeader.innerHTML =
+      '<span class="mh-phase">' + esc(phase) + "</span> &middot; " + esc(label) +
+      ' &middot; <span class="mh-crit">' + done + "/" + crit.length + " done</span>" +
+      (rev !== null ? " &middot; rev " + esc(rev) : "");
+    missionHeader.hidden = false;
+  }
+
+  // ---------- session-focus/resume (0.4.1) ----------
+  // Read-only reconstruction from the event log: mission, phase, verified
+  // criteria, last progress deltas, next expected action. Rendered once on
+  // (re)connect and on demand via the command palette. Nothing here is
+  // editable — it mirrors exactly what the harness believes.
+  function renderSessionResume(s) {
+    if (!sessionResumeEl) return;
+    s = s || {};
+    if (!s.mission && !(s.turns > 0)) {
+      sessionResumeEl.hidden = true;
+      sessionResumeEl.innerHTML = "";
+      return;
+    }
+    function row(label, html) {
+      return '<div class="sr-row"><b>' + esc(label) + ":</b> " + html + "</div>";
+    }
+    var out = '<div class="sr-title">Session resume</div>';
+    out += row("Mission", esc(s.mission || "(none)"));
+    out += row(
+      "Phase",
+      esc(String(s.phase || "?").toUpperCase()) +
+        (s.mission_revision != null ? " &middot; rev " + esc(s.mission_revision) : "")
+    );
+    out += row("Verified", esc(s.criteria_verified) + "/" + esc(s.criteria_total) + " done criteria");
+    var labels = s.verified_labels || [];
+    if (labels.length) {
+      out += row("Done", labels.map(esc).join("; "));
+    }
+    var prog = s.last_progress || [];
+    if (prog.length) {
+      out += row(
+        "Last progress",
+        prog
+          .map(function (p) {
+            return esc(p);
+          })
+          .join("<br>")
+      );
+    }
+    if (s.next_action) out += row("Next", esc(s.next_action));
+    if (s.last_stop_point) out += row("Stopped at", esc(s.last_stop_point));
+    var ms = s.recent_milestones || [];
+    if (ms.length) {
+      out += row(
+        "Milestones",
+        ms
+          .map(function (mm) {
+            return esc(mm.kind) + ": " + esc(mm.text);
+          })
+          .join("<br>")
+      );
+    }
+    sessionResumeEl.innerHTML = out;
+    sessionResumeEl.hidden = false;
   }
 
   // ---------- first-run onboarding wizard (§2.11) ----------
@@ -1080,6 +1168,8 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
       // setup card while it owns the first-run setup flow.
       setProviderPill(m);
       setWizard(m.showWizard === true, m);
+      // 0.4.1: persistent mission header from the live sidecar status.
+      setMissionHeader(m.status);
       // Missing API key for the active provider -> setup card at the top of
       // the chat, regardless of the connected flag (a keyless provider may
       // never reach "connected").
@@ -1109,6 +1199,10 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
       } else if (!(m.connected === false && m.connectError)) {
         banner.classList.remove("show");
       }
+    } else if (m.type === "sessionResume") {
+      // 0.4.1: read-only session-focus summary from the event log,
+      // posted on (re)connect and on demand via the command palette.
+      renderSessionResume(m.summary);
     }
   });
 

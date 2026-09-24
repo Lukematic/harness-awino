@@ -385,6 +385,15 @@ export function planSources(homeDir: string, workspaceDir: string | null): ScanC
 }
 
 /**
+ * Plain "Looked in: ..." line for the results UI: the scanned source
+ * labels joined as a single readable line. Paths only — never file
+ * contents or secret values.
+ */
+export function formatScannedLine(scanned: string[]): string {
+  return scanned.length ? scanned.join(", ") : "(none found)";
+}
+
+/**
  * Scan candidate files. `read` is injected (the extension passes a real
  * fs reader ONLY after the user consents) so tests can use a fake.
  * Nothing outside the planned candidate paths is ever read.

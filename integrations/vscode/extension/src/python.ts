@@ -89,3 +89,35 @@ export function describeSpawnFailure(resolved: ResolvedInterpreter, osError: str
   const tried = resolved.tried.length > 0 ? resolved.tried.join(", ") : resolved.python;
   return `${osError} — tried interpreter(s): ${tried}. ${interpreterFixHint(resolved)}`;
 }
+
+/**
+ * True when a spawn failure means "no such interpreter" — the case the
+ * Locate-Python recovery flow handles. Matches the OS ENOENT text that
+ * child_process surfaces (e.g. "spawn python3 ENOENT").
+ */
+export function isInterpreterNotFound(osError: string): boolean {
+  return /\bENOENT\b/i.test(osError);
+}
+
+/**
+ * Common install locations per platform, shown in the recovery message so
+ * the user knows where to look before picking "Locate Python...".
+ */
+export function commonPythonLocations(platform?: NodeJS.Platform): string[] {
+  switch (platform ?? process.platform) {
+    case "win32":
+      return [
+        "the `py` launcher (run `py --version` in a terminal)",
+        "%LOCALAPPDATA%\\Programs\\Python",
+        "Microsoft Store Python",
+      ];
+    case "darwin":
+      return [
+        "/usr/local/bin/python3",
+        "/opt/homebrew/bin/python3 (Homebrew)",
+        "Xcode Command Line Tools",
+      ];
+    default:
+      return ["/usr/bin/python3"];
+  }
+}

@@ -47,12 +47,13 @@ def _turn(**kw):
 
 
 class SidecarClient:
-    def __init__(self, env=None):
-        self.ws = tempfile.mkdtemp(prefix="awino-sidecar-test-")
+    def __init__(self, env=None, ws=None, home=None):
+        self.ws = ws or tempfile.mkdtemp(prefix="awino-sidecar-test-")
         merged = dict(os.environ)
         merged.update(env or {})
         # isolate harness state per test
-        merged["AWINO_HOME"] = tempfile.mkdtemp(prefix="awino-home-test-")
+        merged["AWINO_HOME"] = home or tempfile.mkdtemp(
+            prefix="awino-home-test-")
         self.home = merged["AWINO_HOME"]
         self.p = subprocess.Popen(
             ["python3", SIDECAR], stdin=subprocess.PIPE,
@@ -770,6 +771,122 @@ class McpClientTest(unittest.TestCase):
             self.assertTrue(r["ok"])
         finally:
             c.close()
+
+
+
+class TasksAndResumeTest(unittest.TestCase):
+    """0.4.1: tasks_list + session_resume sidecar queries.
+
+    Back the VS Code Tasks panel (read-only mirror of the task registry),
+    the persistent mission header, and the session-focus/resume block.
+    """
+
+    def setUp(self):
+        self.c = SidecarClient()
+
+    def tearDown(self):
+        self.c.close()
+
+    def test_tasks_list_empty_before_mission(self):
+        self.c.hello()
+        r = self.c.cmd("tasks_list")
+        self.assertTrue(r["ok"], r)
+        res = r["result"]
+        self.assertEqual(res["tasks"], [])
+        # honestly reports attachment instead of fabricating tasks
+        self.assertIn("attached", res)
+
+    def test_tasks_list_mirrors_seed_registered_task(self):
+        self.c.hello()
+        r = self.c.cmd("mission", {"text": "Wire the tasks panel",
+                                   "criteria": ["manual", "manual"]})
+        self.assertTrue(r["ok"], r)
+        r = self.c.cmd("seed_save", {"name": "Panel Seed"})
+        self.assertTrue(r["ok"], r)
+        r = self.c.cmd("tasks_list")
+        self.assertTrue(r["ok"], r)
+        tasks = r["result"]["tasks"]
+        # mission creation seeds dag:initial tasks; the saved seed adds one
+        seed_tasks = [t for t in tasks
+                      if t["source"] == "seed:panel-seed"]
+        self.assertEqual(len(seed_tasks), 1)
+        t = seed_tasks[0]
+        self.assertEqual(t["text"],
+                         "execute seed 'Panel Seed' (panel-seed.md)")
+        self.assertEqual(t["state"], "open")
+        # every task carries the fields the Tasks view needs
+        for task in tasks:
+            self.assertIn("id", task)
+            self.assertIn("text", task)
+            self.assertIn("state", task)
+            self.assertIn("source", task)
+        # read-only mirror: repeated reads are identical
+        r2 = self.c.cmd("tasks_list")
+        self.assertEqual(r2["result"]["tasks"], tasks)
+
+    def test_tasks_list_has_no_write_path(self):
+        # The Tasks view is a read-only mirror: there is no query that
+        # lets the UI mark tasks done; only registry state can.
+        self.c.hello()
+        r = self.c.cmd("tasks_set_state", {"id": "t-1", "state": "done"})
+        self.assertFalse(r["ok"], r)
+
+    def test_session_resume_empty_before_mission(self):
+        self.c.hello()
+        r = self.c.cmd("session_resume")
+        self.assertTrue(r["ok"], r)
+        s = r["result"]
+        self.assertIsNone(s["mission"])
+        self.assertEqual(s["phase"], "IDLE")
+        self.assertEqual(s["criteria_total"], 0)
+        self.assertEqual(s["criteria_verified"], 0)
+        self.assertEqual(s["turns"], 0)
+        self.assertEqual(s["recent_milestones"], [])
+
+    def test_session_resume_reconstructs_mission(self):
+        self.c.hello()
+        self.c.cmd("mission", {"text": "Wire the tasks panel",
+                               "criteria": ["manual", "manual"]})
+        r = self.c.cmd("session_resume")
+        self.assertTrue(r["ok"], r)
+        s = r["result"]
+        self.assertEqual(s["mission"], "Wire the tasks panel")
+        self.assertIn(s["phase"],
+                      ("DEFINE", "PLAN", "BUILD", "VERIFY", "DONE"))
+        self.assertEqual(s["criteria_total"], 2)
+        self.assertEqual(s["criteria_verified"], 0)
+        self.assertIn("mission_revision", s)
+        self.assertIn("next_action", s)
+
+    def test_status_exposes_mission_revision(self):
+        # The persistent mission header's revision counter.
+        self.c.hello()
+        st = self.c.cmd("status")["result"]["status"]
+        self.assertIn("mission_revision", st)
+        rev = st["mission_revision"]
+        self.assertIsInstance(rev, int)
+        self.assertGreaterEqual(rev, 0)
+
+    def test_registry_reattaches_after_reconnect(self):
+        # A reconnect (fresh sidecar process) must re-attach the file-backed
+        # registry — otherwise tasks_list goes empty and seed_save silently
+        # drops the task after every reconnect.
+        self.c.hello()
+        self.c.cmd("mission", {"text": "Reconnect registry test",
+                               "criteria": ["manual", "manual"]})
+        self.c.cmd("seed_save", {"name": "reconnect-seed"})
+        before = self.c.cmd("tasks_list")["result"]
+        self.assertEqual(len(before["tasks"]), 7)
+        # Simulate a reconnect: new sidecar process, same workspace + home.
+        ws, home = self.c.ws, self.c.home
+        self.c.close()
+        self.c = SidecarClient(ws=ws, home=home)
+        self.c.hello()
+        after = self.c.cmd("tasks_list")["result"]
+        self.assertTrue(after["attached"], after)
+        self.assertEqual(len(after["tasks"]), 7)
+        self.assertTrue(any("reconnect-seed" in t["text"]
+                            for t in after["tasks"]), after)
 
 
 if __name__ == "__main__":

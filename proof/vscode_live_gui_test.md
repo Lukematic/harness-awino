@@ -296,3 +296,114 @@ DISPLAY=:99 ./pwvenv/bin/python gui_test_040.py   # ~12 min; 43/44 (approval pre
   unit-tested only.
 - No paid provider calls were made; Bedrock/Ollama discovery is
   unit-tested, not live-proven.
+
+---
+
+# 0.4.1 — Tasks panel, persistent mission header, session resume, Python recovery (2026-09-24)
+
+**Status: PROVEN — 27/27 GUI checks green, process exit 0.**
+
+## What 0.4.1 adds
+
+1. **Python-not-found recovery** — on `ENOENT` the extension offers
+   **Locate Python…**, lists per-platform install locations, names the
+   failed interpreter, saves the pick, and retries.
+2. **Connection-import transparency** — import results name the inspected
+   paths (no secret values).
+3. **Tasks panel** (`awino.tasks`) — read-only TreeView mirroring the
+   Python registry: doing `◐`, open `○`, blocked `✕`, done `☑`.
+   The extension cannot mark tasks done.
+4. **Persistent mission header** — mission, phase, verified criteria `x/y`,
+   mission revision; hidden when no mission exists.
+5. **Session resume** — read-only reconstruction (mission, phase/revision,
+   verified criteria, progress, next action, stop point, milestones);
+   auto-posted on reconnect and `Awino: Show Session Resume` command.
+6. **Sidecar queries** — `tasks_list`, `session_resume`,
+   `mission_revision` in `Loop.status()`.
+
+## Bugs found and fixed during this proof
+
+- **Natural-language done criteria rejected.** The New-Mission prompt asked
+  for comma-separated criteria ("bug reproduced, fix verified by test")
+  but the sidecar only accepted the internal `manual`/`artifact:`/`event:`
+  grammar. Fixed: the prompt now says
+  "Done criteria (comma-separated plain language, e.g. bug reproduced, …
+  — or manual, artifact:<path>, event:<type>)", and the sidecar maps any
+  other text to a manual criterion preserving the user's label.
+  (`prototype/awino_sidecar.py::_parse_criteria`.)
+- **Silent seed-save failure.** `awino.saveSeed` showed "seed saved"
+  even when the sidecar returned an error. Fixed: the error is surfaced
+  and the success path refreshes the Tasks view.
+  (`integrations/vscode/extension/src/extension.ts`.)
+- **Registry lost on reconnect.** `loop.registry` was attached only on
+  mission start; after a reconnect the fresh sidecar had `registry = None`,
+  so `tasks_list` went empty and `seed_save` silently dropped the task.
+  Fixed: the hello handler re-attaches the file-backed registry when
+  `<workspace>/.awino` exists. Regression test
+  `test_registry_reattaches_after_reconnect` in
+  `prototype/tests/test_sidecar.py` proves a fresh sidecar on the same
+  workspace sees all 7 tasks.
+
+## Environment
+
+- **VS Code (official):** 1.139.0 under Xvfb `:99`, Playwright-driven
+  (`~/workspace/vscode-test-env/gui_test_041.py`).
+- **Extension:** `awino-loop-owner-0.4.1.vsix`
+  (69 files, 271,788 bytes,
+  SHA-256 `28b276b5ef05d05146bccf159583047f572a005a3bd3010a1d5810329b447e97`),
+  extracted into `~/workspace/vscode-test-env/ext-official`
+  (the `code --install-extension` CLI hangs headless; manual extract is
+  the documented equivalent and the manifest was rewritten to 0.4.1).
+- **Backend:** scripted provider (deterministic), isolated `AWINO_HOME`,
+  fresh test workspace. No network, no model keys.
+
+## Direct automated proof (no GUI)
+
+- `npx tsc --noEmit -p tsconfig.json` — clean, exit 0.
+- `npm test` — exit 0, **428 checks** across 14 suites (incl. 6 new
+  `test/bundleSidecar.js` bundler guards: no generated `awino-*` dirs,
+  no `.pytest_cache`, no `.pyc`, < 150 files).
+- `TMPDIR=~/workspace/.tmp python3 -m unittest discover -s tests -t .`
+  — 474 tests OK (468 existing + 6 new direct sidecar tests for
+  `tasks_list`/`session_resume`/`mission_revision`, plus the reconnect
+  regression test above).
+
+## GUI proof (real VS Code, 27/27)
+
+Driver: `~/workspace/vscode-test-env/gui_test_041.py`, exit 0.
+Screenshots: `proof/vscode_gui/28_041_*`–`33_041_*`
+(older `28_041`–`33_041` shots from red runs were overwritten).
+
+| Check | Result |
+|---|---|
+| VS Code launches, workbench visible | PASS |
+| Awino container in activity bar | PASS |
+| Chat webview renders | PASS |
+| Reconnect (scripted provider) via palette | PASS |
+| Resume block hidden with no mission | PASS |
+| Mission header hidden with no mission | PASS |
+| New mission via palette (`manual, manual` criteria) | PASS |
+| Header visible: `DEFINE · 041 tasks mission · 0/2 done · rev 1` | PASS |
+| Header names mission / shows 0/2 / shows DEFINE / shows rev 1 | PASS (×4) |
+| Reconnect again → resume auto-posted (`Session resume / Mission: 041 tasks mission / Phase: PLAN · rev 1 / Verified: 0/2`) | PASS (×3) |
+| `Awino: Show Session Resume` renders the block | PASS (×2) |
+| Save seed `gui-task-seed` via palette | PASS |
+| Tasks view registered in the Awino container | PASS |
+| Tasks panel lists the seed task `execute seed 'gui-task-seed' (gui-task-seed.md)` under `open (7)` | PASS |
+| Reconnect with bogus `awino.pythonPath` → recovery dialog appears, lists per-platform locations, names the failed interpreter | PASS (×4) |
+| Reconnect after restoring settings | PASS |
+| No orphan sidecar processes at exit | PASS |
+
+Key screenshot: `proof/vscode_gui/31_041_tasks_panel.png` shows the Tasks
+panel with `open (7)` — six DAG tasks plus
+`◐ execute seed 'gui-task-seed' (gui-task-seed.md)` — the persistent header
+`PLAN · 041 tasks mission · 0/2 done · rev 1`, and the session-resume block.
+
+## Honest gaps
+
+- No Windows GUI test; Windows interpreter behavior is unit-tested only.
+- No paid-provider calls; Bedrock/Ollama discovery is unit-tested.
+- The suite-wide temp-dir cleanup defect remains (`TMPDIR=~/workspace/.tmp`
+  is required; `/tmp` is a 512 MB tmpfs).
+- 0.4.0's approval-card GUI path was not proven (scripted mission never
+  reached BUILD); protocol tests remain green.

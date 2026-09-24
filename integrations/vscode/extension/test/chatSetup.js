@@ -85,6 +85,7 @@ function boot() {
   ["messages", "input", "send", "stop", "statusline", "banner", "jump-latest",
    "theme-toggle", "theme-name", "models-btn", "setup-card", "setup-sub",
    "setup-btn", "provider-pill", "inputbar", "wizard",
+   "mission-header", "session-resume",
    "w-docs", "w-keystep", "w-key", "w-keylabel", "w-getkey",
    "w-model", "w-modelselect", "w-intel", "w-endpoint",
    "w-regionrow", "w-region", "w-fetchrow", "w-fetch", "w-fetchnote",
@@ -244,6 +245,54 @@ ok(lastPosted("wizardSave") && lastPosted("wizardSave").provider === "echo",
 posted = [];
 ids["w-skip"].fire("click", {});
 ok(lastPosted("wizardDismiss") !== null, "skip posts wizardDismiss");
+// 16. mission header renders mission, phase, verified x/y, revision
+state({
+  connected: true,
+  status: {
+    mission: "Ship the tasks panel",
+    phase: "build",
+    mission_revision: 3,
+    criteria: [
+      { ok: true, label: "panel renders" },
+      { ok: true, label: "tests green" },
+      { ok: false, label: "docs updated" }
+    ]
+  }
+});
+ok(ids["mission-header"].hidden === false, "mission header visible when a mission is active");
+ok(ids["mission-header"].innerHTML.indexOf("BUILD") >= 0, "mission header shows the phase");
+ok(ids["mission-header"].innerHTML.indexOf("Ship the tasks panel") >= 0, "mission header shows the mission");
+ok(ids["mission-header"].innerHTML.indexOf("2/3 done") >= 0, "mission header shows verified done-criteria x/y");
+ok(ids["mission-header"].innerHTML.indexOf("rev 3") >= 0, "mission header shows the mission revision");
+// 17. mission header hides when there is no mission
+state({ connected: true, status: { mission: null } });
+ok(ids["mission-header"].hidden === true, "mission header hidden with no mission");
+// 18. sessionResume renders the read-only session-focus summary
+messageListeners.forEach(function (fn) {
+  fn({ data: {
+    type: "sessionResume",
+    summary: {
+      mission: "Ship the tasks panel", phase: "build", mission_revision: 3,
+      criteria_total: 3, criteria_verified: 2,
+      verified_labels: ["panel renders", "tests green"],
+      last_progress: ["tasks_list query wired"],
+      next_action: "write the docs",
+      last_stop_point: "after wiring tasks_list",
+      recent_milestones: [{ kind: "learn", text: "suite needs TMPDIR" }],
+      turns: 12
+    }
+  } });
+});
+ok(ids["session-resume"].hidden === false, "session resume visible for an active mission");
+ok(ids["session-resume"].innerHTML.indexOf("Ship the tasks panel") >= 0, "resume shows the mission");
+ok(ids["session-resume"].innerHTML.indexOf("2/3 done criteria") >= 0, "resume shows verified criteria x/y");
+ok(ids["session-resume"].innerHTML.indexOf("write the docs") >= 0, "resume shows the next expected action");
+ok(ids["session-resume"].innerHTML.indexOf("Stopped at") >= 0, "resume shows the last stop point");
+// 19. sessionResume stays hidden with no mission and no turns
+messageListeners.forEach(function (fn) {
+  fn({ data: { type: "sessionResume", summary: { mission: null, turns: 0 } } });
+});
+ok(ids["session-resume"].hidden === true, "session resume hidden with no mission and no turns");
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

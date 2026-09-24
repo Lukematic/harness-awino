@@ -90,6 +90,10 @@
         "title": "Awino: Refresh Views"
       },
       {
+        "command": "awino.sessionResume",
+        "title": "Awino: Show Session Resume"
+      },
+      {
         "command": "awino.openModels",
         "title": "Awino: Models & Providers"
       },
@@ -234,6 +238,10 @@
         {
           "id": "awino.modes",
           "name": "Modes"
+        },
+        {
+          "id": "awino.tasks",
+          "name": "Tasks"
         }
       ]
     },
@@ -280,9 +288,9 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
-    "test": "node ./test/harness.js && node ./test/bedrock.js && node ./test/connection_importer.js && node ./test/markdown.js && node ./test/streaming.js && node ./test/python.js && node ./test/providerKeys.js && node ./test/modelDiscovery.js && node ./test/modelsPanel.js && node ./test/setupShared.js && node ./test/chatSetup.js",
+    "test": "node ./test/harness.js && node ./test/bedrock.js && node ./test/connection_importer.js && node ./test/markdown.js && node ./test/streaming.js && node ./test/python.js && node ./test/pythonRecovery.js && node ./test/tasksView.js && node ./test/providerKeys.js && node ./test/modelDiscovery.js && node ./test/modelsPanel.js && node ./test/setupShared.js && node ./test/chatSetup.js && node ./test/bundleSidecar.js",
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run compile && node ./scripts/bundle-sidecar.js"
   },
-  "version": "0.4.0"
+  "version": "0.4.1"
 }
