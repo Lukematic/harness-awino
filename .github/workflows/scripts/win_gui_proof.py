@@ -230,18 +230,38 @@ def main():
         shutil.rmtree(d, ignore_errors=True)
         os.makedirs(d, exist_ok=True)
 
-    # --- 1. install the VSIX with the real CLI ---------------------------
+    # --- 1. install the VSIX -------------------------------------------
     # NOTE: the install MUST use the same --extensions-dir (and --user-data-dir)
     # as the launch below, or VS Code starts with an empty extension dir.
+    # The VS Code CLI --install-extension hangs on Windows CI (300s timeout,
+    # likely Defender scanning the 123MB VSIX). Manual extraction is faster
+    # and reliable: unzip the VSIX's extension/ into
+    # <ext_dir>/<publisher>.<name>-<version>/.
     log("installing", a.vsix)
-    r = subprocess.run([a.code, "--install-extension", os.path.abspath(a.vsix),
-                        "--force",
-                        "--user-data-dir=" + user_data,
-                        "--extensions-dir=" + ext_dir],
-                       capture_output=True, text=True,
-                       timeout=300)
-    log(r.stdout[-2000:] if r.stdout else "")
-    log(r.stderr[-2000:] if r.stderr else "")
+    import zipfile
+    ext_id = "lukematic.awino-loop-owner-0.5.0"
+    dest = os.path.join(ext_dir, ext_id)
+    if os.path.isdir(dest):
+        shutil.rmtree(dest, ignore_errors=True)
+    os.makedirs(dest, exist_ok=True)
+    vsix_path = os.path.abspath(a.vsix)
+    log(f"extracting VSIX to {dest}")
+    with zipfile.ZipFile(vsix_path, "r") as z:
+        for info in z.infolist():
+            # VSIX entries are under extension/; strip the prefix.
+            if not info.filename.startswith("extension/"):
+                continue
+            rel = info.filename[len("extension/"):]
+            if not rel:
+                continue
+            target = os.path.join(dest, rel)
+            if info.is_dir():
+                os.makedirs(target, exist_ok=True)
+            else:
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                with z.open(info) as src, open(target, "wb") as out:
+                    shutil.copyfileobj(src, out)
+    log(f"extracted {ext_id} ({sum(len(f) for _, _, f in os.walk(dest))} files)")
     r2 = subprocess.run([a.code, "--list-extensions",
                          "--user-data-dir=" + user_data,
                          "--extensions-dir=" + ext_dir],
