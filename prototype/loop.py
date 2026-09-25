@@ -1388,7 +1388,11 @@ class Loop:
         from contract import verify_done_criteria
         from verify import criterion_text
         s = self.state.snapshot
-        search_dirs = [self.state.dir / "artifacts", self.state.dir / "sandbox"]
+        # v0.6 fix: the pre-check must search the REAL sandbox (which may be
+        # injected via sandbox_dir), not the default state.dir/"sandbox".
+        # The hardcoded default stalled VERIFY -> REVIEW for any loop with an
+        # injected sandbox: artifacts were "missing" so the gate waited forever.
+        search_dirs = self._search_dirs()
         _, gaps = verify_done_criteria(s, self.state.events, search_dirs,
                                        manual_ok=False)
         blocking = [g for g in gaps if not g.startswith("manual:")]
@@ -1436,7 +1440,10 @@ class Loop:
             wid,
             {"evidence_links": evidence_links,
              "recipe_result": recipe,
-             "project_root": str(self.state.dir / "sandbox"),
+             # v0.6 fix: the verifier checks artifacts on disk under
+             # project_root — it must be the real (possibly injected)
+             # sandbox, not the default state.dir/"sandbox".
+             "project_root": str(self.sandbox.root),
              "criteria": artifact_criteria})
         res = self.complete_verification(wid)
         return bool(res.get("passed"))
@@ -2073,19 +2080,30 @@ class Loop:
                                          str(result["error"])[:160],
                                          ms=_ms_since(t0))
                 return False, {"tool": tool_name, "result": result}
-        # Idempotency: never re-execute an effect we already have a result for.
-        for e in reversed(self.state.events):
-            if e["type"] == "tool_result" and e["data"].get("idem_key") == idem_key:
-                res = e["data"]["result"]
-                self.state.record("tool_result",
-                                  {"call_id": call_id, "tool": tool_name, "args": args,
-                                   "idem_key": idem_key, "result": res, "reused": True,
-                                   "mission_rev": self.state.snapshot["mission_revision"]})
-                if stream is not None:
-                    stream.tool_progress(tool_name, "done",
-                                         "reused cached result",
-                                         ms=_ms_since(t0))
-                return False, {"tool": tool_name, "result": res, "reused": True}
+        # Idempotency: never re-execute an effect we already have a result
+        # for. v0.6 fix: this applies ONLY to effect tools (write_file,
+        # patch_file). Observation tools (run_command, read_file, git_diff,
+        # ...) must ALWAYS re-execute — re-observing the world is the
+        # point. The old code keyed reuse purely on (tool, args), so a
+        # post-repair `run_command pytest` reused the pre-repair failure
+        # result without executing: the repair loop could never observe
+        # the green run and spun forever on a stale exit code.
+        if tool_name in ("write_file", "patch_file"):
+            for e in reversed(self.state.events):
+                if (e["type"] == "tool_result"
+                        and e["data"].get("idem_key") == idem_key):
+                    res = e["data"]["result"]
+                    self.state.record(
+                        "tool_result",
+                        {"call_id": call_id, "tool": tool_name, "args": args,
+                         "idem_key": idem_key, "result": res, "reused": True,
+                         "mission_rev": self.state.snapshot["mission_revision"]})
+                    if stream is not None:
+                        stream.tool_progress(tool_name, "done",
+                                             "reused cached result",
+                                             ms=_ms_since(t0))
+                    return False, {"tool": tool_name, "result": res,
+                                   "reused": True}
         self.state.record("tool_called",
                           {"call_id": call_id, "tool": tool_name, "args": args,
                            "idem_key": idem_key,
@@ -2553,13 +2571,27 @@ class Loop:
 
     # ------------------------------------------------------- contract approval
     def _has_write_effects(self) -> bool:
+        """BUILD exit gate: fresh write effects on the BUILD floor.
+
+        Only writes journaled SINCE the most recent entry into BUILD count.
+        The predicate used to be monotonic over the whole mission revision,
+        so an operator repair route (VERIFY -> BUILD after a test failure)
+        bounced straight back to VERIFY at the next round's elevator check —
+        before the model could patch — and the repair loop could never run.
+        """
         rev = self.state.snapshot["mission_revision"]
+        events = self.state.events
+        start = 0
+        for i, e in enumerate(events):
+            if (e["type"] == "phase_changed"
+                    and e["data"].get("phase") == "BUILD"):
+                start = i + 1
         return any(e["type"] == "tool_result"
                    and e["data"].get("tool") in ("write_file", "patch_file")
                    and not e["data"].get("result", {}).get("error")
                    and not e["data"].get("reused")
                    and e["data"].get("mission_rev") == rev
-                   for e in self.state.events)
+                   for e in events[start:])
 
     def request_phase(self, target: str, reason: str = "") -> dict:
         """Request a phase transition through the ALLOWED_TRANSITIONS table.
