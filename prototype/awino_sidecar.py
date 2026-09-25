@@ -1497,6 +1497,12 @@ class Sidecar:
                 merged[f] = binding[f]
         backend = self._make_backend(binding["provider"], merged,
                                      api_key=material)
+        # Truthfulness: the env fallback inside the backend may supply a
+        # key even when no key_id was given (VS Code injects stored keys
+        # into the sidecar env). If a key will actually be sent, say so.
+        if (key_status == "not-required"
+                and getattr(backend, "api_key", None)):
+            key_status = "configured"
         return _ModeAwareBackend(backend, self), key_status
 
     def _make_backend(self, provider: str, cmd: dict, api_key=None):
