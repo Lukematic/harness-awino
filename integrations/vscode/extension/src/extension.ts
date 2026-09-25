@@ -18,6 +18,7 @@ import { resolvePythonInterpreter, describeSpawnFailure, isInterpreterNotFound, 
 import { bundledRuntimePath, prepareBundledRuntime } from "./bundledPython";
 import { offerPythonRecovery, pickPythonPathWriteLevel } from "./pythonRecovery";
 import { ConnectGuard } from "./connectGuard";
+import { createInlineCompletionProvider } from "./inlineComplete";
 import { keyMissingForProvider } from "./providerKeys";
 import { discoverModels } from "./modelDiscovery";
 import {
@@ -236,7 +237,7 @@ let waiters: Waiter[] = [];
 let querySeq = 0;
 
 /** Send a `command` verb and resolve with the matching command_result. */
-function query(name: string, args: Record<string, unknown> = {}): Promise<unknown> {
+function query(name: string, args: Record<string, unknown> = {}, timeoutMs = 120_000): Promise<unknown> {
   return new Promise((resolve, reject) => {
     if (!session) {
       reject(new Error("not connected"));
@@ -249,7 +250,7 @@ function query(name: string, args: Record<string, unknown> = {}): Promise<unknow
     const timer = setTimeout(() => {
       waiters = waiters.filter((w) => w !== waiter);
       reject(new Error(`timed out waiting for command_result:${name} (id ${id})`));
-    }, 120_000);
+    }, timeoutMs);
     const waiter: Waiter = { name, id, resolve, reject, timer };
     waiters.push(waiter);
     try {
@@ -2188,6 +2189,35 @@ export function activate(context: vscode.ExtensionContext): void {
   updateStatusBar();
 
   registerCommands(context);
+
+  // Inline completions (Tab ghost text): registered once; the provider
+  // checks connection state and settings on every keystroke, so no
+  // connect/disconnect churn is needed. Failures resolve to no items —
+  // typing must never break.
+  context.subscriptions.push(
+    createInlineCompletionProvider({
+      host: {
+        registerInlineCompletionItemProvider: (selector, provider) =>
+          vscode.languages.registerInlineCompletionItemProvider(
+            selector as vscode.DocumentSelector,
+            provider as vscode.InlineCompletionItemProvider
+          ),
+        InlineCompletionItem: vscode.InlineCompletionItem,
+        InlineCompletionList: vscode.InlineCompletionList,
+      },
+      query: (name, args, timeoutMs) => query(name, args, timeoutMs),
+      isConnected: () => !!session?.ready,
+      getConfig: () => {
+        const cfg = vscode.workspace.getConfiguration("awino");
+        return {
+          enable: cfg.get<boolean>("inlineComplete.enable", true),
+          debounceMs: cfg.get<number>("inlineComplete.debounceMs", 150),
+          model: cfg.get<string>("inlineComplete.model", ""),
+        };
+      },
+      log: (msg) => log(msg),
+    })
+  );
 
   // First-run offer: import connections from other tools (once ever).
   void offerConnectionImportOnce(context);

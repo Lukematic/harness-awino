@@ -208,6 +208,21 @@
           "default": 180,
           "description": "Model HTTP timeout in seconds.",
           "type": "number"
+        },
+        "awino.inlineComplete.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Tab ghost-text completions from the active provider. Best-effort; never journaled."
+        },
+        "awino.inlineComplete.debounceMs": {
+          "type": "number",
+          "default": 150,
+          "description": "Pause after typing before requesting a completion (ms)."
+        },
+        "awino.inlineComplete.model": {
+          "type": "string",
+          "default": "",
+          "description": "Optional model override for completions (same provider). Empty = active binding."
         }
       },
       "title": "Awino"
@@ -307,7 +322,7 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
-    "test": "node ./test/harness.js && node ./test/bedrock.js && node ./test/connection_importer.js && node ./test/markdown.js && node ./test/streaming.js && node ./test/python.js && node ./test/pythonRecovery.js && node ./test/tasksView.js && node ./test/providerKeys.js && node ./test/modelDiscovery.js && node ./test/modelsPanel.js && node ./test/setupShared.js && node ./test/chatSetup.js && node ./test/bundleSidecar.js && node ./test/bundledPython.js && node ./test/bundlePython.js && node ./test/connectGuard.js && node ./test/cspPlaceholders.js && node ./test/vsixContents.js",
+    "test": "node ./test/harness.js && node ./test/bedrock.js && node ./test/connection_importer.js && node ./test/markdown.js && node ./test/streaming.js && node ./test/python.js && node ./test/pythonRecovery.js && node ./test/tasksView.js && node ./test/providerKeys.js && node ./test/modelDiscovery.js && node ./test/modelsPanel.js && node ./test/setupShared.js && node ./test/chatSetup.js && node ./test/inlineComplete.js && node ./test/bundleSidecar.js && node ./test/bundledPython.js && node ./test/bundlePython.js && node ./test/connectGuard.js && node ./test/cspPlaceholders.js && node ./test/vsixContents.js",
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run compile && node ./scripts/bundle-sidecar.js && node ./scripts/fetch-python-runtimes.js"
   },

@@ -1133,6 +1133,29 @@ def _err(message: str) -> None:
     _emit({"event": "error", "message": message, "fatal": False})
 
 
+_REFUSAL_HINTS = ("cannot complete", "can't complete", "refuse",
+                  "against the mission", "wrong phase", "not appropriate")
+
+
+def _strip_completion(text: str | None) -> str:
+    """Normalize a raw completion response into ghost text.
+
+    Tolerates markdown fences; maps model refusals / empty responses to ""
+    (honest: no ghost text rather than a wrong or chatty one)."""
+    t = (text or "").strip()
+    if not t:
+        return ""
+    m = re.search(r"```(?:\w+)?\s*(.*?)\s*```", t, re.S)
+    if m:
+        t = m.group(1).strip()
+        if not t:
+            return ""
+    low = t.lower()
+    if len(t) <= 200 and any(h in low for h in _REFUSAL_HINTS):
+        return ""
+    return t
+
+
 _DIFF_MAX_LINES = 200
 
 
@@ -1869,6 +1892,133 @@ class Sidecar:
         st["active_mode"] = self._active_mode_info()
         st["persona"] = self._persona_info()
         return {"ok": True, "status": st}
+
+    # ------------------------------------------------------- inline complete
+    def _completion_contract_summary(self) -> str:
+        """Compact mission-contract summary for completion prompts.
+
+        Built server-side from the live snapshot so it can never go stale:
+        phase, mode, mission objective, done-criteria titles, active skills.
+        Capped at 400 chars — this is context scent, not the contract."""
+        try:
+            snap = self.loop.state.snapshot
+        except Exception:  # noqa: BLE001 - no snapshot, no summary
+            return "phase=IDLE"
+        phase = snap.get("phase", "IDLE")
+        mode = snap.get("mode", "")
+        mission = snap.get("mission") or {}
+        objective = (mission.get("text") or snap.get("objective") or "")[:120]
+        criteria = mission.get("done_criteria") or []
+        crit = "; ".join(str(c)[:60] for c in criteria[:4])
+        skills = ",".join((snap.get("skills") or [])[:4])
+        parts = [f"phase={phase}", f"mode={mode}"]
+        if objective:
+            parts.append(f"mission={objective}")
+        if crit:
+            parts.append(f"done=[{crit}]")
+        if skills:
+            parts.append(f"skills={skills}")
+        return " | ".join(parts)[:400]
+
+    def _cmd_complete(self, args: dict) -> dict:
+        """Ephemeral inline completion (Tab ghost text). This is NOT a turn:
+        it never enters the turn/contract/judge pipeline, is never approved,
+        and is never journaled. It calls the backend's raw _chat directly
+        with a tiny prompt.
+
+        args: {prefix, suffix, file, language, model?}
+        returns: {"completion": str} — empty string means "no ghost text".
+        Best-effort: any failure yields "", never an exception to the UI.
+        """
+        prefix = args.get("prefix") or ""
+        suffix = args.get("suffix") or ""
+        if not isinstance(prefix, str):
+            prefix = ""
+        if not isinstance(suffix, str):
+            suffix = ""
+        # Hard caps: the completion prompt must stay tiny for latency.
+        prefix = prefix[-1500:]
+        suffix = suffix[:750]
+        if not prefix.strip():
+            return {"completion": ""}
+        file = args.get("file") if isinstance(args.get("file"), str) else ""
+        language = (args.get("language")
+                    if isinstance(args.get("language"), str) else "")
+        wrapper = self.loop.backend
+        inner = getattr(wrapper, "_inner", wrapper)
+        if not hasattr(inner, "_chat"):
+            # echo/scripted (and any future non-chat backend) have no raw
+            # chat path — never fake completions.
+            return {"completion": "", "reason": "no-chat-backend"}
+        # Optional per-request model override (awino.inlineComplete.model):
+        # same provider/endpoint/key, different model, transient instance.
+        # Any failure building it falls back to the session backend.
+        target = inner
+        override = args.get("model")
+        if isinstance(override, str) and override.strip():
+            try:
+                b = self._binding or {}
+                provider = b.get("provider") or getattr(
+                    self, "provider", "ollama")
+                endpoint = (b.get("endpoint")
+                            or getattr(inner, "host", None))
+                transient = self._make_backend(
+                    provider,
+                    {"model": override.strip(), "endpoint": endpoint},
+                    api_key=getattr(inner, "api_key", None))
+                if hasattr(transient, "_chat"):
+                    target = transient
+            except Exception as e:  # noqa: BLE001 - best effort
+                print(f"complete: model override failed "
+                      f"({type(e).__name__}), using session backend",
+                      file=sys.stderr)
+        summary = self._completion_contract_summary()
+        system = (
+            "You are an inline code completion engine. Reply with ONLY the "
+            "code that belongs at the cursor — no explanations, no markdown "
+            "fences, no commentary. Complete the thought the author started; "
+            "do not start something new. IMPORTANT: the mission context "
+            "below describes what is being built and its current phase. If "
+            "the natural completion would contradict that context (e.g. "
+            "shipping code while the phase is DEFINE, or work outside the "
+            "done criteria), reply with exactly nothing — an empty response. "
+            "An honest empty response is better than a wrong completion."
+        )
+        prompt = (
+            f"Mission context: {summary}\n"
+            f"File: {file} ({language})\n"
+            "--- code before cursor ---\n"
+            f"{prefix}\n"
+            "--- code after cursor ---\n"
+            f"{suffix}\n"
+            "--- completion: only the missing code, nothing else ---\n"
+        )
+        # Small and fast: shrink the sampling budget and cap the HTTP wait.
+        # Saved/restored so the turn pipeline is untouched.
+        prev_np = getattr(target, "num_predict", None)
+        prev_to = getattr(target, "timeout", None)
+        try:
+            if prev_np is not None:
+                target.num_predict = 128
+            if prev_to is not None:
+                target.timeout = min(prev_to, 15)
+            text = target._chat(prompt, system)
+        except Exception as e:  # noqa: BLE001 - best effort, never raise
+            return {"completion": "",
+                    "reason": f"backend-error:{type(e).__name__}"}
+        finally:
+            if prev_np is not None:
+                target.num_predict = prev_np
+            if prev_to is not None:
+                target.timeout = prev_to
+            # Consume the egress report WITHOUT journaling: completions are
+            # ephemeral assistance, never turns. Leaving last_egress set
+            # would misattribute this HTTP call to the next turn's journal.
+            try:
+                target.last_egress = None
+            except Exception:  # noqa: BLE001 - attribute may not exist
+                pass
+        return {"completion": _strip_completion(text)}
 
     def _cmd_env_switch(self, args: dict) -> dict:
         name = args.get("environment")
@@ -2754,6 +2904,7 @@ class Sidecar:
         handlers = {
             "mission": self._cmd_mission,
             "status": self._cmd_status,
+            "complete": self._cmd_complete,
             "contract": self._cmd_contract,
             "approve-contract": self._cmd_approve_contract,
             "done": self._cmd_done,
