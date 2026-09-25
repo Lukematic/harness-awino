@@ -274,35 +274,34 @@ class ProtocolTest(unittest.TestCase):
         self.assertIsNone(r["result"]["status"]["mission"])
 
 
+def _plan_turn():
+    # Turn 0: a real PLAN turn — BUILD turns are refused (NO_PLAN)
+    # without a recorded plan, so the harness demands this first.
+    return _turn(
+        plan=["Investigate the request", "Make the change",
+              "Verify with evidence"],
+        assumptions=["Hypothesis: a small scoped change addresses "
+                     "the objective; the plan will say how."],
+        progress_delta="Planning the change.")
+
+
+def _noop_turn(delta):
+    # v0.6: the recursive loop continues after an approval drain, so every
+    # script needs a clean no-op turn for the loop to exit with "ok".
+    # The assumption is devil's-advocate-proof (>= 8 words) for turns that
+    # land in VERIFY after the elevator moves on write effects / exit 0.
+    return _turn(assumptions=["Hypothesis: no further action is needed; the "
+                              "recorded effects already address the objective."],
+                 progress_delta=delta)
+
+
 class WorkspaceToolsTest(unittest.TestCase):
     """End-to-end through real harness turns (scripted model)."""
 
-    def setUp(self):
-        script = [
-            # Turn 0: a real PLAN turn — BUILD turns are refused (NO_PLAN)
-            # without a recorded plan, so the harness demands this first.
-            _turn(plan=["Investigate the request", "Make the change",
-                        "Verify with evidence"],
-                  assumptions=["Hypothesis: a small scoped change addresses "
-                               "the objective; the plan will say how."],
-                  progress_delta="Planning the change."),
-            _turn(tool_calls=[{"name": "write_file",
-                               "args": {"path": "notes.txt",
-                                        "content": "Hello from the harness\n"}}],
-                  assumptions=["Hypothesis: notes.txt does not exist yet; "
-                                 "creating it addresses the objective."],
-                  progress_delta="Creating notes.txt."),
-            _turn(tool_calls=[{"name": "run_command",
-                               "args": {"cmd": "touch ran-check.txt"}}],
-                  assumptions=["Attack: the command could fail silently, so "
-                                 "its absence afterwards is the falsifier."],
-                  progress_delta="Running the check command."),
-            _turn(tool_calls=[{"name": "read_file",
-                               "args": {"path": "../../escape.txt"}}],
-                  assumptions=["Attack: a traversal path must be refused by "
-                                 "the sandbox resolver, never read."],
-                  progress_delta="Attempting a traversal read."),
-        ]
+    def _launch(self, script):
+        # v0.6: each test supplies its own script — the autonomous loop
+        # consumes turns across the old per-user-message boundaries, so a
+        # shared sequential script no longer lines up with the test steps.
         self.c = SidecarClient()
         e = self.c.hello(provider="scripted", script=script)
         self.assertEqual(e["event"], "ready")
@@ -323,10 +322,33 @@ class WorkspaceToolsTest(unittest.TestCase):
         st = self.c.cmd("status")
         self.assertEqual(st["result"]["status"]["phase"], "BUILD")
 
+    def setUp(self):
+        self.c = None
+
     def tearDown(self):
-        self.c.close()
+        if self.c is not None:
+            self.c.close()
+
+    def _approve_first(self, tool):
+        ap = self.c.recv(timeout=30)
+        self.assertEqual(ap["event"], "approval_requested")
+        self.assertEqual(ap["approvals"][0]["tool"], tool)
+        return ap["approvals"][0]["id"]
 
     def test_write_approval_roundtrip_with_diff(self):
+        # v0.6: one user message drives the whole flow. The loop pauses for
+        # the write approval; approving resumes it, and the trailing no-op
+        # turn lets it exit with "ok".
+        self._launch([
+            _plan_turn(),
+            _turn(tool_calls=[{"name": "write_file",
+                               "args": {"path": "notes.txt",
+                                        "content": "Hello from the harness\n"}}],
+                  assumptions=["Hypothesis: notes.txt does not exist yet; "
+                                 "creating it addresses the objective."],
+                  progress_delta="Creating notes.txt."),
+            _noop_turn("Change complete; nothing further."),
+        ])
         self.c.send({"cmd": "user_message", "text": "create the notes file"})
         e = self.c.recv(timeout=60)
         self.assertEqual(e["event"], "turn_result")
@@ -354,43 +376,55 @@ class WorkspaceToolsTest(unittest.TestCase):
         self.assertIn("write_file", tools)
 
     def test_run_command_deny_leaves_no_effect(self):
-        # turn 1 first (write approved) to reach VERIFY where run_command
-        # is offered
+        # v0.6: approving the write resumes the loop, which then pauses for
+        # the (sidecar-gated) run_command approval; denying resumes it into
+        # the trailing no-op turn and the turn exits "ok".
+        self._launch([
+            _plan_turn(),
+            _turn(tool_calls=[{"name": "write_file",
+                               "args": {"path": "notes.txt",
+                                        "content": "Hello from the harness\n"}}],
+                  assumptions=["Hypothesis: notes.txt does not exist yet; "
+                                 "creating it addresses the objective."],
+                  progress_delta="Creating notes.txt."),
+            _turn(tool_calls=[{"name": "run_command",
+                               "args": {"cmd": "touch ran-check.txt"}}],
+                  assumptions=["Attack: the command could fail silently, so "
+                                 "its absence afterwards is the falsifier."],
+                  progress_delta="Running the check command."),
+            _noop_turn("Check denied; nothing further."),
+        ])
         self.c.send({"cmd": "user_message", "text": "create the notes file"})
-        self.c.recv(timeout=60)  # turn_result
-        ap = self.c.recv(timeout=30)  # approval_requested
-        self.c.send({"cmd": "approve", "id": ap["approvals"][0]["id"],
-                     "decision": "approve"})
-        self.c.recv(timeout=60)
-        # turn 2: run_command is approval-gated in the sidecar
-        self.c.send({"cmd": "user_message", "text": "run the check"})
         e = self.c.recv(timeout=60)
         self.assertEqual(e["result"]["status"], "awaiting_approval")
-        ap = self.c.recv(timeout=30)
-        self.assertEqual(ap["approvals"][0]["tool"], "run_command")
-        self.c.send({"cmd": "approve", "id": ap["approvals"][0]["id"],
-                     "decision": "deny"})
+        aid = self._approve_first("write_file")
+        self.c.send({"cmd": "approve", "id": aid, "decision": "approve"})
+        # the resumed loop pauses again for the run_command approval
         e = self.c.recv(timeout=60)
         self.assertEqual(e["event"], "turn_result")
+        self.assertEqual(e["result"]["status"], "awaiting_approval")
+        aid = self._approve_first("run_command")
+        self.c.send({"cmd": "approve", "id": aid, "decision": "deny"})
+        e = self.c.recv(timeout=60)
+        self.assertEqual(e["event"], "turn_result")
+        self.assertEqual(e["result"]["status"], "ok")
         self.assertFalse(
             os.path.exists(os.path.join(self.c.ws, "ran-check.txt")),
             "denied command must not execute")
 
     def test_path_traversal_refused(self):
-        # reach VERIFY first via turns 1 (approved) and 2 (denied)
-        self.c.send({"cmd": "user_message", "text": "create the notes file"})
-        self.c.recv(timeout=60)
-        ap = self.c.recv(timeout=30)
-        self.c.send({"cmd": "approve", "id": ap["approvals"][0]["id"],
-                     "decision": "approve"})
-        self.c.recv(timeout=60)
-        self.c.send({"cmd": "user_message", "text": "run the check"})
-        self.c.recv(timeout=60)
-        ap = self.c.recv(timeout=30)
-        self.c.send({"cmd": "approve", "id": ap["approvals"][0]["id"],
-                     "decision": "deny"})
-        self.c.recv(timeout=60)
-        # turn 3: traversal read
+        # v0.6: the traversal read executes in the first round (read_file is
+        # offered in build mode); the sandbox refuses it and the trailing
+        # no-op turn lets the loop exit "ok".
+        self._launch([
+            _plan_turn(),
+            _turn(tool_calls=[{"name": "read_file",
+                               "args": {"path": "../../escape.txt"}}],
+                  assumptions=["Attack: a traversal path must be refused by "
+                                 "the sandbox resolver, never read."],
+                  progress_delta="Attempting a traversal read."),
+            _noop_turn("Traversal refused; nothing further."),
+        ])
         self.c.send({"cmd": "user_message", "text": "read the secret"})
         e = self.c.recv(timeout=60)
         self.assertEqual(e["event"], "turn_result")
@@ -849,7 +883,11 @@ class McpClientTest(unittest.TestCase):
                          "args": {"text": "hello-mcp"}}],
             assumptions=["Hypothesis: the MCP echo tool returns its input; "
                          "calling it tests the client path end to end."],
-            progress_delta="Calling the MCP echo tool.")]
+            progress_delta="Calling the MCP echo tool."),
+            # v0.6: the resumed loop continues after the approval drain, so
+            # the script needs a clean no-op turn for it to exit with "ok"
+            # instead of escalating on an exhausted script.
+            _turn(progress_delta="MCP probe complete; nothing further.")]
         c = SidecarClient()
         try:
             e = c.hello(provider="scripted", script=script, mcp_servers=[
@@ -881,6 +919,13 @@ class McpClientTest(unittest.TestCase):
             c.send({"cmd": "approve", "id": ap["approvals"][0]["id"],
                     "decision": "approve"})
             e = c.recv(timeout=60)
+            # v0.6: drain any further approval rounds before expecting ok.
+            while e["result"]["status"] == "awaiting_approval":
+                ap = c.recv(timeout=30)
+                for approval in ap["approvals"]:
+                    c.send({"cmd": "approve", "id": approval["id"],
+                             "decision": "approve"})
+                e = c.recv(timeout=60)
             self.assertEqual(e["result"]["status"], "ok")
             out = e["result"]["results"][0]["result"].get("output", "")
             self.assertIn("ECHO:hello-mcp", out)
@@ -896,7 +941,11 @@ class McpClientTest(unittest.TestCase):
             tool_calls=[{"name": "mcp_fake_boom", "args": {}}],
             assumptions=["Hypothesis: a crashing MCP tool surfaces as a "
                          "tool error, never a sidecar crash."],
-            progress_delta="Calling the crashing MCP tool.")]
+            progress_delta="Calling the crashing MCP tool."),
+            # v0.6: the resumed loop continues after the approval drain, so
+            # the script needs a clean no-op turn for it to exit with "ok"
+            # instead of escalating on an exhausted script.
+            _turn(progress_delta="Failure recorded; nothing further.")]
         c = SidecarClient()
         try:
             c.hello(provider="scripted", script=script, mcp_servers=[
@@ -915,6 +964,13 @@ class McpClientTest(unittest.TestCase):
             c.send({"cmd": "approve", "id": ap["approvals"][0]["id"],
                     "decision": "approve"})
             e = c.recv(timeout=60)
+            # v0.6: drain any further approval rounds before expecting ok.
+            while e["result"]["status"] == "awaiting_approval":
+                ap = c.recv(timeout=30)
+                for approval in ap["approvals"]:
+                    c.send({"cmd": "approve", "id": approval["id"],
+                             "decision": "approve"})
+                e = c.recv(timeout=60)
             self.assertEqual(e["result"]["status"], "ok")
             err = e["result"]["results"][0]["result"].get("error", "")
             self.assertIn("boom", err)

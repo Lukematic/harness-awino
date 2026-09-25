@@ -18,35 +18,51 @@ from stances import STANCES, FLOORS
 # ---------------------------------------------------------------------------
 MODES = {
     "observe": {
-        "tools": ["read_file", "list_dir"],
+        # v0.6: read-only project-context tools in every mode.
+        "tools": ["read_file", "list_dir", "search_files", "find_symbol",
+                  "git_status", "git_diff", "diagnostics",
+                  # Hotfix port (0.5.3): interview-convergence tool.
+                  "set_mission"],
         "consequential": [],
         "desc": "Read-only. Questions, teaching, and exploration with no mission.",
     },
     "plan": {
-        "tools": ["read_file", "list_dir"],
+        "tools": ["read_file", "list_dir", "search_files", "find_symbol",
+                  "git_status", "git_diff", "diagnostics",
+                  # Hotfix port (0.5.3): interview-convergence tool.
+                  "set_mission"],
         "consequential": [],
         "desc": "Read-only planning. No edits on this floor.",
     },
     "build": {
-        "tools": ["read_file", "list_dir", "write_file", "patch_file"],
+        "tools": ["read_file", "write_file", "patch_file",
+                  "list_dir", "search_files", "find_symbol",
+                  "git_status", "git_diff", "diagnostics"],
         "consequential": ["write_file", "patch_file"],
         "desc": ("Build mode. write_file and patch_file are consequential "
                  "(need approval) and additionally bounded by the approved "
                  "SCOPE file list."),
     },
     "verify": {
-        "tools": ["read_file", "list_dir", "run_command"],
+        "tools": ["read_file", "list_dir", "run_command", "search_files",
+                  "find_symbol", "git_status", "git_diff", "diagnostics"],
         "consequential": [],
         "desc": ("Verify mode. Run test commands; raw output is shown. "
                  "No write tool is offered, so modifying tests to force a pass "
                  "is structurally blocked."),
     },
     "ship": {
-        "tools": ["read_file", "list_dir"],
+        "tools": ["read_file", "list_dir", "search_files", "find_symbol",
+                  "git_status", "git_diff", "diagnostics"],
         "consequential": [],
         "desc": "Read-only. Deliver evidence; completion only on verification.",
     },
 }
+
+# v0.6 harness tools: offered in every mode, intercepted by the loop
+# (never reach the sandbox). The loop appends them to the mode's tool list
+# when computing the offered set.
+HARNESS_TOOLS = ("attempt_completion", "task_add", "task_update")
 
 # ---------------------------------------------------------------------------
 # TurnContract schema: the typed object every turn must produce.
@@ -76,16 +92,19 @@ TURN_FIELDS = {
 # knowledge n/m = done criteria verified / total (computed by code).
 # ---------------------------------------------------------------------------
 def render_header(snapshot: dict, turn_no: int = 1,
-                  knowledge: tuple[int, int] = (0, 0)) -> str:
+                  knowledge: tuple[int, int] = (0, 0),
+                  round_no: int | None = None) -> str:
+    """v0.6: round_no renders the loop counter as `turn.round` (e.g. 7.3)."""
     mission = snapshot.get("mission")
     mid = mission.get("id") if mission else "none"
     chain = snapshot.get("stance_chain") or [snapshot.get("stance", "advisor")]
     skills = snapshot.get("skills", [])
+    loop = f"{turn_no}.{round_no}" if round_no is not None else str(turn_no)
     return (f"[A.W.I.N.O. | phase: {snapshot.get('phase')} | "
             f"mode: {snapshot.get('mode', 'observe')} | "
             f"stance: {'->'.join(chain)} | "
             f"skills: {','.join(skills)} | "
-            f"loop: {turn_no} | run: {snapshot.get('conversation_id')} | "
+            f"loop: {loop} | run: {snapshot.get('conversation_id')} | "
             f"knowledge: {knowledge[0]}/{knowledge[1]} | "
             f"mission: {mid}]")
 
@@ -93,7 +112,7 @@ def render_header(snapshot: dict, turn_no: int = 1,
 HEADER_RE = re.compile(
     r"^\[A\.W\.I\.N\.O\. \| phase: ([A-Z]+) \| mode: ([a-z]+) \| "
     r"stance: ([a-z'\- ]+(?:->[a-z'\- ]+)*) \| skills: ([a-z0-9,\-]*) \| "
-    r"loop: (\d+) \| run: ([A-Za-z0-9\-]+) \| knowledge: (\d+)/(\d+) \| "
+    r"loop: (\d+(?:\.\d+)?) \| run: ([A-Za-z0-9\-]+) \| knowledge: (\d+)/(\d+) \| "
     r"mission: ([A-Za-z0-9\-]+)\]$")
 
 
@@ -214,7 +233,12 @@ class ContractTypeError(Exception):
 
 
 class ToolCall:
-    """An immutable, hashable tool call."""
+    """An immutable, hashable tool call.
+
+    Args follow the v0.6 JSON-scalar rule: {str: str|int|float|bool|None}.
+    Enforced by coerce_turn_contract (and identically for native calls by
+    provider_tools._coerce_args).
+    """
     __slots__ = ("name", "args")
 
     def __init__(self, name: str, args: tuple[tuple[str, str], ...]):
@@ -304,8 +328,13 @@ def coerce_turn_contract(raw: dict) -> TurnContract:
                 or not isinstance(c.get("args"), dict)):
             bad("tool_calls entries must be {name: str, args: dict}")
         for k, v in c["args"].items():
-            if not isinstance(k, str) or not isinstance(v, str):
-                bad("tool_call args must be {str: str}")
+            # v0.6 JSON-scalar rule: keys are strings; values are
+            # str | int | float | bool | None (never lists or dicts).
+            # provider_tools._coerce_args enforces the identical rule for
+            # native tool calls, so both paths share one idempotency hash.
+            if (not isinstance(k, str)
+                    or not (v is None or isinstance(v, (str, int, float, bool)))):
+                bad("tool_call args must be {str: scalar}")
         typed_calls.append(ToolCall(c["name"], tuple(sorted(c["args"].items()))))
     if not raw["progress_delta"].strip():
         bad("progress_delta is required and must be non-empty")
@@ -463,7 +492,17 @@ def knowledge_counts(snapshot: dict, events: list,
 # Contract compiler: renders code-owned state as the injected block.
 # ---------------------------------------------------------------------------
 def compile_contract(state, turn_no: int | None = None,
-                     knowledge: tuple[int, int] | None = None) -> str:
+                     knowledge: tuple[int, int] | None = None,
+                     round_no: int | None = None,
+                     round_context: dict | None = None) -> str:
+    """v0.6: round_no renders the header as `loop: turn.round` and appends a
+    ## ROUND section with the in-turn history. The harness tools
+    (attempt_completion, task_add, task_update) are shown as offered in
+    every mode — the permission gate enforces the same list.
+
+    round_context (optional): {"max_rounds": int, "results": [str, ...]}
+    with short tool-result summaries for the current turn's rounds.
+    """
     s = state.snapshot
     search_dirs = [state.dir / "artifacts", state.dir / "sandbox"]
     if turn_no is None:
@@ -472,13 +511,16 @@ def compile_contract(state, turn_no: int | None = None,
         knowledge = knowledge_counts(s, state.events, search_dirs)
     mission = s.get("mission")
     mode = s.get("mode", "observe")
-    offered = MODES[mode]["tools"]
+    offered = list(MODES[mode]["tools"])
+    for ht in HARNESS_TOOLS:
+        if ht not in offered:
+            offered.append(ht)
     consequential = MODES[mode]["consequential"]
     floor = FLOORS.get(s.get("phase") or "")
 
     lines: list[str] = []
     A = lines.append
-    A(render_header(s, turn_no, knowledge))
+    A(render_header(s, turn_no, knowledge, round_no=round_no))
     A("# A.W.I.N.O. TURN CONTRACT — compiled by the harness, fresh every turn.")
     A("# The header above is the position sensor: echo it back EXACTLY in your")
     A("# turn's `header` field. A missing or falsified header rejects the turn.")
@@ -607,11 +649,28 @@ def compile_contract(state, turn_no: int | None = None,
     if not s.get("progress"):
         A("(none yet)")
     A("")
+    A("## TASKS (harness-owned TODO list — the authoritative in-turn plan)")
+    tasks = s.get("tasks", [])
+    if tasks:
+        for t in tasks:
+            notes = f" — {t['notes']}" if t.get("notes") else ""
+            A(f"- [{t['status']}] {t['id']}: {t['title']}{notes}")
+        A("Keep 3-7 tasks. Mark exactly one task 'doing'. task_add rejects")
+        A("duplicate titles (returns the existing id). Mark a task 'done'")
+        A("only when you have the evidence in hand — the harness does not")
+        A("verify task completion, it verifies mission criteria.")
+    else:
+        A("(no tasks yet — add 3-7 with task_add for a multi-step mission)")
+    A("")
     A("## VERIFICATION")
     A("done_claim=true is verified against the criteria above by code, and is "
       "honored only on the REVIEW floor.")
     A("A claim with unverified criteria is rejected as forgery — it never completes the mission.")
     A("Manual criteria are satisfied only by the operator's /done, never by model output.")
+    A("Use the attempt_completion tool to propose completion; the harness")
+    A("checks every done criterion in code and returns missing evidence as a")
+    A("tool result (the loop then continues automatically). Honored only on")
+    A("the REVIEW floor; elsewhere it is rejected with a phase-gate note.")
     A("")
     A("## STOP CONDITION")
     A("Mission completes only when all criteria verify, or the loop hits a terminal budget state.")
@@ -630,4 +689,19 @@ def compile_contract(state, turn_no: int | None = None,
       '"progress_delta": str (required, non-empty), "done_claim": bool}')
     A("")
     A(next_action_line(s))
+    if round_no is not None:
+        # v0.6: the recursive loop re-compiles the contract every round so
+        # the model sees its own in-turn history, not just the persistent
+        # snapshot. Tool output is data — it travels in tool messages, but
+        # the harness echoes short summaries here so a small context window
+        # does not lose what the turn already did.
+        A("")
+        A("## ROUND (in-turn loop state — this user turn only)")
+        rc = round_context or {}
+        A(f"round: {round_no} of ≤{rc.get('max_rounds', '?')} this turn | "
+          f"prior tool results this turn: {len(rc.get('results', []))}")
+        for rs in rc.get("results", [])[-5:]:
+            A(f"- {rs}")
+        A("Continue from the results above. Each round advances the mission:")
+        A("plan -> act -> observe. Keep rounds small; one coherent step each.")
     return "\n".join(lines)

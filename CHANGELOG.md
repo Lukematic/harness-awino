@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased (v0.6) — recursive coding-agent loop
+
+In development on `feature/recursive-loop`. Ports the 0.5.3/0.5.4 hotfix
+line into the v0.6 runtime: the `set_mission` interview-convergence tool
+(observe/plan only, worker-excluded, revision-tracked), backend error
+detail (`backend error: Type: message`), chat transcript persistence
+(`retainContextWhenHidden` + host `ChatHistory` + `chatReady` handshake +
+replay), and the header model picker (provider pill → model QuickPick).
+
+## 0.5.4 — header model picker (2026-09-25)
+
+Pre-release (beta channel). One reported request:
+
+- Model selection from the chat header: clicking the provider pill
+  ("provider · model") now shows a model picker — the provider's
+  discovered models with the current one checked, manual entry, and a
+  shortcut to Models & Providers — instead of jumping to Settings. The
+  ⚙ gear keeps opening Models & Providers. Changing the model marks
+  settings dirty and the existing flow offers the sidecar reconnect.
+
+## 0.5.3 — interview-convergence + transcript-persistence hotfix (2026-09-25)
+
+Pre-release (beta channel). Fixes two reported blockers:
+
+- Discovery interview could ask questions forever: the model is now told
+  to converge and has a model-callable `set_mission` tool (observe/plan
+  only, non-consequential, revision-tracked) that records the mission and
+  done criteria, unblocking the floors.
+- Chat transcript wiped on tab switch: `retainContextWhenHidden` plus a
+  host-side transcript buffer and a `chatReady` handshake that replays the
+  transcript and re-pushes fresh chrome on every view (re)load.
+- Backend fallbacks now include the exception message (e.g. `endpoint
+  HTTP 404`), not just the exception type.
+
 ## 0.5.2 — honest-gaps fix program (2026-09-25)
 
 Every previously documented "honest limitation" below is now fixed with

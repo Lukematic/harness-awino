@@ -32,6 +32,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import traceback
 import urllib.error
 import urllib.parse
@@ -110,7 +111,10 @@ def _apply_sidecar_tool_profile() -> None:
         '{"path", "content"} (consequential: needs operator approval; propose '
         "only when a plan exists and was approved), patch_file "
         '{"path", "diff"} (consequential: needs operator approval; unified '
-        "diff applied atomically; same approval and SCOPE rules as write_file).",
+        "diff applied atomically; same approval and SCOPE rules as write_file), "
+        'set_mission {"text", "criteria" (semicolon-separated done criteria)} '
+        "(interview: call this when the mission and done criteria are crisp "
+        "\u2014 it records the mission and unblocks the floors).",
     )
     _TOOL_PROFILE_APPLIED = True
 
@@ -1328,8 +1332,13 @@ _ACTIVE_SIDECAR = None
 _COMPILE_PATCHED = False
 
 
-def _patched_compile_contract(state, turn_no=1):
-    block = _real_compile_contract(state, turn_no=turn_no)
+def _patched_compile_contract(state, turn_no=1, knowledge=None,
+                              round_no=None, round_context=None):
+    # v0.6: forward the round kwargs — the recursive loop recompiles the
+    # contract per round with a `loop: turn.round` header.
+    block = _real_compile_contract(state, turn_no=turn_no,
+                                    knowledge=knowledge, round_no=round_no,
+                                    round_context=round_context)
     if _ACTIVE_SIDECAR is not None:
         # Persona is front-loaded (pinned tier, right after the header
         # sensor line, which must stay first): a lens on how to think.
@@ -1525,7 +1534,10 @@ BUILTIN_MODES: list[dict] = [
      "stance_prompt": (
          "Ask, don't act. Run the discovery interview: one question at a "
          "time, challenge vague answers, never let a plan start before the "
-         "mission and done criteria are crisp."),
+         "mission and done criteria are crisp. When the user's answers make "
+         "the objective and done criteria crisp, call set_mission with the "
+         "mission text and criteria \u2014 that is how a mission gets set. Do "
+         "not keep asking once it is crisp."),
      "tool_policy": None, "sampling": {"temperature": 0.3}},
     {"id": "planner", "label": "Planner",
      "stages": ["DEFINE", "PLAN"],
@@ -1692,7 +1704,7 @@ class _ModeAwareBackend:
         return getattr(self._inner, name)
 
     def generate(self, contract_block, history, feedback=None,
-                 stream_cb=None):
+                 stream_cb=None, tools=None, cancel=None, temperature=None):
         """stream_cb(kind, text): optional streaming sink for the sidecar
         protocol (spec §3.2–3.3). kind is "thinking" or "said". Default
         None preserves today's behavior exactly: the inner backend is
@@ -1703,19 +1715,40 @@ class _ModeAwareBackend:
         _chat_stream (echo, hostile, plain scripted) runs its existing
         generate() untouched and the turn's progress_delta goes out as
         one ("said", ...) chunk — those providers keep working with zero
-        changes to their code."""
-        temperature = self._sidecar._active_temperature()
+        changes to their code.
+
+        v0.6: accepts and forwards the loop's per-round kwargs (tools,
+        cancel, temperature) to the inner backend.
+        """
+        # v0.6: the loop may pass tools/cancel/temperature per round; the
+        # sidecar's temperature takes precedence unless explicitly given.
+        if temperature is None:
+            temperature = self._sidecar._active_temperature()
         inner = self._inner
+        # v0.6: only forward kwargs the inner backend actually accepts —
+        # plain providers (echo/hostile/scripted) keep their old shape.
+        import inspect as _inspect
+        try:
+            _params = _inspect.signature(inner.generate).parameters
+            _accepts_kw = any(p.kind == _inspect.Parameter.VAR_KEYWORD
+                              for p in _params.values())
+        except (TypeError, ValueError):
+            _params, _accepts_kw = {}, True
+        _extra = {}
+        if _accepts_kw or "tools" in _params:
+            _extra["tools"] = tools
+        if _accepts_kw or "cancel" in _params:
+            _extra["cancel"] = cancel
         if stream_cb is None:
             return inner.generate(
                 contract_block, history, feedback=feedback,
-                temperature=temperature)
+                temperature=temperature, **_extra)
         if hasattr(inner, "_chat_stream"):
             return inner.generate(
                 contract_block, history, feedback=feedback,
-                temperature=temperature, stream_cb=stream_cb)
+                temperature=temperature, stream_cb=stream_cb, **_extra)
         turn = inner.generate(contract_block, history, feedback=feedback,
-                              temperature=temperature)
+                              temperature=temperature, **_extra)
         said = (turn or {}).get("progress_delta") or ""
         if said:
             stream_cb("said", said)
@@ -1908,6 +1941,172 @@ def _write_diff(sandbox: WorkspaceSandbox, path: str,
     return diff, old is not None
 
 
+# ------------------------------------------------- native tool application
+class ExtensionDelegation:
+    """Implements the Loop.delegation interface via the extension RPC.
+
+    The loop keeps ownership of approval, scope epochs, idempotency,
+    journaling, and contracts; this adapter only changes WHERE effects
+    happen:
+
+    - write_file/patch_file: ONE apply_requested event per drain carrying
+      every granted write; the extension applies them in a single
+      WorkspaceEdit (one undo unit) and replies with apply_result.
+    - run_command: ONE terminal_requested event; the extension runs it in
+      the integrated terminal via shell integration, streams
+      terminal_output chunks, and replies with terminal_result.
+
+    Protocol (sidecar -> extension are events on stdout; extension ->
+    sidecar are commands on stdin, matched by request_id):
+
+      {"event": "apply_requested", "request_id", "changeset_id",
+       "edits": [{"call_id", "idem_key", "tool", "path", "content",
+                  "old_digest" (sha256 of pre-image | null)}]}
+      {"cmd": "apply_result", "request_id",
+       "results": [{"call_id", "ok",
+                    "result": {"path", "digest" (sha256), "bytes"} | "error"}]}
+      {"event": "terminal_requested", "request_id", "cmd", "cwd", "timeout_s"}
+      {"cmd": "terminal_output", "request_id", "data": chunk}
+      {"cmd": "terminal_result", "request_id", "exit_code",
+       "timed_out": bool, "killed": bool}
+      {"event": "terminal_kill", "request_id"}   (sidecar -> extension, on cancel)
+
+    The dispatch thread blocks in Sidecar._wait_for_extension while a
+    delegated effect runs; unrelated commands are deferred to the normal
+    queue, never lost. A dead/mute extension surfaces as error data
+    (delegated_apply_failed / timed_out), never a hang or a crash.
+    """
+
+    APPLY_TIMEOUT = 120.0
+    TERMINAL_TIMEOUT_S = 600.0
+    TERMINAL_SLACK = 30.0
+
+    def __init__(self, sidecar: "Sidecar"):
+        self.sidecar = sidecar
+
+    # -- Loop.delegation interface --------------------------------------
+    def tool_fn(self, tool_name: str):
+        if tool_name == "run_command":
+            return self.run_terminal
+        if tool_name in ("write_file", "patch_file"):
+            return self._apply_single
+        return None
+
+    def _apply_single(self, path: str = "", content: str = "",
+                      diff: str = "", **_kw) -> dict:
+        """Fail-safe per-call apply: only reachable if a write ever reaches
+        _execute_single directly instead of the drain batch (writes are
+        approval-gated, so the drain owns them today). Routes through the
+        same single-edit batch so checkpointing still applies."""
+        loop = self.sidecar.loop
+        tool = "write_file" if diff == "" else "patch_file"
+        args = {"path": path}
+        if tool == "write_file":
+            args["content"] = content
+        else:
+            args["diff"] = diff
+        edit = loop._compute_delegated_edit(tool, args)
+        if edit.get("error"):
+            return {"error": edit["error"],
+                    "error_code": edit.get("error_code")}
+        edit["call_id"] = f"single-{self.sidecar._next_req_id()}"
+        edit["idem_key"] = edit["call_id"]
+        results = self.apply_batch([edit])
+        br = results[0] if results else {}
+        if not isinstance(br, dict) or not br.get("ok"):
+            return {"error": str((br or {}).get("error", "no result")),
+                    "error_code": "delegated_apply_failed"}
+        return br.get("result") or {}
+
+    def apply_batch(self, edits: list[dict]) -> list[dict]:
+        """One extension round-trip for the whole drain's writes."""
+        sc = self.sidecar
+        if not edits:
+            return []
+        req_id = sc._next_req_id()
+        changeset_id = f"batch-{req_id}"
+        sc._ensure_checkpoint(changeset_id, edits)
+        wire = [{"call_id": e["call_id"], "idem_key": e["idem_key"],
+                 "tool": e["tool"], "path": e["path"],
+                 "content": e["content"], "old_digest": e["old_digest"],
+                 "digest": e["digest"]}
+                for e in edits]
+        _emit({"event": "apply_requested", "request_id": req_id,
+               "changeset_id": changeset_id, "edits": wire})
+        try:
+            resp = sc._wait_for_extension("apply_result", req_id,
+                                          self.APPLY_TIMEOUT)
+        except (TimeoutError, EOFError) as ex:
+            return [{"call_id": e["call_id"], "ok": False,
+                     "error": f"extension did not answer apply_requested: "
+                              f"{type(ex).__name__}: {ex}"}
+                    for e in edits]
+        results = resp.get("results")
+        if not isinstance(results, list):
+            return [{"call_id": e["call_id"], "ok": False,
+                     "error": "malformed apply_result from extension"}
+                    for e in edits]
+        return results
+
+    def run_terminal(self, cmd: str = "", **_kw) -> dict:
+        """Run a shell command in the extension's integrated terminal with
+        live output streaming. The tool-result shape mirrors the sandbox's
+        run_command (cmd/exit_code/stdout/stderr); the terminal merges
+        stderr into the stream, so stderr is empty and the tail of the
+        merged output lands in stdout."""
+        sc = self.sidecar
+        req_id = sc._next_req_id()
+        timeout_s = self.TERMINAL_TIMEOUT_S
+        cwd = str(sc.loop.sandbox.root) if sc.loop is not None else ""
+        _emit({"event": "terminal_requested", "request_id": req_id,
+               "cmd": cmd, "cwd": cwd, "timeout_s": timeout_s})
+        chunks: list[str] = []
+
+        def _on_other(other: dict) -> bool:
+            if not isinstance(other, dict):
+                return False
+            name = other.get("cmd")
+            if name == "terminal_output":
+                # Stream data is consumed here, never deferred: it is not
+                # a command and must not reach dispatch.
+                if str(other.get("request_id")) == req_id:
+                    data = other.get("data")
+                    if isinstance(data, str):
+                        chunks.append(data)
+                return True
+            if name == "terminal_result" and \
+                    str(other.get("request_id")) != req_id:
+                # Stale result for another request: consume, don't poison.
+                return True
+            if name == "cancel":
+                # The operator cancelled a long-running command: ask the
+                # extension to kill the terminal, then keep waiting for
+                # terminal_result so the run always journals a final
+                # state. The cancel itself stays deferred for the normal
+                # cancel handling once the wait ends.
+                _emit({"event": "terminal_kill", "request_id": req_id})
+                return False
+            return False
+
+        try:
+            resp = sc._wait_for_extension(
+                "terminal_result", req_id, timeout_s + self.TERMINAL_SLACK,
+                on_other=_on_other)
+        except (TimeoutError, EOFError) as ex:
+            return {"cmd": cmd, "exit_code": None,
+                    "stdout": "".join(chunks)[-4000:], "stderr": "",
+                    "timed_out": True,
+                    "reason": "extension_timeout",
+                    "error": f"extension did not answer terminal_requested: "
+                             f"{type(ex).__name__}: {ex}"}
+        out = "".join(chunks)
+        return {"cmd": cmd, "exit_code": resp.get("exit_code"),
+                "stdout": out[-4000:], "stderr": "",
+                "timed_out": bool(resp.get("timed_out")),
+                "killed": bool(resp.get("killed")),
+                "reason": resp.get("reason") or "completed"}
+
+
 class Sidecar:
     def __init__(self):
         self.inbox: queue.Queue = queue.Queue()   # parsed stdin commands
@@ -1918,6 +2117,12 @@ class Sidecar:
         self.model_desc = ""
         self.alive = True
         self._cancel = threading.Event()
+        # v0.6: per-turn cooperative cancellation. The token is created
+        # fresh for each user turn, handed to Loop.run_user_turn, and set
+        # by the stdin pump when a cancel command arrives mid-turn. The
+        # loop polls it at round checkpoints and inside run_command.
+        from cancel import CancelToken
+        self._turn_token: CancelToken | None = None
         self._worker: threading.Thread | None = None
         self._turn_out: queue.Queue = queue.Queue()
         self._pending_says: list = []  # per-command _say() buffer
@@ -1937,6 +2142,11 @@ class Sidecar:
         self._pending_compaction: dict | None = None
         self._last_proposal_tokens: int = 0   # re-propose only on growth
         self._last_housekept_phase: str | None = None
+        # Native tool application (extension builder): extension RPC state.
+        self._req_seq: int = 0                # delegated request ids
+        self._checkpoints: dict = {}          # changeset_id -> checkpoint
+        self._last_checkpoint_id: str | None = None
+        self._delegated: bool = False         # hello capability negotiated
 
     # ------------------------------------------------------------ main loop
     def run(self) -> None:
@@ -1952,6 +2162,170 @@ class Sidecar:
         if self.deferred:
             return self.deferred.popleft()
         return self.inbox.get()  # blocks; None sentinel on EOF
+
+    # ------------------------------------------- native tool application
+    def _next_req_id(self) -> str:
+        self._req_seq += 1
+        return f"ext-{self._req_seq}"
+
+    def _wait_for_extension(self, cmd_name: str, request_id: str,
+                            timeout: float, on_other=None) -> dict:
+        """Block the dispatch thread until the extension answers a delegated
+        request. Unrelated commands are deferred to the normal dispatch
+        queue (never lost). on_other(cmd) sees each non-matching command
+        first; returning True consumes it (stream data), False/None defers
+        it. Raises TimeoutError / EOFError — callers turn these into error
+        data, never a crash."""
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"timed out after {timeout:.0f}s waiting for "
+                    f"{cmd_name} (request {request_id})")
+            try:
+                cmd = self.inbox.get(timeout=remaining)
+            except queue.Empty:
+                raise TimeoutError(
+                    f"timed out after {timeout:.0f}s waiting for "
+                    f"{cmd_name} (request {request_id})")
+            if cmd is None:  # stdin EOF: the extension is gone
+                raise EOFError("stdin closed while waiting for extension")
+            if (isinstance(cmd, dict) and cmd.get("cmd") == cmd_name
+                    and str(cmd.get("request_id")) == request_id):
+                return cmd
+            consumed = False
+            if on_other is not None:
+                try:
+                    consumed = bool(on_other(cmd))
+                except Exception:  # noqa: BLE001 - never break the wait
+                    traceback.print_exc(file=sys.stderr)
+            if not consumed:
+                self.deferred.append(cmd)
+
+    def _ensure_checkpoint(self, changeset_id: str,
+                           edits: list[dict]) -> None:
+        """Git-based checkpoint before delegated writes: stash (including
+        untracked) the workspace so a build-mode write set can be reverted
+        via the revert_checkpoint command. Records the checkpoint in the
+        journal. Non-git workspaces, clean trees, and failures record
+        honestly and never block the write."""
+        if changeset_id in self._checkpoints or self.workspace is None:
+            return
+        cp: dict = {"id": changeset_id, "type": "none",
+                    "at": datetime.datetime.now(
+                        datetime.timezone.utc).isoformat()}
+        try:
+            ws = str(self.workspace)
+            r = subprocess.run(["git", "-C", ws, "rev-parse", "--git-dir"],
+                               capture_output=True, timeout=15)
+            if r.returncode != 0:
+                cp["note"] = "not a git repository"
+            else:
+                # Files Awino is about to create (no pre-image at
+                # checkpoint time): revert deletes exactly these, never
+                # anything the operator created.
+                new_files = [e["path"] for e in edits
+                             if e.get("old_digest") is None]
+                # The sidecar's own .awino/ state directory is excluded from
+                # the checkpoint — it is not user workspace content, and
+                # stashing it causes "already exists" conflicts on revert
+                # (the sidecar recreates its state while running).
+                r = subprocess.run(
+                    ["git", "-C", ws, "stash", "push", "-u", "-m",
+                     f"awino-checkpoint:{changeset_id}",
+                     "--", ".", ":!.awino"],
+                    capture_output=True, text=True, timeout=60)
+                if r.returncode == 0:
+                    # Locate our stash entry by message (robust against
+                    # concurrent stashes from other tools).
+                    ref = None
+                    lr = subprocess.run(
+                        ["git", "-C", ws, "stash", "list"],
+                        capture_output=True, text=True, timeout=15)
+                    for line in lr.stdout.splitlines():
+                        if f"awino-checkpoint:{changeset_id}" in line:
+                            ref = line.split(":")[0].strip()
+                            break
+                    cp.update({"type": "stash", "ref": ref or "stash@{0}",
+                               "new_files": new_files})
+                elif "No local changes" in (r.stderr or ""):
+                    cp.update({"type": "clean", "new_files": new_files})
+                else:
+                    cp["note"] = (r.stderr or r.stdout or "")[:200]
+        except Exception as ex:  # noqa: BLE001 - checkpoint never blocks
+            cp["note"] = f"{type(ex).__name__}: {ex}"
+        self._checkpoints[changeset_id] = cp
+        self._last_checkpoint_id = changeset_id
+        try:
+            self.loop.state.record("checkpoint_created", {
+                "changeset_id": changeset_id, "type": cp["type"],
+                "note": cp.get("note", ""),
+                "mission_rev": self.loop.state.snapshot["mission_revision"]})
+        except Exception:  # noqa: BLE001 - never break the write path
+            pass
+
+    def _do_revert_checkpoint(self, args: dict) -> dict:
+        """revert_checkpoint command (awino.revertCheckpoint): restore the
+        workspace to the last (or named) checkpoint. Surgical: tracked
+        files go to HEAD, ONLY Awino-created untracked files are deleted,
+        then the pre-checkpoint state (including the operator's own
+        uncommitted changes) is restored from the stash."""
+        cid = args.get("changeset_id") or self._last_checkpoint_id
+        cp = self._checkpoints.get(cid) if cid else None
+        if not cp:
+            return {"status": "error",
+                    "error": f"no checkpoint {cid or '(none)'}; "
+                             f"nothing to revert"}
+        if cp["type"] not in ("stash", "clean"):
+            return {"status": "error",
+                    "error": f"checkpoint {cid} has no restorable state "
+                             f"({cp['type']})",
+                    "note": cp.get("note", "")}
+        ws = str(self.workspace)
+        steps: list = []
+        try:
+            # 1. Tracked files -> HEAD (Awino's modifications are
+            #    uncommitted, so this drops exactly them).
+            r = subprocess.run(["git", "-C", ws, "reset", "--hard", "HEAD"],
+                               capture_output=True, text=True, timeout=60)
+            steps.append(["reset --hard HEAD", r.returncode,
+                          (r.stderr or "")[:200]])
+            # 2. Delete ONLY untracked files Awino created after the
+            #    checkpoint — never anything the operator created. The
+            #    containment check keeps a hostile rel from escaping the
+            #    workspace (unlinking a symlink only removes the link).
+            wsp = Path(ws).resolve()
+            for rel in cp.get("new_files", []):
+                p = Path(ws) / rel
+                try:
+                    rp = p.resolve()
+                    if rp != wsp and wsp not in rp.parents:
+                        steps.append([f"delete {rel}", 1,
+                                      "outside workspace"])
+                        continue
+                    if p.is_file() or p.is_symlink():
+                        p.unlink()
+                        steps.append([f"deleted {rel}", 0, ""])
+                    else:
+                        steps.append([f"delete {rel}", 0, "absent"])
+                except OSError as ex:
+                    steps.append([f"delete {rel}", 1, str(ex)[:120]])
+            # 3. Restore the pre-checkpoint state from the stash.
+            if cp["type"] == "stash":
+                r = subprocess.run(
+                    ["git", "-C", ws, "stash", "apply", cp["ref"]],
+                    capture_output=True, text=True, timeout=60)
+                steps.append([f"stash apply {cp['ref']}", r.returncode,
+                              (r.stderr or "")[:200]])
+            ok = all(s[1] == 0 for s in steps)
+            self.loop.state.record("checkpoint_reverted", {
+                "changeset_id": cid, "ok": ok, "steps": steps,
+                "mission_rev": self.loop.state.snapshot["mission_revision"]})
+            return {"ok": ok, "changeset_id": cid, "steps": steps}
+        except Exception as ex:  # noqa: BLE001 - fail-closed
+            return {"status": "error",
+                    "error": f"{type(ex).__name__}: {ex}", "steps": steps}
 
     def _read_stdin(self) -> None:
         for line in sys.stdin:
@@ -2086,6 +2460,18 @@ class Sidecar:
         # The IDE loop works on the real workspace, not a demo sandbox.
         loop.sandbox = WorkspaceSandbox(wsp)
         self.loop = loop
+        # Native tool application (extension builder): the extension
+        # advertises delegated apply/terminal capability in hello. When
+        # present, file writes and run_command execute through the
+        # extension (WorkspaceEdit / integrated terminal) instead of the
+        # in-process sandbox — the loop keeps ownership of approval,
+        # scope epochs, idempotency, and journaling.
+        caps = cmd.get("capabilities")
+        if isinstance(caps, dict) and caps.get("delegated_apply"):
+            loop.delegation = ExtensionDelegation(self)
+            self._delegated = True
+            print("hello: delegated tool application enabled",
+                  file=sys.stderr)
         # Track B: re-attach the file-backed memory registry on (re)connect.
         # The registry persists under <workspace>/.awino/registry/, but a
         # fresh sidecar process starts with loop.registry = None — without
@@ -3389,6 +3775,8 @@ class Sidecar:
             _err('user_message requires "text" (non-empty string)')
             return
         self._cancel.clear()
+        from cancel import CancelToken
+        self._turn_token = CancelToken()
         self._turn_out = queue.Queue()
         # Sidecar streaming protocol (spec §3): per-turn opt-in via
         # "stream": true. Absent/false preserves the 0.3.0 event set
@@ -3420,6 +3808,8 @@ class Sidecar:
                 continue
             if isinstance(inner, dict) and inner.get("cmd") == "cancel":
                 self._cancel.set()
+                if self._turn_token is not None:
+                    self._turn_token.set("operator stop")
             else:
                 self.deferred.append(inner)
         result = self._turn_out.get()
@@ -3496,7 +3886,8 @@ class Sidecar:
 
     def _run_turn_thread(self, text: str) -> None:
         try:
-            result = self.loop.run_user_turn(text)
+            result = self.loop.run_user_turn(text,
+                                             cancel_token=self._turn_token)
         except Exception as e:  # noqa: BLE001 - fail-closed turn result
             traceback.print_exc(file=sys.stderr)
             result = {"status": "error",
@@ -3525,6 +3916,13 @@ class Sidecar:
                 # reviews exactly what will be applied.
                 item["diff"] = a["args"].get("diff", "")
                 item["old_exists"] = True
+                # Native diff review: the full proposed content, computed
+                # without touching disk, so the extension can open a
+                # vscode.diff editor (current file <-> proposed content).
+                edit = self.loop._compute_delegated_edit(
+                    "patch_file", a["args"])
+                if not edit.get("error"):
+                    item["proposed_content"] = edit["content"]
             if a.get("shell_targets") is not None:
                 # approval-target visibility: resolved file targets and the
                 # out-of-workspace flag, rendered on the approval card
@@ -3553,6 +3951,14 @@ class Sidecar:
                       "said": f"sidecar internal error: "
                               f"{type(e).__name__}: {e}"}
         self._emit_turn_result(result)
+        # v0.6: approving/denying resumes the recursive loop, which may pause
+        # for approval AGAIN in a later round. The client needs the new
+        # approval_requested event (with IDs) to act on it — without this,
+        # the operator sees "awaiting approval" but gets no approval card.
+        # Mirrors the _do_user_message post-emit.
+        if isinstance(result, dict) and result.get("status") == \
+                "awaiting_approval":
+            self._emit_approvals(result)
 
     # --------------------------------------------------------------- command
     def _say(self, kind: str, text: str) -> None:
@@ -3619,6 +4025,7 @@ class Sidecar:
             "persona_dismiss": self._cmd_persona_dismiss,
             "env_switch": self._cmd_env_switch,
             "rigor_report": self._cmd_rigor_report,
+            "revert_checkpoint": self._do_revert_checkpoint,
         }
         fn = handlers.get(name)
         if fn is None:
@@ -4254,7 +4661,11 @@ class Sidecar:
         if self._worker is not None and self._worker.is_alive():
             # The pump loop (above) will see this flag; the in-flight model
             # HTTP call cannot be interrupted, only its result discarded.
+            # v0.6: the CancelToken reaches the loop's round checkpoints
+            # and run_command's poll loop, so the turn halts cooperatively.
             self._cancel.set()
+            if self._turn_token is not None:
+                self._turn_token.set("operator stop")
         else:
             _emit({"event": "cancel_ack", "accepted": False,
                    "note": "no turn in flight"})

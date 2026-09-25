@@ -38,7 +38,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from contract import MODES, criterion_status, verify_done_criteria
+from contract import MODES, HARNESS_TOOLS, criterion_status, verify_done_criteria
 from tools import TOOL_DEFS
 
 
@@ -70,6 +70,12 @@ def compile_turn_contract(state) -> dict:
     search_dirs = [state.dir / "artifacts", state.dir / "sandbox"]
     mode = s.get("mode", "observe")
     offered = list(MODES.get(mode, {}).get("tools", []))
+    # v0.6: the harness tools are offered in every mode — mirrors
+    # compile_contract's rendered block, which the model actually sees.
+    # They are never consequential, so the approval break cannot fire.
+    for ht in HARNESS_TOOLS:
+        if ht not in offered:
+            offered.append(ht)
     consequential = [t for t in offered
                      if TOOL_DEFS.get(t, {}).get("consequential")]
     mission = s.get("mission")

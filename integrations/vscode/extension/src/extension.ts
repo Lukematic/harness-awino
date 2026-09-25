@@ -14,12 +14,16 @@ import * as os from "os";
 import * as path from "path";
 import { spawn } from "child_process";
 import { SidecarClient, SidecarEvent, defaultSidecarPath } from "./sidecar";
+import { applyDelegatedEdits, showApprovalDiff } from "./nativeApply";
+import { AwinoTerminalRunner } from "./awinoTerminal";
+import { DelegatedEditWire } from "./delegatedPure";
 import { resolvePythonInterpreter, describeSpawnFailure, isInterpreterNotFound, ResolvedInterpreter } from "./python";
 import { bundledRuntimePath, prepareBundledRuntime } from "./bundledPython";
 import { offerPythonRecovery, pickPythonPathWriteLevel } from "./pythonRecovery";
 import { ConnectGuard } from "./connectGuard";
 import { keyMissingForProvider } from "./providerKeys";
 import { discoverModels } from "./modelDiscovery";
+import { ChatHistory } from "./chatHistory";
 import {
   BEDROCK_REGIONS,
   BedrockAuthMode,
@@ -245,12 +249,26 @@ interface Session {
 let chatPanel: vscode.WebviewView | null = null;
 let modelsPanel: vscode.WebviewPanel | null = null;
 
+// Transcript persistence: the chat webview keeps its transcript in DOM/JS
+// memory only, and VS Code may dispose a hidden sidebar WebviewView (e.g.
+// the user switches to the Explorer tab). Every transcript message posted to
+// the chat is mirrored here so the "chatReady" handshake can replay it when
+// the view (re)loads. Chrome messages (state, binding, session-resume) skip
+// persistence — the view re-sends them fresh on every handshake.
+const chatHistory = new ChatHistory();
+
 // Module-level extension context for event handlers (e.g. the prove-it
 // flow in onSidecarEvent) that don't receive it as a parameter.
 let extContext: vscode.ExtensionContext | null = null;
 
 let session: Session | null = null;
 let statusBar: vscode.StatusBarItem;
+// Native tool application: the single integrated-terminal runner for
+// delegated run_command. One runner at a time — the sidecar serializes
+// tool calls, so commands never interleave.
+const terminalRunner = new AwinoTerminalRunner();
+// Latest approval items, for the chat card's "View diff" action.
+let lastApprovalItems: ApprovalItem[] = [];
 // Rigor coach surface (Honda): a separate small status item for the last
 // mission's RigorScore — never touches the primary provider/connection
 // status bar above. Hidden while disconnected (truthful: no score to show).
@@ -439,14 +457,17 @@ function publishBinding(): void {
     ? { ...binding, provider: session?.displayProvider ?? binding["provider"] }
     : null;
   updateStatusBar(); // reads session.ready.binding + settingsDirty directly
-  postToChat({ type: "bindingChanged", binding: display, settingsDirty: stale });
+  postToChat({ type: "bindingChanged", binding: display, settingsDirty: stale }, false);
   postToModelsPanel({ type: "bindingChanged", binding: display, settingsDirty: stale });
   refreshViews(); // tree views re-render from the live session
 }
 
 // ------------------------------------------------------------------ chat webview
 
-function postToChat(msg: unknown): void {
+function postToChat(msg: unknown, persist = true): void {
+  if (persist) {
+    chatHistory.push(msg);
+  }
   chatPanel?.webview.postMessage(msg);
 }
 
@@ -485,6 +506,7 @@ async function openExternal(url: unknown): Promise<void> {
 // as connectError.
 function postChatState(extra: Record<string, unknown> = {}): void {
   const binding = (session?.ready?.["binding"] ?? {}) as Record<string, unknown>;
+  // Chrome, not transcript: the view re-sends fresh state on every resolve.
   postToChat({
     type: "state",
     connected: !!session?.ready,
@@ -499,7 +521,7 @@ function postChatState(extra: Record<string, unknown> = {}): void {
     activeMode: cachedActiveMode,
     settingsDirty: settingsDirty,
     ...extra,
-  });
+  }, false);
 }
 
 // Model discovery shared by the Models & Providers panel ("fetchModels")
@@ -520,6 +542,78 @@ async function runModelDiscovery(
   } catch (e) {
     return { ok: false, models: [], error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+interface ModelPickItem extends vscode.QuickPickItem {
+  pickKind: "model" | "manual" | "panel";
+  modelId?: string;
+}
+
+// Header model picker: the chat-header provider pill switches models
+// without a Settings trip. Uses the same endpoint discovery as the Models
+// panel; when discovery fails the panel still offers the current model,
+// manual entry, and a shortcut to Models & Providers. Writing awino.model
+// marks settings dirty and the Spec 3.1 flow offers the reconnect.
+async function pickModelFromHeader(context: vscode.ExtensionContext): Promise<void> {
+  const cfg = vscode.workspace.getConfiguration("awino");
+  const provider = String(cfg.get<string>("provider", "") || "");
+  const endpoint = String(cfg.get<string>("endpoint", "") || "");
+  const current = String(cfg.get<string>("model", "") || "");
+  if (!provider || provider.toLowerCase() === "echo") {
+    // No real provider — the Models panel is the right destination.
+    await vscode.commands.executeCommand("awino.openModels");
+    return;
+  }
+  const keyName =
+    provider === "anthropic" ? KEY_ANTHROPIC : provider === "bedrock" ? KEY_BEDROCK : KEY_OPENAI;
+  const key = (await context.secrets.get(keyName)) ?? undefined;
+  const found = await runModelDiscovery(context, provider, endpoint, key);
+  const items: ModelPickItem[] = [];
+  const seen = new Set<string>();
+  const pushModel = (id: string) => {
+    const trimmed = id.trim();
+    if (!trimmed || seen.has(trimmed)) return;
+    seen.add(trimmed);
+    items.push({
+      pickKind: "model",
+      modelId: trimmed,
+      label: (trimmed === current ? "$(check) " : "") + trimmed,
+      description: trimmed === current ? "current" : undefined,
+    });
+  };
+  if (current) pushModel(current);
+  if (found.ok) found.models.forEach(pushModel);
+  items.push({ pickKind: "manual", label: "$(pencil) Enter model ID manually…", alwaysShow: true });
+  items.push({ pickKind: "panel", label: "$(gear) Open Models & Providers…", alwaysShow: true });
+  const placeholder = found.ok
+    ? `Model for ${provider} — ${found.models.length} found${current ? `, current: ${current}` : ""}`
+    : `Model for ${provider}${found.error ? ` — discovery: ${found.error}` : ""}`;
+  const picked = await vscode.window.showQuickPick(items, {
+    title: "Awino model",
+    placeHolder: placeholder,
+    ignoreFocusOut: true,
+  });
+  if (!picked) return;
+  if (picked.pickKind === "panel") {
+    await vscode.commands.executeCommand("awino.openModels");
+    return;
+  }
+  let next: string | undefined;
+  if (picked.pickKind === "manual") {
+    next = await vscode.window.showInputBox({
+      title: "Awino model",
+      prompt: `Model ID for provider "${provider}"`,
+      value: current,
+      ignoreFocusOut: true,
+    });
+    if (!next) return;
+    next = next.trim();
+    if (!next) return;
+  } else {
+    next = picked.modelId;
+  }
+  if (!next || next === current) return;
+  await cfg.update("model", next, vscode.ConfigurationTarget.Workspace);
 }
 
 class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -546,12 +640,9 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     view.onDidDispose(() => {
       chatPanel = null;
     });
-    // initial state push (connect() re-pushes with fresh key/wizard state)
-    postChatState();
-    // reopening the view while connected: re-render the resume block too
-    if (session?.ready) {
-      void postSessionResume();
-    }
+    // Transcript/state delivery happens on the webview's "chatReady"
+    // handshake (see handleChatMessage): the view's scripts must be loaded
+    // before postMessage can be received, so nothing is pushed here.
   }
 }
 
@@ -564,10 +655,32 @@ async function handleChatMessage(
   context: vscode.ExtensionContext,
   m: { type: string; [k: string]: unknown }
 ): Promise<void> {
+  // "chatReady": the webview's scripts are loaded and its message listener
+  // is live. (Re)deliver everything the view needs: the retained transcript
+  // first (tab switches must not wipe the session view), then fresh chrome
+  // (header pill, resume block) rendered from current host state.
+  if (m.type === "chatReady") {
+    chatPanel?.webview.postMessage({ type: "beginReplay" });
+    chatHistory.replay((msg) => chatPanel?.webview.postMessage(msg));
+    chatPanel?.webview.postMessage({ type: "endReplay" });
+    postChatState();
+    if (session?.ready) {
+      await postSessionResume();
+    }
+    return;
+  }
   // "models" opens the Models & Providers panel and needs no session — it is
   // the escape hatch when there is no model connected (e.g. missing API key).
   if (m.type === "models") {
     await vscode.commands.executeCommand("awino.openModels");
+    return;
+  }
+  // "pickModel" is the chat-header model picker: switch models directly
+  // from the provider pill, without opening Settings or the Models panel.
+  // Changing awino.model marks settings dirty; the existing Spec 3.1 flow
+  // then offers the reconnect.
+  if (m.type === "pickModel") {
+    await pickModelFromHeader(context);
     return;
   }
   // "openExternal" opens allowlisted provider pages (key creation, docs) and
@@ -637,6 +750,29 @@ async function handleChatMessage(
       log(`webview approve: id=${String(m.id)} decision=${m.decision}`);
       session.client.approve(String(m.id), m.decision === "deny" ? "deny" : "approve");
       break;
+    case "viewDiff": {
+      // Chat approval card's "View diff": open the native vscode.diff
+      // editor (current <-> proposed). Decision stays on the card/modal.
+      const a = lastApprovalItems.find((x) => x.id === String(m.id ?? ""));
+      if (!a) {
+        break;
+      }
+      const relPath = String(a.args["path"] ?? "");
+      const proposed =
+        a.tool === "write_file"
+          ? String(a.args["content"] ?? "")
+          : String(a.proposed_content ?? "");
+      try {
+        await showApprovalDiff(relPath, proposed, a.old_exists !== false, a.tool);
+      } catch (e) {
+        vscode.window.showErrorMessage(
+          `Awino: could not open the diff editor — ${
+            e instanceof Error ? e.message : String(e)
+          }`
+        );
+      }
+      break;
+    }
     default:
       log(`unknown chat message type: ${m.type}`);
   }
@@ -787,6 +923,21 @@ async function onSidecarEvent(ev: SidecarEvent): Promise<void> {
     }
     case "approval_requested":
       await handleApprovalRequested(ev);
+      break;
+    case "apply_requested":
+      // Native tool application: the sidecar delegated this drain's
+      // writes. Apply them in one WorkspaceEdit, then answer with
+      // apply_result (the sidecar is blocked waiting, correlated by
+      // request_id).
+      await handleApplyRequested(ev);
+      break;
+    case "terminal_requested":
+      // Fire-and-forget: the run streams for a long time, and the
+      // terminal_kill event must stay routable while it runs.
+      void handleTerminalRequested(ev);
+      break;
+    case "terminal_kill":
+      terminalRunner.kill();
       break;
     case "compaction_proposed":
       await handleCompactionProposed(ev);
@@ -991,7 +1142,8 @@ async function postSessionResume(): Promise<void> {
   }
   try {
     const summary = (await query("session_resume")) as Record<string, unknown>;
-    postToChat({ type: "sessionResume", summary });
+    // Chrome, not transcript: re-queried fresh on every view resolve.
+    postToChat({ type: "sessionResume", summary }, false);
   } catch (e) {
     log(`session resume failed: ${e}`);
   }
@@ -1005,6 +1157,9 @@ interface ApprovalItem {
   args: Record<string, unknown>;
   diff?: string;
   old_exists?: boolean;
+  // Native diff review: the full proposed content for patch_file (the
+  // sidecar computes it without touching disk), opened via vscode.diff.
+  proposed_content?: string;
   // approval-target visibility: cwd-resolved file targets for shell
   // commands, with the out-of-workspace flag (visibility only)
   shell_targets?: {
@@ -1037,6 +1192,8 @@ async function handleApprovalRequested(ev: SidecarEvent): Promise<void> {
   const approvals = (ev["approvals"] ?? []) as ApprovalItem[];
   // render cards in the webview regardless; the modal is the decision path
   postToChat({ type: "event", payload: ev });
+  // Remembered for the chat card's "View diff" action (viewDiff message).
+  lastApprovalItems = approvals;
 
   for (const a of approvals) {
     if (session.alwaysAllow.has(a.tool)) {
@@ -1052,13 +1209,47 @@ async function handleApprovalRequested(ev: SidecarEvent): Promise<void> {
     ]
       .filter(Boolean)
       .join("\n");
-    const choice = await vscode.window.showWarningMessage(
-      `Awino requests approval: ${a.tool}`,
-      { modal: true, detail: detail.slice(0, 4000) },
-      "Approve",
-      `Always allow ${a.tool} (this session)`,
-      "Deny"
-    );
+    // Native diff review: for file writes, offer a vscode.diff editor
+    // (current <-> proposed) instead of only the text diff in the modal.
+    // Choosing it opens the diff and re-shows the modal — the decision
+    // stays explicit. write_file carries the full content in args;
+    // patch_file carries the sidecar-computed proposed_content.
+    const canDiff =
+      (a.tool === "write_file" && typeof a.args["content"] === "string") ||
+      (a.tool === "patch_file" && typeof a.proposed_content === "string");
+    let choice: string | undefined;
+    for (;;) {
+      const buttons = canDiff
+        ? [
+            "Approve",
+            "View diff",
+            `Always allow ${a.tool} (this session)`,
+            "Deny",
+          ]
+        : ["Approve", `Always allow ${a.tool} (this session)`, "Deny"];
+      choice = await vscode.window.showWarningMessage(
+        `Awino requests approval: ${a.tool}`,
+        { modal: true, detail: detail.slice(0, 4000) },
+        ...buttons
+      );
+      if (choice !== "View diff") {
+        break;
+      }
+      const relPath = String(a.args["path"] ?? "");
+      const proposed =
+        a.tool === "write_file"
+          ? String(a.args["content"] ?? "")
+          : String(a.proposed_content ?? "");
+      try {
+        await showApprovalDiff(relPath, proposed, a.old_exists !== false, a.tool);
+      } catch (e) {
+        vscode.window.showErrorMessage(
+          `Awino: could not open the diff editor — ${
+            e instanceof Error ? e.message : String(e)
+          }`
+        );
+      }
+    }
     if (choice === "Approve") {
       session.client.approve(a.id, "approve");
     } else if (choice && choice.startsWith("Always allow")) {
@@ -1069,6 +1260,88 @@ async function handleApprovalRequested(ev: SidecarEvent): Promise<void> {
       // Deny or dismissed — deny is the safe direction
       session.client.approve(a.id, "deny");
     }
+  }
+}
+
+/**
+ * Native tool application: apply the sidecar's delegated write batch in
+ * ONE WorkspaceEdit (one undo unit), then send apply_result. The
+ * sidecar is blocked in _wait_for_extension, correlated by request_id.
+ */
+async function handleApplyRequested(ev: SidecarEvent): Promise<void> {
+  if (!session) {
+    return;
+  }
+  const requestId = String(ev["request_id"] ?? "");
+  const edits = (ev["edits"] ?? []) as DelegatedEditWire[];
+  const folders = vscode.workspace.workspaceFolders;
+  const root = folders && folders[0] ? folders[0].uri.fsPath : "";
+  let results;
+  try {
+    results = await applyDelegatedEdits(edits, root);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    results = edits.map((ed) => ({
+      call_id: String((ed as DelegatedEditWire).call_id ?? ""),
+      ok: false,
+      error: `apply crashed: ${msg}`,
+    }));
+  }
+  try {
+    session.client.send({
+      cmd: "apply_result",
+      request_id: requestId,
+      results,
+    });
+  } catch {
+    // Session gone mid-apply: the sidecar's wait times out into error
+    // data rather than hanging. Nothing more to do here.
+  }
+}
+
+/**
+ * Delegated run_command: execute in the integrated terminal via shell
+ * integration, streaming cleaned output chunks live to the sidecar.
+ * The final terminal_result carries exit_code/timed_out/killed.
+ */
+async function handleTerminalRequested(ev: SidecarEvent): Promise<void> {
+  if (!session) {
+    return;
+  }
+  const requestId = String(ev["request_id"] ?? "");
+  const cmd = String(ev["cmd"] ?? "");
+  const cwd = String(ev["cwd"] ?? "");
+  const timeoutS = Number(ev["timeout_s"] ?? 600);
+  const timeoutMs = Math.min(Math.max(timeoutS * 1000, 1000), 3_600_000);
+  const send = (msg: Record<string, unknown>) => {
+    try {
+      session?.client.send(msg);
+    } catch {
+      // The run's terminal_result carries the final state; a dropped
+      // chunk is not fatal.
+    }
+  };
+  try {
+    const result = await terminalRunner.run(cmd, cwd, timeoutMs, (chunk) => {
+      send({ cmd: "terminal_output", request_id: requestId, data: chunk });
+    });
+    send({
+      cmd: "terminal_result",
+      request_id: requestId,
+      exit_code: result.exitCode ?? null,
+      timed_out: result.timedOut,
+      killed: result.killed,
+      reason: result.reason,
+    });
+  } catch (e) {
+    send({
+      cmd: "terminal_result",
+      request_id: requestId,
+      exit_code: null,
+      timed_out: false,
+      killed: true,
+      error: e instanceof Error ? e.message : String(e),
+    });
   }
 }
 
@@ -1386,6 +1659,10 @@ async function doConnectInner(
       env,
       mcpServers: cfg.mcpServers,
       script: cfg.script,
+      // Native tool application: this extension applies delegated file
+      // writes via WorkspaceEdit (one undo unit) and runs delegated
+      // shell commands in the integrated terminal with live streaming.
+      capabilities: { delegated_apply: true, terminal_stream: true },
     });
     lastConnectError = null;
     log(
@@ -1586,6 +1863,44 @@ function registerCommands(context: vscode.ExtensionContext): void {
     context.subscriptions.push(vscode.commands.registerCommand(id, (...a) => fn(...a)));
 
   reg("awino.reconnect", () => reconnect(context));
+  // Native tool application: revert the workspace to the last git
+  // checkpoint taken before a delegated build-mode write batch. The
+  // sidecar restores tracked files, deletes only Awino-created untracked
+  // files, and re-applies the operator's own pre-checkpoint changes.
+  reg("awino.revertCheckpoint", async () => {
+    if (!session) {
+      vscode.window.showWarningMessage("Awino: not connected — nothing to revert.");
+      return;
+    }
+    const confirm = await vscode.window.showWarningMessage(
+      "Revert the workspace to Awino's last checkpoint? This undoes Awino's writes since the checkpoint; your own uncommitted changes are restored.",
+      { modal: true },
+      "Revert",
+      "Cancel"
+    );
+    if (confirm !== "Revert") {
+      return;
+    }
+    let r: unknown;
+    try {
+      r = await query("revert_checkpoint", {});
+    } catch (e) {
+      vscode.window.showErrorMessage(
+        `Awino: revert failed — ${e instanceof Error ? e.message : String(e)}`
+      );
+      return;
+    }
+    const res = r as Record<string, unknown>;
+    if (res["ok"]) {
+      vscode.window.showInformationMessage(
+        `Awino: reverted to checkpoint ${String(res["changeset_id"] ?? "")}.`
+      );
+    } else {
+      vscode.window.showErrorMessage(
+        `Awino: revert failed — ${String(res["error"] ?? res["said"] ?? "unknown error")}`
+      );
+    }
+  });
   // Rigor coach (Honda): show the latest journaled report, or generate and
   // journal a fresh one when none exists. Read-only display in an output
   // channel; the only journal write is the report event itself.
@@ -2561,7 +2876,12 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerTreeDataProvider("awino.context", contextView),
     vscode.window.registerTreeDataProvider("awino.modes", modesView),
     vscode.window.registerTreeDataProvider("awino.tasks", tasksView),
-    vscode.window.registerWebviewViewProvider("awino.chat", new ChatViewProvider(context))
+    // retainContextWhenHidden: keep the webview DOM alive when the user
+    // switches tabs (Explorer etc.). The host-side transcript replay on
+    // the "chatReady" handshake is the recovery path if the webview is
+    // still ever recreated.
+    vscode.window.registerWebviewViewProvider("awino.chat", new ChatViewProvider(context),
+      { webviewOptions: { retainContextWhenHidden: true } })
   );
 
   statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);

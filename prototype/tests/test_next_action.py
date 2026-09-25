@@ -3,7 +3,7 @@ code-owned state and reflects the actual situation every turn.
 """
 import unittest
 
-from tests.common import make_loop, T, drive_verification
+from tests.common import make_loop, T
 from contract import compile_contract, next_action_line
 from backends import ScriptedBackend
 
@@ -121,22 +121,17 @@ class TestNextActionLine(unittest.TestCase):
         loop.run_user_turn("draft the plan")
         loop.approve_contract()
         loop.approve_contract(["fix.py"])
-        loop.run_user_turn("fix it now")
-        loop.approve()
-        self.assertEqual(loop.state.snapshot["phase"], "VERIFY")
-        loop.run_user_turn("run the tests")
-        # Track G: exit 0 no longer auto-advances; the verifier's pass does.
-        self.assertEqual(loop.state.snapshot["phase"], "VERIFY")
-        res = drive_verification(
-            loop, evidence_links={"artifact exists: fix.py": "tests/common.py",
-                                  "event: tool_result": "tests/common.py"})
-        self.assertTrue(res["passed"], res.get("said"))
-        r = loop.request_phase("REVIEW", reason="verifier passed")
-        self.assertEqual(r["status"], "ok")
-        self.assertEqual(loop.state.snapshot["phase"], "REVIEW")
-        r = loop.run_user_turn("ship it")
+        r = loop.run_user_turn("fix it now")
+        self.assertEqual(r["status"], "awaiting_approval")
+        # v0.6: approving resumes the recursive loop, which drives the rest
+        # autonomously — it runs the tests (exit 0), the elevator
+        # auto-verifies (Track G: the verifier pass unlocks REVIEW), and the
+        # done claim is verified against the done criteria in code. No
+        # operator shepherding between approval and mission_done.
+        r = loop.approve()
         self.assertEqual(r["status"], "ok")
         self.assertTrue(loop.state.snapshot["done"])
+        self.assertEqual(loop.state.snapshot["phase"], "SHIP")
         l = line(loop)
         self.assertIn("Floor: SHIP", l)
         self.assertIn("Mission complete", l)

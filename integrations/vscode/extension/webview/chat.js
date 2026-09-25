@@ -422,12 +422,12 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
 
   // Provider status pill in the input area (Kilo's "No providers" pattern):
   // the binding state where the user types — "No provider" or
-  // "provider · model". Clicking opens Models & Providers.
+  // "provider · model". Clicking opens the header model picker.
   function setProviderPill(m) {
     if (!providerPill) return;
     var none = true;
     var label = "No provider";
-    var title = "No provider connected — open Models & Providers";
+    var title = "No provider connected — click to set up";
     var isEcho = false;
     var stale = m.settingsDirty === true;
     if (m.keyMissing !== true && (m.connected === true || (m.ready && m.ready.binding))) {
@@ -445,7 +445,7 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
         var mLabel = mo ? String(mo) : "?";
         if (mLabel.length > 24) mLabel = mLabel.slice(0, 23) + "…";
         label = pLabel + " · " + mLabel + (stale ? " (stale)" : "");
-        title = "provider: " + p + " · model: " + (mo || "?") + " — open Models & Providers";
+        title = "provider: " + p + " · model: " + (mo || "?") + " — click to switch model";
       }
     }
     providerPill.textContent = label;
@@ -1029,13 +1029,26 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
         html += "</div>";
       }
       html += '<div class="btnrow">' +
-        '<button data-act="approve">Approve</button>' +
-        '<button data-act="deny" class="secondary">Deny</button></div></div>';
+        '<button data-act="approve">Approve</button>';
+      // Native diff review: open the proposed change in a vscode.diff
+      // editor. The decision stays on the card — this button never
+      // approves or denies.
+      var canDiff = (a.tool === "write_file" && typeof a.args.content === "string") ||
+        (a.tool === "patch_file" && typeof a.proposed_content === "string");
+      if (canDiff) {
+        html += '<button data-act="viewDiff" class="secondary">View diff</button>';
+      }
+      html += '<button data-act="deny" class="secondary">Deny</button></div></div>';
       d.innerHTML = html;
       AwinoMarkdown.wireCopyButtons(d);
       d.querySelectorAll("button").forEach(function (b) {
         b.addEventListener("click", function () {
-          vscode.postMessage({ type: "approve", id: a.id, decision: b.getAttribute("data-act") });
+          var act = b.getAttribute("data-act");
+          if (act === "viewDiff") {
+            vscode.postMessage({ type: "viewDiff", id: a.id });
+            return;
+          }
+          vscode.postMessage({ type: "approve", id: a.id, decision: act });
           b.disabled = true;
           const spin = mk("span", "bead working");
           spin.title = "waiting for sidecar";
@@ -1196,9 +1209,10 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
   const openModelsPanel = function () { vscode.postMessage({ type: "models" }); };
   if (modelsBtn) modelsBtn.addEventListener("click", openModelsPanel);
   if (setupBtn) setupBtn.addEventListener("click", openModelsPanel);
-  // Provider status pill: same destination as the gear — the click target
-  // a new user actually finds (Kilo pattern).
-  if (providerPill) providerPill.addEventListener("click", openModelsPanel);
+  // Provider status pill: the header model picker — clicking switches
+  // models directly (no Settings trip). The gear keeps opening
+  // Models & Providers (Kilo pattern).
+  if (providerPill) providerPill.addEventListener("click", function () { vscode.postMessage({ type: "pickModel" }); });
 
   // ---------- Spec 1.4: mode selector + new-mission button ----------
   function setModeOptions(modes, activeId) {
@@ -1441,5 +1455,9 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
   });
 
   refreshInput();
+  // Ready handshake: the message listener above is live, so the host can
+  // now (re)deliver the retained transcript + fresh state. Fires on every
+  // (re)load, i.e. exactly when the DOM is empty and needs filling.
+  vscode.postMessage({ type: "chatReady" });
 })();
 }

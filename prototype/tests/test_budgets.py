@@ -29,6 +29,59 @@ class TestBudgets(unittest.TestCase):
         self.assertTrue(loop.state.snapshot["awaiting_operator"])
         self.assertTrue(any(e["type"] == "stalled" for e in loop.state.events))
 
+    def test_round_stall_warns_once_then_halts(self):
+        # v0.6: identical in-turn rounds trip the stall breaker — the first
+        # threshold hit journals round_stall_warning and grants exactly one
+        # more round with the warning as feedback; a repeated identical
+        # round after the warning halts the turn as stalled.
+        turns = [T(plan=["Check"],
+                    tool_calls=[{"name": "list_dir", "args": {"path": "."}}],
+                    progress_delta="checking",
+                    assumptions=["The directory listing is stable across "
+                                 "reads in this test."])
+                 for _ in range(10)]
+        backend = ScriptedBackend(turns)
+        loop, _ = make_loop(backend=backend, config={"round_stall_limit": 3})
+        r = loop.run_user_turn("check the dir")
+        self.assertEqual(r["status"], "stalled")
+        warnings = [e for e in loop.state.events
+                    if e["type"] == "round_stall_warning"]
+        self.assertEqual(len(warnings), 1)
+        halts = [e for e in loop.state.events
+                 if e["type"] == "stalled"
+                 and e["data"].get("reason") == "round_stall"]
+        self.assertEqual(len(halts), 1)
+        # Replay alignment: the halt sets the operator-wait state.
+        self.assertTrue(loop.state.snapshot["awaiting_operator"])
+        stall_fb = [c["feedback"] for c in backend.calls
+                    if c["feedback"] and "STALL WARNING" in c["feedback"]]
+        self.assertEqual(len(stall_fb), 1)
+
+    def test_round_budget_halts_and_waits_for_operator(self):
+        # v0.6: max_rounds_per_turn is a terminal halt for the turn — the
+        # journal records round_budget_exhausted and the replayed state
+        # waits for the operator (with reason + round).
+        turns = [T(plan=["Step"],
+                    tool_calls=[{"name": "list_dir",
+                                 "args": {"path": f"d{i}"}}],
+                    progress_delta=f"step {i}",
+                    assumptions=["Each step lists a different path in "
+                                 "this test."])
+                 for i in range(10)]
+        backend = ScriptedBackend(turns)
+        loop, _ = make_loop(backend=backend,
+                            config={"max_rounds_per_turn": 5,
+                                    "round_stall_limit": 99})
+        r = loop.run_user_turn("go")
+        self.assertEqual(r["status"], "budget_exhausted")
+        ev = [e for e in loop.state.events
+              if e["type"] == "round_budget_exhausted"]
+        self.assertEqual(len(ev), 1)
+        s = loop.state.snapshot
+        self.assertTrue(s["awaiting_operator"])
+        self.assertEqual(s["awaiting_operator_reason"], "round_budget")
+        self.assertEqual(s["awaiting_operator_round"], ev[0]["data"]["round"])
+
     def test_token_budget_tracked(self):
         backend = ScriptedBackend([T(progress_delta="x")])
         loop, _ = make_loop(backend=backend)

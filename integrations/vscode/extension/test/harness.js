@@ -8,6 +8,11 @@
  *   3. approval round-trip: write_file pauses -> approval_requested with a
  *      diff -> approve -> file on disk + journal entry; deny -> no file.
  *
+ * v0.6: one user_message drives the whole autonomous flow (recursive
+ * model->tool->result->model rounds). Approving or denying resumes the loop
+ * instead of ending the turn, so every scripted tool turn is followed by a
+ * scripted no-op turn for the loop to exit cleanly with "ok".
+ *
  * This exercises the exact SidecarClient class the extension uses. The GUI
  * half (webview rendering, modals) is compiled-not-run — a headless VS Code
  * run is out of scope in this environment (see EXTENSION_SPEC.md §11).
@@ -48,6 +53,18 @@ function turn(kw) {
   return Object.assign(t, kw);
 }
 
+function noopTurn(delta) {
+  // v0.6: the recursive loop continues after an approval drain, so every
+  // scripted tool turn is followed by a clean no-op turn for the loop to
+  // exit with "ok" instead of escalating on an exhausted script. The
+  // assumption is devil's-advocate-proof (>= 8 words) for no-ops that land
+  // in VERIFY after the elevator moves on write effects / exit 0.
+  return turn({
+    assumptions: ["Hypothesis: no further action is needed; the recorded effects already address the objective."],
+    progress_delta: delta,
+  });
+}
+
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -66,6 +83,9 @@ async function main() {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "awino-harness-test-"));
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "awino-home-test-"));
 
+  // v0.6: one user message drives the whole autonomous flow, so every
+  // scripted tool turn is followed by a no-op turn for the recursive loop
+  // to exit cleanly with "ok".
   const script = [
     turn({
       plan: ["Investigate the request", "Make the change", "Verify with evidence"],
@@ -77,11 +97,13 @@ async function main() {
       assumptions: ["Hypothesis: notes.txt does not exist yet; creating it addresses the objective."],
       progress_delta: "Creating notes.txt.",
     }),
+    noopTurn("Change complete; nothing further."),
     turn({
-      tool_calls: [{ name: "run_command", args: { cmd: touchCmd("ran-check.txt") } }],
+      tool_calls: [{ name: "run_command", args: { cmd: touchCmd("denied-check.txt") } }],
       assumptions: ["Attack: the command could fail silently, so its absence afterwards is the falsifier."],
       progress_delta: "Running the check command.",
     }),
+    noopTurn("Check denied; nothing further."),
     // --- Step 3 (sidecar streaming protocol) scripted turns ---
     turn({
       tool_calls: [{ name: "list_dir", args: {} }],
@@ -92,11 +114,8 @@ async function main() {
       assumptions: ["Hypothesis: the workspace root lists the project files; reading it addresses the objective."],
       progress_delta: "Inspected the workspace.",
     }),
-    turn({
-      plan: ["Confirm the workspace state", "Report back"],
-      assumptions: ["Hypothesis: the directory listing from the previous turn is sufficient context."],
-      progress_delta: "Confirming workspace state.",
-    }),
+    noopTurn("Listing confirmed; nothing further."),
+    noopTurn("State confirmed; nothing further."),
     turn({
       tool_calls: [{ name: "run_command", args: { cmd: touchCmd("streamed-run.txt") } }],
       chunks: [
@@ -106,6 +125,7 @@ async function main() {
       assumptions: ["Attack: the command could fail silently, so its absence afterwards is the falsifier."],
       progress_delta: "Running the streamed check command.",
     }),
+    noopTurn("Streamed command complete; nothing further."),
   ];
 
   const client = new SidecarClient();
@@ -156,7 +176,8 @@ async function main() {
   assert.ok(!fs.existsSync(path.join(ws, "notes.txt")), "not written before approval");
   console.log("ok 3a - approval_requested with diff, file not yet written");
 
-  // approve -> file on disk, journal records it
+  // approve -> file on disk, journal records it. v0.6: approving resumes
+  // the recursive loop, which runs the scripted no-op round and exits "ok".
   p = client.waitFor((e) => e.event === "turn_result", 60000);
   client.approve(item.id, "approve");
   tr = await p;
@@ -170,7 +191,9 @@ async function main() {
   assert.ok(tools.includes("write_file"), "journal records write_file");
   console.log("ok 3b - approve -> file written + journal entry");
 
-  // 3c. deny path: denied command must not execute
+  // 3c. deny path: the loop pauses for the run_command approval; denying
+  // resumes it into the scripted no-op round and the turn exits "ok",
+  // with the denied command never executing.
   p = client.waitFor((e) => e.event === "turn_result", 60000);
   const pap2 = client.waitFor((e) => e.event === "approval_requested", 60000);
   client.userMessage("run the check");
@@ -181,7 +204,8 @@ async function main() {
   p = client.waitFor((e) => e.event === "turn_result", 60000);
   client.approve(ap2.approvals[0].id, "deny");
   tr = await p;
-  assert.ok(!fs.existsSync(path.join(ws, "ran-check.txt")), "denied command must not execute");
+  assert.strictEqual(tr.result.status, "ok", "denied turn still exits ok");
+  assert.ok(!fs.existsSync(path.join(ws, "denied-check.txt")), "denied command must not execute");
   console.log("ok 3c - deny -> command not executed");
 
   // 4. malformed input never kills the extension's client
@@ -233,10 +257,14 @@ async function main() {
 
   // said deltas: the scripted said chunk (>4096) split in 2, reassembles exactly.
   // (With explicit chunks, only the chunks stream — they are the simulated
-  // token stream; progress_delta streams only on the no-chunks fallback path.)
+  // token stream; progress_delta streams only on the no-chunks fallback path.
+  // v0.6: the trailing scripted no-op round has no chunks, so its
+  // progress_delta adds one short said_delta on top of the 2 big ones.
+  // The split is at 4096 chars: 4096 + 910; the no-op's delta is ~30.)
   const saidDeltas = streamed.filter((e) => e.event === "said_delta");
-  assert.strictEqual(saidDeltas.length, 2, "5006-char said chunk split into 2 deltas");
-  assert.strictEqual(saidDeltas.map((e) => e.text).join(""), BIG_SAID,
+  const bigSaid = saidDeltas.filter((e) => e.text.length >= 900);
+  assert.strictEqual(bigSaid.length, 2, "5006-char said chunk split into 2 deltas");
+  assert.strictEqual(bigSaid.map((e) => e.text).join(""), BIG_SAID,
     "said deltas reassemble exactly");
 
   // harness checks parallel the journal records: contract, judge votes, validation

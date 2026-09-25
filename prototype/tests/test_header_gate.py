@@ -34,7 +34,7 @@ class TestTurnHeader(unittest.TestCase):
         self.assertEqual(mode, "build")  # fix intent overrides the floor default
         self.assertEqual(stance, "first-principles")
         self.assertEqual(skills, "repo,code,debug,rpi,rigor-iteration,rigor-proof-cycles")
-        self.assertEqual(loop_no, "1")
+        self.assertEqual(loop_no, "1.0")  # v0.6: loop renders turn.round
         self.assertEqual(kn, "0")
         self.assertEqual(km, "1")
         self.assertEqual(mid, s["mission"]["id"])
@@ -167,8 +167,10 @@ class TestElevatorGate(unittest.TestCase):
         self.assertEqual(loop.state.snapshot["phase"], "BUILD")
 
     def test_verify_to_review_needs_exit_zero_and_verifier_pass(self):
-        # Track G: exit 0 alone no longer unlocks REVIEW — the verifier
-        # worker's journaled pass verdict is required too.
+        # Track G: exit 0 alone does not unlock REVIEW — the verifier
+        # worker's journaled pass verdict is required too. v0.6: the
+        # harness auto-spawns the verifier on exit 0 (no operator
+        # shepherding); the gate still waits when criteria are unmet.
         loop = self._loop_at_build()
         loop.run_user_turn("fix it now")
         loop.approve()
@@ -181,8 +183,9 @@ class TestElevatorGate(unittest.TestCase):
         ])
         loop.run_user_turn("verify it")
         self.assertEqual(loop.state.snapshot["phase"], "VERIFY")
-        # A VERIFY turn that runs a command with exit 0: still stays —
-        # the gate waits for the verifier's journaled pass.
+        # A VERIFY turn that runs a command with exit 0: the harness
+        # auto-spawns the verifier worker; artifact exists + recipe green
+        # -> pass verdict journaled -> REVIEW unlocks by itself.
         loop.backend = ScriptedBackend([
             T(plan=["Verify"],
               tool_calls=[{"name": "run_command", "args": {"cmd": "true"}}],
@@ -191,18 +194,49 @@ class TestElevatorGate(unittest.TestCase):
                            "exercise the empty-password path itself."]),
         ])
         loop.run_user_turn("verify it")
-        self.assertEqual(loop.state.snapshot["phase"], "VERIFY")
-        self.assertTrue(any(e["type"] == "verify_gate_waiting"
+        self.assertEqual(loop.state.snapshot["phase"], "REVIEW")
+        self.assertTrue(any(e["type"] == "verify_passed"
                             for e in loop.state.events))
-        # The verifier worker passes -> REVIEW unlocks.
+        # Manual drive still works (operator path unchanged).
         from tests.common import drive_verification
+        loop2 = self._loop_at_build()
+        loop2.run_user_turn("fix it now")
+        loop2.approve()
         res = drive_verification(
-            loop, evidence_links={"artifact exists: fix.py":
+            loop2, evidence_links={"artifact exists: fix.py":
                                   "tests/common.py"})
         self.assertTrue(res["passed"], res.get("said"))
-        r = loop.request_phase("REVIEW", reason="verifier passed")
+        r = loop2.request_phase("REVIEW", reason="verifier passed")
         self.assertEqual(r["status"], "ok")
-        self.assertEqual(loop.state.snapshot["phase"], "REVIEW")
+        self.assertEqual(loop2.state.snapshot["phase"], "REVIEW")
+
+    def test_verify_gate_waits_when_criteria_unmet(self):
+        # Exit 0 but the artifact criterion is unmet: the auto-verifier
+        # does not spawn; the gate journals verify_gate_waiting with gaps.
+        loop, _ = make_loop(backend=ScriptedBackend([
+            T(plan=["Write the fix"], progress_delta="Planning.",
+              assumptions=["Cause: the empty-password path."]),
+        ]))
+        loop.set_mission("Fix the login bug", ["artifact:missing.py"])
+        loop.run_user_turn("draft the plan")
+        loop.approve_contract()
+        loop.approve_contract(["fix.py"])
+        # Force VERIFY with an exit-0 command but no artifact written.
+        loop.state.record("phase_changed", {"phase": "VERIFY"})
+        loop.backend = ScriptedBackend([
+            T(plan=["Verify"],
+              tool_calls=[{"name": "run_command", "args": {"cmd": "true"}}],
+              progress_delta="Tests green, but nothing was written.",
+              assumptions=["The command ran green, but no artifact exists "
+                           "on disk to satisfy the done criterion."]),
+        ])
+        loop.run_user_turn("verify it")
+        self.assertEqual(loop.state.snapshot["phase"], "VERIFY")
+        waits = [e for e in loop.state.events
+                 if e["type"] == "verify_gate_waiting"]
+        self.assertTrue(waits, "expected verify_gate_waiting")
+        self.assertTrue(any("missing.py" in g
+                            for g in waits[-1]["data"].get("gaps", [])))
 
     def test_contract_approval_resets_on_new_mission(self):
         loop, _ = make_loop()

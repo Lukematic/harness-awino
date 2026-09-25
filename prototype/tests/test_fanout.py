@@ -16,7 +16,7 @@ from pathlib import Path
 from tests.common import make_loop, T
 from backends import ScriptedBackend, ModelBackend
 from loop import FanoutFailed, UnknownBackendError, _owned_overlap
-from contract import MODES
+from contract import MODES, HARNESS_TOOLS
 
 
 def _subtasks(*specs):
@@ -206,8 +206,12 @@ class TestFanoutModeInheritance(unittest.TestCase):
 
         loop.fanout("obj", _subtasks(("t1", "a/"),), run_worker=capture)
         self.assertEqual(seen["mode"], "build")
-        self.assertEqual(seen["gate"], MODES["build"]["tools"])
-        self.assertEqual(seen["parent_tools"], MODES["build"]["tools"])
+        # v0.6: the authoritative offered set adds the harness tools to
+        # every mode's base list.
+        self.assertEqual(seen["gate"],
+                         MODES["build"]["tools"] + list(HARNESS_TOOLS))
+        self.assertEqual(seen["parent_tools"],
+                         MODES["build"]["tools"] + list(HARNESS_TOOLS))
 
     def test_gate_clamped_despite_routing_escalation(self):
         # Parent is observe; even if the worker's own mode escalates to
@@ -221,7 +225,16 @@ class TestFanoutModeInheritance(unittest.TestCase):
             return {"status": "ok", "result": {}}
 
         loop.fanout("obj", _subtasks(("t1", "a/"),), run_worker=escalate)
-        self.assertEqual(seen["gate"], MODES["observe"]["tools"])
+        # v0.6: the authoritative offered set adds the harness tools to
+        # every mode's base list; the gate stays clamped to observe.
+        # 0.5.3 hotfix port: set_mission is interview-only and explicitly
+        # excluded from the worker's parent policy — a worker's mission is
+        # fixed by its parent, so it must never reach a worker even from
+        # an observe-mode parent.
+        expected = ([t for t in MODES["observe"]["tools"] if t != "set_mission"]
+                    + list(HARNESS_TOOLS))
+        self.assertEqual(seen["gate"], expected)
+        self.assertNotIn("set_mission", seen["gate"])
 
     def test_forbidden_tool_refused_end_to_end(self):
         # Parent in observe (no write_file). A persistently hostile worker

@@ -167,10 +167,14 @@ state({
 });
 ok(ids["provider-pill"].textContent === "openai · gpt-4o", "pill reads 'provider · model' when connected");
 ok(!ids["provider-pill"].classList.contains("none"), "pill not styled 'none' when connected");
-// 3. pill click opens Models & Providers (same as the gear button)
+// 3. pill click opens the header model picker (pickModel); the gear button
+// keeps opening Models & Providers.
 posted = [];
 ids["provider-pill"].fire("click", {});
-ok(lastPosted("models") !== null, "pill click posts 'models' (opens Models & Providers)");
+ok(lastPosted("pickModel") !== null, "pill click posts 'pickModel' (header model picker)");
+posted = [];
+ids["models-btn"].fire("click", {});
+ok(lastPosted("models") !== null, "gear click still posts 'models' (Models & Providers)");
 
 // 4. wizard shows on first-run state, disables (never hides) the input bar, hides setup card
 state({ showWizard: true, provider: "echo", keyMissing: false });
