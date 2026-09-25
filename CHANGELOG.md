@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — honest-gaps fix program (2026-09-25)
+## 0.5.2 — honest-gaps fix program (2026-09-25)
 
 Every previously documented "honest limitation" below is now fixed with
 tests, not just documented. 123 new tests across 8 workstreams.

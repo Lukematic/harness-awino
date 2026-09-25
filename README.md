@@ -81,9 +81,9 @@ Full inventory: [`CAPABILITY_REGISTRY.md`](CAPABILITY_REGISTRY.md).
 
 ## Status
 
-`main` carries the integrated harness (50 skills, 9 stances, fan-out,
-judges, synthesis, adapter contract) and the 0.5.1 extension (bundled
-Python, zero setup, truthfulness fixes — the beta-validated build).
+`main` carries the integrated harness (52 skills, 9 stances, fan-out,
+judges, synthesis, adapter contract) and the 0.5.2 extension (bundled
+Python, zero setup, honest-gaps fixes — the beta build).
 Prerelease betas ship from tags via the release pipeline. Open gaps are
 tracked at the bottom of `CAPABILITY_REGISTRY.md`.
 
