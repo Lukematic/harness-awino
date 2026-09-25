@@ -1,13 +1,36 @@
 # Changelog
 
-## Unreleased (v0.6) — recursive coding-agent loop
+## 0.6.0 — build loop (2026-09-25)
 
-In development on `feature/recursive-loop`. Ports the 0.5.3/0.5.4 hotfix
-line into the v0.6 runtime: the `set_mission` interview-convergence tool
-(observe/plan only, worker-excluded, revision-tracked), backend error
-detail (`backend error: Type: message`), chat transcript persistence
-(`retainContextWhenHidden` + host `ChatHistory` + `chatReady` handshake +
-replay), and the header model picker (provider pill → model QuickPick).
+Pre-release (beta channel). The autonomous coding-agent release:
+
+- Recursive model→tool→result→model loop: single-shot turns replaced
+  with recursive rounds; per-round contract recompilation, full
+  validation chain every round (schema → normalization → semantics →
+  drift → judge → stance → typed coercion), harness tools
+  `task_add`/`task_update` (duplicate-safe, one-doing policy) and
+  evidence-gated `attempt_completion`, round budget (25), stall
+  warn-once-then-halt, cooperative cancellation.
+- New agent tools: `search_files`, `find_symbol`, `git_status`,
+  `git_diff`, `diagnostics`; `run_command` with Popen polling and
+  terminate→kill cancellation.
+- State-authoritative context compaction + hooks lifecycle.
+- Hash-chained journal: tamper-evident event log (mutation, reorder,
+  missing-middle, and malformed-line detection).
+- Layered skill loading: four-layer runtime (core/ceremony/mechanical/
+  reference), 53 skills.
+- Native tool application in the VS Code extension: delegated
+  WorkspaceEdit, native diff review, terminal integration, git
+  checkpoints/revert, approval batching.
+- Interview convergence: model-callable `set_mission` tool
+  (observe/plan only, worker-excluded, revision-tracked) so the
+  discovery interview records a mission instead of asking forever.
+- Chat transcript persistence: `retainContextWhenHidden` + host-side
+  `ChatHistory` (500 messages) + `chatReady` handshake with replay.
+- Header model picker: the provider pill opens a model QuickPick
+  (discovered models, manual entry, Models & Providers shortcut).
+- Backend error detail: fallbacks carry `Type: message`, not just the
+  exception type.
 
 ## 0.5.4 — header model picker (2026-09-25)
 
