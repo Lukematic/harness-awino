@@ -21,7 +21,7 @@ name: windows-gui-test
 
 on:
   push:
-    branches: [feature/bundled-python-050]
+    branches: [feature/bundled-python-050, claude/native-tools-auth-hotfix-bhsr45]
   workflow_dispatch:
 
 jobs:
@@ -73,7 +73,7 @@ jobs:
         # annotations are.
         working-directory: integrations/vscode/extension
         run: |
-          $files = @("harness","bedrock","connection_importer","markdown","streaming","python","pythonRecovery","tasksView","providerKeys","modelDiscovery","modelsPanel","setupShared","chatSetup","bundleSidecar","bundledPython","bundlePython","connectGuard","cspPlaceholders","vsixContents")
+          $files = @("harness","bedrock","connection_importer","markdown","harnessReply","streaming","python","pythonRecovery","tasksView","storiesView","providerKeys","modelDiscovery","modelsPanel","setupShared","chatSetup","bundleSidecar","bundledPython","bundlePython","connectGuard","cspPlaceholders","vsixContents")
           $failed = @()
           foreach ($f in $files) {
             Write-Host "===== test/$f.js ====="
@@ -133,3 +133,13 @@ jobs:
         with:
           name: windows-gui-proof
           path: proof/win_gui/
+
+      - name: Upload the tested VSIX
+        # The exact package the GUI proof installed, for manual testing
+        # before a tagged release (Actions run page -> Artifacts).
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: awino-vsix
+          path: integrations/vscode/extension/awino-loop-owner-*.vsix
+          if-no-files-found: warn
