@@ -239,12 +239,14 @@ def main():
     # <ext_dir>/<publisher>.<name>-<version>/.
     log("installing", a.vsix)
     import zipfile
-    ext_id = "lukematic.awino-loop-owner-0.5.0"
+    vsix_path = os.path.abspath(a.vsix)
+    with zipfile.ZipFile(vsix_path, "r") as z:
+        pkg = json.loads(z.read("extension/package.json").decode())
+    ext_id = "%s.%s-%s" % (pkg["publisher"], pkg["name"], pkg["version"])
     dest = os.path.join(ext_dir, ext_id)
     if os.path.isdir(dest):
         shutil.rmtree(dest, ignore_errors=True)
     os.makedirs(dest, exist_ok=True)
-    vsix_path = os.path.abspath(a.vsix)
     log(f"extracting VSIX to {dest}")
     with zipfile.ZipFile(vsix_path, "r") as z:
         for info in z.infolist():
