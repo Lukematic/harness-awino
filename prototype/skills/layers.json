@@ -1,0 +1,214 @@
+{
+  "code": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "code-review": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "completion-summary": {
+    "layer": "reference",
+    "route": "none"
+  },
+  "critical-thinking": {
+    "layer": "reference",
+    "route": "none"
+  },
+  "debug": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "decision-analysis": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "definition-of-done": {
+    "layer": "reference",
+    "route": "none"
+  },
+  "discovery": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "domain": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "dora-metrics": {
+    "layer": "reference",
+    "route": "none"
+  },
+  "durable-memory": {
+    "layer": "ceremony",
+    "route": "intent"
+  },
+  "explainer": {
+    "layer": "ceremony",
+    "route": "intent"
+  },
+  "incident-response": {
+    "layer": "ceremony",
+    "route": "ondemand"
+  },
+  "layered-loading": {
+    "layer": "reference",
+    "route": "none"
+  },
+  "lifecycle-sequence": {
+    "layer": "reference",
+    "route": "none"
+  },
+  "mission-definition": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "mode-ai-architect": {
+    "layer": "ceremony",
+    "route": "role"
+  },
+  "mode-ai-researcher": {
+    "layer": "ceremony",
+    "route": "role"
+  },
+  "mode-cybersecurity-engineer": {
+    "layer": "ceremony",
+    "route": "role"
+  },
+  "mode-forward-deployed-engineer": {
+    "layer": "ceremony",
+    "route": "role"
+  },
+  "mode-software-engineer": {
+    "layer": "ceremony",
+    "route": "role"
+  },
+  "osmani-adoption": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "osmani-adrs": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "osmani-api-design": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "osmani-cicd": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "osmani-code-review": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "osmani-constraints": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "osmani-doubt": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "osmani-failure-modes": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "osmani-idea-refine": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "osmani-observability": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "osmani-security": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "osmani-shipping": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "osmani-source-driven": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "osmani-tdd": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "project-bootstrap": {
+    "layer": "ceremony",
+    "route": "ondemand"
+  },
+  "repo": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "rigor-checkpoint": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "rigor-decomposition": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "rigor-distillation": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "rigor-entropy": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "rigor-interrogation": {
+    "layer": "ceremony",
+    "route": "ondemand"
+  },
+  "rigor-iteration": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "rigor-laws": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "rigor-pentagonal-audit": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "rigor-proof-cycles": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "rigor-scope": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "rigor-three-strike": {
+    "layer": "ceremony",
+    "route": "ondemand"
+  },
+  "rpi": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "testing": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "triage": {
+    "layer": "ceremony",
+    "route": "intent"
+  },
+  "verification": {
+    "layer": "ceremony",
+    "route": "phase"
+  },
+  "verify": {
+    "layer": "reference",
+    "route": "none"
+  }
+}

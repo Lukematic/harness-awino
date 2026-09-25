@@ -7,6 +7,27 @@ insight: not every task needs every skill. Phases are skipped only by
 explicit task-type determination, never by laziness; each track below states
 what it skips and why.
 
+The boundary rule: when a task sits on a tier boundary (trivial vs bugfix,
+bugfix vs full feature), state which tier you picked and WHY before
+proceeding — one sentence, journaled in the mission record. A tier picked
+silently is how a "trivial" fix ships a redesigned interface.
+
+## Track 0: Trivial
+
+Qualifies only when ALL hold: one file touched, fewer than 20 changed
+lines, no interface change (no signature, schema, config-shape, or
+caller-visible behavior change). Skips DEFINE and PLAN by explicit
+determination: a typo, a copy fix, a single constant — there is no design
+decision to make, so there is no spec to write and no approval to seek.
+- BUILD: make the fix; the prove-it pattern still applies at miniature
+  scale (`osmani-tdd` — reproduce, fix, re-run).
+- VERIFY: run the relevant check, not the ceremony around it (`testing`);
+  the exit code is the verdict.
+- REVIEW: the thin `code-review` checklist on the diff.
+- SHIP: `osmani-cicd` gates apply unchanged — the bugfix track's "no
+  'trivial fix' bypass" holds here too; `rigor-checkpoint` binary commit
+  gate; mission-close: `completion-summary`.
+
 ## Track 1: Full feature
 
 - DEFINE: discovery interview (`discovery`) states the problem and grills the
