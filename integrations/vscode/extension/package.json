@@ -86,6 +86,10 @@
         "title": "Awino: Reconnect Sidecar"
       },
       {
+        "command": "awino.reindex",
+        "title": "Awino: Rebuild Codebase Index"
+      },
+      {
         "command": "awino.resetOnboarding",
         "title": "Awino: Reset Onboarding"
       },

@@ -1107,7 +1107,7 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     } else if (!chatConnected) {
       input.placeholder = "Awino is not connected — check the status bar";
     } else {
-      input.placeholder = "Message Awino…";
+      input.placeholder = "Message Awino… (tip: @codebase <symbol> searches your code)";
     }
   }
 

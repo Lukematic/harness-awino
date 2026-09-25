@@ -41,6 +41,7 @@ import loop as loop_module
 from backends import EchoBackend, OllamaBackend, ScriptedBackend
 from contract import MODES, compile_contract as _real_compile_contract
 from contract import parse_criteria
+from indexer import CodeIndex
 from judges import build_judge_panel
 from loop import Loop
 from skills import SkillIntegrityError
@@ -82,6 +83,10 @@ def _apply_sidecar_tool_profile() -> None:
         "consequential": False,
         "args": ["pattern", "path", "glob"],
     }
+    TOOL_DEFS["index_query"] = {
+        "consequential": False,  # read-only by construction: the sandbox
+        "args": ["op", "query", "path", "limit"],  # method never writes
+    }
     TOOL_DEFS["run_command"] = {
         "consequential": True,  # sidecar deviation: approval-gated
         "args": ["cmd", "timeout"],
@@ -89,6 +94,8 @@ def _apply_sidecar_tool_profile() -> None:
     for _mode in MODES.values():
         if "search_files" not in _mode["tools"]:
             _mode["tools"].append("search_files")
+        if "index_query" not in _mode["tools"]:
+            _mode["tools"].append("index_query")
     # The model must know about search_files; the contract block already
     # lists offered tools per mode, this keeps the turn system prompt
     # consistent.
@@ -98,7 +105,12 @@ def _apply_sidecar_tool_profile() -> None:
         "propose only when a plan exists and was approved).",
         'Available tools: read_file {"path"}, list_dir {"path"} (relative dir, '
         '"" for root), search_files {"pattern" (regex), "path" (relative dir, '
-        'optional), "glob" (filename glob, optional)}, run_command {"cmd"} '
+        'optional), "glob" (filename glob, optional)}, index_query {"op": '
+        'where_defined|who_calls|search_symbols|related_files, "query" '
+        '(symbol/search text), "path" (workspace-relative file, for '
+        'related_files), "limit"} (read-only codebase index — use it to '
+        'find where things are defined and what references them), '
+        'run_command {"cmd"} '
         "(consequential: needs operator approval), write_file "
         '{"path", "content"} (consequential: needs operator approval; propose '
         "only when a plan exists and was approved).",
@@ -156,6 +168,48 @@ class WorkspaceSandbox(Sandbox):
                         return {"pattern": pattern, "hits": hits,
                                 "truncated": True}
         return {"pattern": pattern, "hits": hits, "truncated": False}
+
+    def index_query(self, op: str, query: str = "", path: str = "",
+                    limit: int = 25) -> dict:
+        """Read-only codebase index queries. The model can ask about the
+        codebase; it can NEVER modify the index — this method only calls
+        CodeIndex query methods. Index writes happen exclusively via the
+        indexer's build/rebuild_file path (the sidecar's index_rebuild
+        command, driven by the extension's file watcher).
+
+        op: where_defined | who_calls | search_symbols | related_files.
+        query: the symbol or search text. path: workspace-relative file
+        (for related_files). limit: max rows (1..100).
+        """
+        try:
+            limit = max(1, min(100, int(limit)))
+        except (TypeError, ValueError):
+            return {"error": "limit must be an int"}
+        if op not in ("where_defined", "who_calls", "search_symbols",
+                      "related_files"):
+            return {"error": f"unknown index op {op!r}"}
+        if op == "related_files" and not path:
+            return {"error": "related_files needs path"}
+        if op != "related_files" and not query:
+            return {"error": f"{op} needs query"}
+        try:
+            idx = CodeIndex(self.root)
+            if not idx.db_path.is_file():
+                return {"error": "index not built yet — the client builds"
+                                 " it via the index_rebuild command"}
+            if op == "where_defined":
+                return {"op": op, "query": query,
+                        "results": idx.where_defined(query, limit)}
+            if op == "who_calls":
+                return {"op": op, "query": query,
+                        "results": idx.who_calls(query, limit)}
+            if op == "search_symbols":
+                return {"op": op, "query": query,
+                        "results": idx.search_symbols(query, limit)}
+            return {"op": op, "path": path,
+                    "results": idx.related_files(path, limit)}
+        except Exception as e:  # noqa: BLE001 - tool error, not a crash
+            return {"error": f"{type(e).__name__}: {e}"}
 
 
 # ---------------------------------------------------------------------------
@@ -2792,6 +2846,9 @@ class Sidecar:
             "persona_assume": self._cmd_persona_assume,
             "persona_dismiss": self._cmd_persona_dismiss,
             "env_switch": self._cmd_env_switch,
+            "index_status": self._cmd_index_status,
+            "index_rebuild": self._cmd_index_rebuild,
+            "index_query": self._cmd_index_query,
         }
         fn = handlers.get(name)
         if fn is None:
@@ -2820,6 +2877,68 @@ class Sidecar:
         self._pending_says = []
         _emit({"event": "command_result", "name": name, "id": req_id, "ok": ok,
                "result": result})
+
+    # ------------------------------------------------------- codebase index
+    def _code_index(self) -> CodeIndex:
+        return CodeIndex(self.workspace)
+
+    def _cmd_index_status(self, args: dict) -> dict:
+        """Read-only: index health for the status bar. Auto-builds on
+        first call so the feature just works on a fresh workspace."""
+        idx = self._code_index()
+        st = idx.status()
+        if not st["indexed"]:
+            st = idx.build()
+            st["built"] = True
+        return {"status": "ok", "index": st}
+
+    def _cmd_index_rebuild(self, args: dict) -> dict:
+        """Rebuild the index. Incremental by default (only changed files
+        are re-extracted); force=true re-extracts everything; paths=[...]
+        rebuilds just those workspace-relative files."""
+        idx = self._code_index()
+        force = bool(args.get("force"))
+        paths = args.get("paths")
+        if isinstance(paths, list) and paths:
+            out = []
+            for p in paths:
+                if not isinstance(p, str):
+                    return {"status": "error",
+                            "said": "paths must be strings"}
+                out.append(idx.rebuild_file(p))
+            # keep the symbol-set hash honest after targeted rebuilds
+            return {"status": "ok", "files": out,
+                    "index": idx.status()}
+        st = idx.build(force=force)
+        return {"status": "ok", "index": st}
+
+    def _cmd_index_query(self, args: dict) -> dict:
+        """Read-only index queries for clients (@codebase). Same surface
+        as the index_query turn tool."""
+        op = args.get("op")
+        query = args.get("query") or ""
+        path = args.get("path") or ""
+        limit = args.get("limit", 25)
+        if op not in ("where_defined", "who_calls", "search_symbols",
+                      "related_files"):
+            return {"status": "error",
+                    "said": f"unknown index op {op!r}"}
+        try:
+            limit = max(1, min(100, int(limit)))
+        except (TypeError, ValueError):
+            return {"status": "error", "said": "limit must be an int"}
+        idx = self._code_index()
+        if not idx.db_path.is_file():
+            idx.build()
+        if op == "where_defined":
+            results = idx.where_defined(str(query), limit)
+        elif op == "who_calls":
+            results = idx.who_calls(str(query), limit)
+        elif op == "search_symbols":
+            results = idx.search_symbols(str(query), limit)
+        else:
+            results = idx.related_files(str(path), limit)
+        return {"status": "ok", "op": op, "results": results}
 
     def _cmd_mission(self, args: dict) -> dict:
         text = args.get("text", "")

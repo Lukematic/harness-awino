@@ -38,6 +38,13 @@ import {
   ImportFinding,
 } from "./connection_importer";
 import {
+  initIndexing,
+  onIndexConnected,
+  onIndexDisconnected,
+  reindexNow,
+  expandCodebaseMentions,
+} from "./indexing";
+import {
   QueryFn,
   ContractView,
   JournalView,
@@ -557,9 +564,13 @@ async function handleChatMessage(
     return;
   }
   switch (m.type) {
-    case "send":
-      session.client.userMessage(String(m.text ?? ""));
+    case "send": {
+      // @codebase mentions: resolve against the local index and inject
+      // the hits as context before the turn starts.
+      const expanded = await expandCodebaseMentions(String(m.text ?? ""));
+      session.client.userMessage(expanded);
       break;
+    }
     case "stop":
       session.client.cancel();
       break;
@@ -660,6 +671,7 @@ async function onSidecarEvent(ev: SidecarEvent): Promise<void> {
       await postSessionResume(); // session-focus summary on (re)connect
       refreshViews(); // populate tree views on connect, not just after the first turn
       void refreshModesCache(); // Spec 1.4: header mode selector options
+      onIndexConnected(); // codebase index: watcher + initial build
       break;
     case "turn_result": {
       const result = (ev["result"] ?? {}) as Record<string, unknown>;
@@ -734,6 +746,7 @@ async function onSidecarEvent(ev: SidecarEvent): Promise<void> {
         });
         waiters = [];
         session = null;
+        onIndexDisconnected(); // codebase index: stop watcher, hide status
         publishBinding(); // Spec 4.2: disconnected binding to all surfaces
         postChatState();
         postToChat({ type: "event", payload: ev });
@@ -1146,6 +1159,7 @@ async function doConnectInner(
     log(`connect failed: ${detail}`);
     postChatState({ connected: false, connectError: detail });
     session = null;
+    onIndexDisconnected(); // never show a live index bar while disconnected
     updateStatusBar();
     if (isInterpreterNotFound(msg)) {
       // Missing interpreter (ENOENT): offer the Locate-Python recovery
@@ -1212,6 +1226,7 @@ async function disconnect(): Promise<void> {
     }
     session = null;
   }
+  onIndexDisconnected(); // explicit disconnect: stop watcher, hide status
   // Spec 1.5: awino:connected must go false on every disconnect path.
   updateStatusBar();
 }
@@ -1315,6 +1330,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
     context.subscriptions.push(vscode.commands.registerCommand(id, (...a) => fn(...a)));
 
   reg("awino.reconnect", () => reconnect(context));
+  reg("awino.reindex", () => reindexNow(false));
   // Spec 2.4: Reset Onboarding — clears the onboarded flag so the wizard
   // runs again on the next chat state push. Does not touch provider keys
   // (SecretStorage) or settings; it only re-opens the first-run flow.
@@ -2186,6 +2202,8 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(statusBar);
   statusBar.show();
   updateStatusBar();
+
+  initIndexing(context, queryFn); // codebase index: watcher + status bar
 
   registerCommands(context);
 
