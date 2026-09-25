@@ -187,6 +187,27 @@ TOOL_SCHEMAS: dict[str, dict] = {
             "required": ["text", "criteria"],
         },
     },
+    "stretch_goal": {
+        "description": ("Pitch one stretch goal beyond what the user asked "
+                        "(the Bugatti), in NABC form, broken into 3-5 steps. "
+                        "It is parked with a revisit date and never built "
+                        "unless the user picks it up. Use it when you see a "
+                        "better or bigger idea worth their time."),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Short name for the idea."},
+                "need": {"type": "string", "description": "Need: the problem or opportunity it addresses."},
+                "approach": {"type": "string", "description": "Approach: how it would work, briefly."},
+                "benefits": {"type": "string", "description": "Benefits: what the user or project gains, concretely."},
+                "competition": {"type": "string", "description": "Competition: alternatives and why this beats them."},
+                "steps": {"type": "string", "description": "3-5 steps, one per line: title | success criterion | failure criterion."},
+                "revisit_on": {"type": "string", "description": "Optional revisit date YYYY-MM-DD; default 30 days."},
+            },
+            "required": ["title", "need", "approach", "benefits",
+                         "competition", "steps"],
+        },
+    },
     "story_plan": {
         "description": ("Record the story plan you agreed with the user. Honda "
                         "first: the committed, working scope is the "

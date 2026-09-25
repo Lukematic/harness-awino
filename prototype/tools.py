@@ -41,6 +41,9 @@ TOOL_DEFS = {
     # HARNESS_TOOLS (those are offered in every mode).
     "set_mission": {"consequential": False, "args": ["text", "criteria"]},
     # Harness-owned story planner (observe/plan only, like set_mission).
+    "stretch_goal": {"consequential": False,
+                     "args": ["title", "need", "approach", "benefits",
+                              "competition", "steps"]},
     "story_plan": {"consequential": False,
                    "args": ["title", "breakdown", "surveyed", "user_guidance",
                             "proposal", "steps", "bugatti_brief"]},

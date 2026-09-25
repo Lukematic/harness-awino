@@ -1570,7 +1570,9 @@ BUILTIN_MODES: list[dict] = [
          "no tool calls that change state. Honda first: recommend the "
          "smallest scope that works; pitch the Bugatti in two sentences "
          "and never build it unasked. When the user agrees, call "
-         "story_plan to record it."),
+         "story_plan to record it. If you see a bigger idea worth their "
+         "time, pitch it with stretch_goal (Need, Approach, Benefits, "
+         "Competition, 3-5 steps) — it is parked, not built."),
      "tool_policy": ["read_file", "list_dir", "search_files"],
      "sampling": {"temperature": 0.2}},
     {"id": "architect", "label": "Architect",

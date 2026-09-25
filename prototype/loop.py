@@ -1374,6 +1374,69 @@ class Loop:
         return {"ok": True, "story_id": story_id,
                 "dag_seeded": res.get("dag_seeded", 0), "said": said}
 
+    def _harness_stretch_goal(self, **args) -> dict:
+        """Model-callable stretch-goal pitch (T17): Need, Approach,
+        Benefits, Competition plus 3-5 steps with success and failure
+        criteria. Filed as a parked idea with a revisit date — pitched,
+        never built unasked. Workers are refused."""
+        if self.state.snapshot.get("worker_id"):
+            return {"error": "stretch_goal refused: workers do not pitch"}
+        reg = getattr(self, "registry", None)
+        if reg is None:
+            return {"error": "stretch_goal needs a project registry — "
+                             "set_mission first"}
+        from story import (StoryStore, _normalize_steps, _render_steps_md,
+                           render_story_md, doing_stories)
+
+        def arg(key: str) -> str:
+            v = args.get(key, "")
+            return v.strip() if isinstance(v, str) else ""
+
+        missing = [k for k in ("title", "need", "approach", "benefits",
+                               "competition") if not arg(k)]
+        if missing:
+            return {"error": f"stretch_goal needs every NABC part; missing: "
+                             f"{', '.join(missing)}"}
+        steps = []
+        for i, line in enumerate(l for l in arg("steps").splitlines()
+                                 if l.strip()):
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) != 3:
+                return {"error": f"stretch_goal step {i + 1} must be "
+                                 f"'title | success | failure'"}
+            steps.append({"title": re.sub(r"^\d+[.)]\s*", "", parts[0]),
+                          "success": parts[1], "failure": parts[2]})
+        if not 3 <= len(steps) <= 5:
+            return {"error": "stretch_goal needs 3 to 5 steps, each "
+                             "'title | success | failure'"}
+        try:
+            steps = _normalize_steps(steps)
+        except ValueError as ex:
+            return {"error": f"stretch_goal refused: {ex}"}
+        awd = reg.awino_dir
+        store = StoryStore(awd)
+        store.ensure()
+        doing = doing_stories(awd)
+        pitch = (f"**Need.** {arg('need')}\n\n**Approach.** {arg('approach')}"
+                 f"\n\n**Benefits.** {arg('benefits')}\n\n"
+                 f"**Competition.** {arg('competition')}\n\n"
+                 + _render_steps_md(steps))
+        fields = {"status": "parked", "problem": arg("need"),
+                  "approach": pitch, "steps": steps,
+                  "pitched_from": doing[0]["id"] if doing else None}
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", arg("revisit_on")):
+            fields["revisit_on"] = arg("revisit_on")
+        story = store.create(arg("title"), type="spike", **fields)
+        render_story_md(awd)
+        self.state.record("stretch_goal_pitched",
+                          {"story_id": story["id"], "title": story["title"],
+                           "revisit_on": story["revisit_on"]})
+        return {"ok": True, "story_id": story["id"],
+                "revisit_on": story["revisit_on"],
+                "said": (f"Pitched stretch goal '{story['title']}' — parked "
+                         f"until {story['revisit_on']}. It is not built "
+                         f"unless you pick it up.")}
+
     def _intercept_harness_calls(self, turn_id: str, turn_no: int,
                                  round_no: int, calls: list[dict]):
         """Split harness calls out of a validated round.
@@ -2307,6 +2370,8 @@ class Loop:
             return self._harness_set_mission
         if tool_name == "story_plan":
             return self._harness_story_plan
+        if tool_name == "stretch_goal":
+            return self._harness_stretch_goal
         if self.delegation is not None:
             fn = self.delegation.tool_fn(tool_name)
             if fn is not None:
@@ -3614,7 +3679,8 @@ class Loop:
         # tool-level refusal in _harness_set_mission).
         parent_tools = [t for t in
                         list(MODES[parent_mode]["tools"]) + list(HARNESS_TOOLS)
-                        if t not in ("set_mission", "story_plan")]
+                        if t not in ("set_mission", "story_plan",
+                                     "stretch_goal")]
         self.state.record(
             "fanout_started",
             {"objective": objective,

@@ -22,7 +22,8 @@ MODES = {
         "tools": ["read_file", "list_dir", "search_files", "find_symbol",
                   "git_status", "git_diff", "diagnostics",
                   # Hotfix port (0.5.3): interview-convergence tool.
-                  "set_mission", "story_plan"],
+                  "set_mission", "story_plan",
+                  "stretch_goal"],
         "consequential": [],
         "desc": "Read-only. Questions, teaching, and exploration with no mission.",
     },
@@ -30,7 +31,8 @@ MODES = {
         "tools": ["read_file", "list_dir", "search_files", "find_symbol",
                   "git_status", "git_diff", "diagnostics",
                   # Hotfix port (0.5.3): interview-convergence tool.
-                  "set_mission", "story_plan"],
+                  "set_mission", "story_plan",
+                  "stretch_goal"],
         "consequential": [],
         "desc": "Read-only planning. No edits on this floor.",
     },
@@ -53,7 +55,7 @@ MODES = {
     },
     "ship": {
         "tools": ["read_file", "list_dir", "search_files", "find_symbol",
-                  "git_status", "git_diff", "diagnostics"],
+                  "git_status", "git_diff", "diagnostics", "stretch_goal"],
         "consequential": [],
         "desc": "Read-only. Deliver evidence; completion only on verification.",
     },

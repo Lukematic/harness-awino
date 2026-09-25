@@ -72,6 +72,12 @@ Done on `claude/native-tools-auth-hotfix-bhsr45` (tests in `tests/test_tool_prom
   reason, and falls back to the router when nothing is declared. The contract lists the
   menu outside the 600-word core budget. `tests/test_model_stance.py`.
 
+- **T17 done.** `stretch_goal` tool (observe, plan, ship; workers refused): Need,
+  Approach, Benefits, Competition plus 3–5 steps with success and failure criteria;
+  filed as a parked spike with a revisit date (default 30 days), shown in the Stories
+  panel and on the session-start card when due. The planner role is told to use it.
+  `tests/test_story.py::StretchGoalToolTest`.
+
 Everything else below is still open.
 
 **Build order (agreed 09-26):** T4 one memory → T10 stories + brag board in VS Code →

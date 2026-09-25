@@ -981,3 +981,65 @@ class StoryPlanToolTest(StoryTestBase):
         loop.state.snapshot["worker_id"] = "w-1"
         r = loop._resolve_tool_fn("story_plan")(**self.ARGS)
         self.assertIn("refused", r.get("error", ""))
+
+
+class StretchGoalToolTest(StoryTestBase):
+    """T17: the harness pitches a stretch goal in NABC form; it is parked
+    with a revisit date and never built unasked."""
+
+    ARGS = {
+        "title": "Deep health checks",
+        "need": "A liveness check says nothing about the database.",
+        "approach": "Probe each dependency with a latency budget.",
+        "benefits": "Load balancers drop sick instances before users notice.",
+        "competition": "Vendor APM agents: heavier, paid, and opaque.",
+        "steps": ("Probe the database | returns within 50 ms | timeout\n"
+                  "Probe the cache | returns within 10 ms | timeout\n"
+                  "Aggregate status | one JSON verdict | partial output"),
+    }
+
+    def _loop(self):
+        from registry import Registry
+        loop, home = make_loop()
+        awd = Path(home) / ".awino"
+        Registry(awd).ensure()
+        loop.registry = Registry(awd)
+        loop.set_mission("Health endpoint", ["manual"])
+        return loop, awd
+
+    def test_pitch_is_parked_with_revisit_date(self):
+        loop, awd = self._loop()
+        r = loop._resolve_tool_fn("stretch_goal")(**self.ARGS)
+        self.assertTrue(r.get("ok"), r)
+        st = StoryStore(awd).get(r["story_id"])
+        self.assertEqual((st["status"], st["type"]), ("parked", "spike"))
+        self.assertTrue(st["revisit_on"])
+        for part in ("**Need.**", "**Approach.**", "**Benefits.**",
+                     "**Competition.**"):
+            self.assertIn(part, st["approach"])
+        self.assertEqual(len(st["steps"]), 3)
+        self.assertIn("Deep health checks",
+                      (awd.parent / "STORY.md").read_text())
+        self.assertTrue([e for e in loop.state.events
+                         if e["type"] == "stretch_goal_pitched"])
+
+    def test_every_nabc_part_and_3_to_5_steps_required(self):
+        loop, _ = self._loop()
+        fn = loop._resolve_tool_fn("stretch_goal")
+        r = fn(**dict(self.ARGS, competition=""))
+        self.assertIn("competition", r.get("error", ""))
+        r = fn(**dict(self.ARGS, steps="Only one | ok | bad"))
+        self.assertIn("3 to 5 steps", r.get("error", ""))
+        r = fn(**dict(self.ARGS, steps="a | b\nc | d | e\nf | g | h"))
+        self.assertIn("title | success | failure", r.get("error", ""))
+
+    def test_custom_revisit_date_and_offered_modes(self):
+        from contract import MODES
+        loop, awd = self._loop()
+        r = loop._resolve_tool_fn("stretch_goal")(
+            **dict(self.ARGS, revisit_on="2027-01-15"))
+        self.assertEqual(r["revisit_on"], "2027-01-15")
+        for mode in ("observe", "plan", "ship"):
+            self.assertIn("stretch_goal", MODES[mode]["tools"])
+        for mode in ("build", "verify"):
+            self.assertNotIn("stretch_goal", MODES[mode]["tools"])
