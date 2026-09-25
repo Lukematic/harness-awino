@@ -1029,13 +1029,26 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
         html += "</div>";
       }
       html += '<div class="btnrow">' +
-        '<button data-act="approve">Approve</button>' +
-        '<button data-act="deny" class="secondary">Deny</button></div></div>';
+        '<button data-act="approve">Approve</button>';
+      // Native diff review: open the proposed change in a vscode.diff
+      // editor. The decision stays on the card — this button never
+      // approves or denies.
+      var canDiff = (a.tool === "write_file" && typeof a.args.content === "string") ||
+        (a.tool === "patch_file" && typeof a.proposed_content === "string");
+      if (canDiff) {
+        html += '<button data-act="viewDiff" class="secondary">View diff</button>';
+      }
+      html += '<button data-act="deny" class="secondary">Deny</button></div></div>';
       d.innerHTML = html;
       AwinoMarkdown.wireCopyButtons(d);
       d.querySelectorAll("button").forEach(function (b) {
         b.addEventListener("click", function () {
-          vscode.postMessage({ type: "approve", id: a.id, decision: b.getAttribute("data-act") });
+          var act = b.getAttribute("data-act");
+          if (act === "viewDiff") {
+            vscode.postMessage({ type: "viewDiff", id: a.id });
+            return;
+          }
+          vscode.postMessage({ type: "approve", id: a.id, decision: act });
           b.disabled = true;
           const spin = mk("span", "bead working");
           spin.title = "waiting for sidecar";

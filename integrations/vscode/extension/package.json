@@ -34,6 +34,10 @@
         "title": "Awino: Rollback"
       },
       {
+        "command": "awino.revertCheckpoint",
+        "title": "Awino: Revert Last Checkpoint (undo Awino's writes)"
+      },
+      {
         "command": "awino.housekeep",
         "title": "Awino: Housekeep Project"
       },
@@ -322,7 +326,7 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
-    "test": "node ./test/harness.js && node ./test/bedrock.js && node ./test/connection_importer.js && node ./test/markdown.js && node ./test/streaming.js && node ./test/python.js && node ./test/pythonRecovery.js && node ./test/tasksView.js && node ./test/providerKeys.js && node ./test/modelDiscovery.js && node ./test/modelsPanel.js && node ./test/setupShared.js && node ./test/chatSetup.js && node ./test/bundleSidecar.js && node ./test/bundledPython.js && node ./test/bundlePython.js && node ./test/connectGuard.js && node ./test/cspPlaceholders.js && node ./test/vsixContents.js && node ./test/rigor.js",
+    "test": "node ./test/harness.js && node ./test/delegatedApply.js && node ./test/bedrock.js && node ./test/connection_importer.js && node ./test/markdown.js && node ./test/streaming.js && node ./test/python.js && node ./test/pythonRecovery.js && node ./test/tasksView.js && node ./test/providerKeys.js && node ./test/modelDiscovery.js && node ./test/modelsPanel.js && node ./test/setupShared.js && node ./test/chatSetup.js && node ./test/bundleSidecar.js && node ./test/bundledPython.js && node ./test/bundlePython.js && node ./test/connectGuard.js && node ./test/cspPlaceholders.js && node ./test/vsixContents.js && node ./test/rigor.js",
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run compile && node ./scripts/bundle-sidecar.js && node ./scripts/fetch-python-runtimes.js"
   },

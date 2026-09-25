@@ -333,6 +333,12 @@ class Sandbox:
         """Phase B: {path: sha256} for every file this sandbox wrote."""
         return dict(self._manifest)
 
+    def note_external_write(self, path: str, digest: str) -> None:
+        """Native tool application: the extension wrote these bytes, not
+        this process. Record the sha256 in the tamper manifest so
+        verify_manifest stays honest about delegated writes."""
+        self._manifest[path] = digest
+
     def verify_manifest(self) -> tuple[bool, list[str]]:
         """Phase B: re-hash files on disk; report external tampering.
 
