@@ -53,8 +53,11 @@ FLOORS = {
         # Layered rigor loading: distillation (spec discipline) + laws (Layer 1
         # guardrails). Interrogation stays available via explicit skill_add; the
         # discovery grill covers routine questioning.
+        # Osmani: adoption (greenfield vs brownfield path selection happens
+        # when the mission starts — the discipline follows the path).
         "skills": ["mission-definition", "discovery",
-                   "rigor-distillation", "rigor-laws"],
+                   "rigor-distillation", "rigor-laws",
+                   "osmani-adoption"],
         "mode": "plan",
         "exit": "contract drafted → human approves → PLAN",
     },
@@ -63,8 +66,11 @@ FLOORS = {
         "stance": ["first-principles"],
         # Rigor: decomposition (strategic task breakdown) + scope (guardrail —
         # declare scope before BUILD touches anything).
+        # Osmani: constraints (decide the quality bar once, at contract
+        # approval; enforce it everywhere after).
         "skills": ["decision-analysis", "domain",
-                   "rigor-decomposition", "rigor-scope"],
+                   "rigor-decomposition", "rigor-scope",
+                   "osmani-constraints"],
         "mode": "plan",
         "exit": "contract approved (with SCOPE) → BUILD",
     },
@@ -74,8 +80,11 @@ FLOORS = {
         # Rigor: iteration (Reason-Act-Observe convergent loop) + proof-cycles
         # (TDD: red-green-refactor). three-strike is injected by the harness
         # only when the doom-loop circuit breaker fires — never floor-routed.
+        # Osmani: tdd (test-writing discipline around the proof-cycles core) +
+        # security (threat-model-first as the code is written).
         "skills": ["repo", "code",
-                   "rigor-iteration", "rigor-proof-cycles"],
+                   "rigor-iteration", "rigor-proof-cycles",
+                   "osmani-tdd", "osmani-security"],
         "mode": "build",
         "exit": "diff produced → VERIFY",
     },
@@ -92,7 +101,11 @@ FLOORS = {
         "autonomy": "bounded",
         "stance": ["premortem"],
         # Rigor: entropy reduction pass before SHIP.
-        "skills": ["code-review", "rigor-entropy"],
+        # Osmani: code-review (five-axis diff review with severity labels) +
+        # security (audit the diff against the red flags; zero unresolved
+        # Critical findings is the PASS bar).
+        "skills": ["code-review", "rigor-entropy",
+                   "osmani-code-review", "osmani-security"],
         "mode": "verify",
         "exit": "no regressions/dead code/side effects → SHIP",
     },
@@ -100,7 +113,10 @@ FLOORS = {
         "autonomy": "supervised",
         "stance": ["premortem"],
         # Rigor: checkpoint (state snapshot + known-good commit before release).
-        "skills": ["verification", "rigor-checkpoint"],
+        # Osmani: shipping (production-readiness gates: pre-launch checklist,
+        # rollback plan before deploy, staged rollout, error-budget gate).
+        "skills": ["verification", "rigor-checkpoint",
+                   "osmani-shipping"],
         "mode": "ship",
         "exit": "completion claimed only on evidence",
     },
