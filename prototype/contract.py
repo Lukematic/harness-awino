@@ -28,10 +28,11 @@ MODES = {
         "desc": "Read-only planning. No edits on this floor.",
     },
     "build": {
-        "tools": ["read_file", "list_dir", "write_file"],
-        "consequential": ["write_file"],
-        "desc": ("Build mode. write_file is consequential (needs approval) and "
-                 "additionally bounded by the approved SCOPE file list."),
+        "tools": ["read_file", "list_dir", "write_file", "patch_file"],
+        "consequential": ["write_file", "patch_file"],
+        "desc": ("Build mode. write_file and patch_file are consequential "
+                 "(need approval) and additionally bounded by the approved "
+                 "SCOPE file list."),
     },
     "verify": {
         "tools": ["read_file", "list_dir", "run_command"],

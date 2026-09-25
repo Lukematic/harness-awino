@@ -175,7 +175,7 @@ def check_pre_execute(state, contract: dict, turn: dict, *,
                 f"consequential tool {name!r} has no matching approval "
                 f"(exact arguments + current mission revision); execution "
                 f"refused"))
-        if name == "write_file":
+        if name in ("write_file", "patch_file"):
             scope = contract["scope"]
             path = args.get("path", "")
             if scope is not None and path not in scope:

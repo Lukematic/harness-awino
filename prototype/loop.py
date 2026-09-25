@@ -1105,13 +1105,13 @@ class Loop:
                             f"(offered: {offered})")
         # Floor binding: writes are BUILD-floor only, inside the approved SCOPE.
         for c in turn.get("tool_calls", []):
-            if c.get("name") == "write_file":
+            if c.get("name") in ("write_file", "patch_file"):
                 path = c.get("args", {}).get("path", "")
                 if s["phase"] != "BUILD":
-                    errs.append(f"write_file only permitted on the BUILD floor "
+                    errs.append(f"{c['name']} only permitted on the BUILD floor "
                                 f"(current: {s['phase']})")
                 elif not s["contract_approved"] or s["scope"] is None:
-                    errs.append("write_file requires an approved contract with "
+                    errs.append(f"{c['name']} requires an approved contract with "
                                 "SCOPE (/approve-contract <files>)")
                 elif path not in (s["scope"] or []):
                     errs.append(f"edit outside approved SCOPE {s['scope']}: "
@@ -1200,7 +1200,8 @@ class Loop:
         # its snapshot) may only touch files within its owned_files scope.
         scope = self.state.snapshot.get("scope")
         worker_id = self.state.snapshot.get("worker_id")
-        if worker_id and scope and tool_name in ("write_file", "read_file"):
+        if worker_id and scope and tool_name in ("write_file", "patch_file",
+                                                       "read_file"):
             path = (args.get("path") or "")
             # owned_files are prefixes like "docs/"; path must start with one
             if not any(path == p.rstrip("/") or path.startswith(p)
@@ -1243,6 +1244,19 @@ class Loop:
             result = fn(**args)
         except Exception as ex:  # noqa: BLE001 - tool errors are data
             result = {"error": f"{type(ex).__name__}: {ex}"}
+        if tool_name == "patch_file":
+            # Dedicated journal entry: the applied patch or the named
+            # refusal, so the journal shows patch outcomes explicitly
+            # rather than only inside generic tool_result payloads.
+            self.state.record(
+                "patch_applied" if "error" not in result else "patch_refused",
+                {"call_id": call_id, "path": args.get("path"),
+                 "hunks_applied": result.get("hunks_applied", 0),
+                 "digest": result.get("digest"),
+                 "error": result.get("error"),
+                 "error_code": result.get("error_code"),
+                 "idem_key": idem_key,
+                 "mission_rev": self.state.snapshot["mission_revision"]})
         self.state.record("tool_result",
                           {"call_id": call_id, "tool": tool_name, "args": args,
                            "idem_key": idem_key, "result": result,
@@ -1386,7 +1400,7 @@ class Loop:
     def _has_write_effects(self) -> bool:
         rev = self.state.snapshot["mission_revision"]
         return any(e["type"] == "tool_result"
-                   and e["data"].get("tool") == "write_file"
+                   and e["data"].get("tool") in ("write_file", "patch_file")
                    and not e["data"].get("result", {}).get("error")
                    and not e["data"].get("reused")
                    and e["data"].get("mission_rev") == rev
@@ -1575,7 +1589,7 @@ class Loop:
         if resolution == "already_applied":
             # Verify rather than assume: re-read the effect where possible.
             result = {"verified": True, "note": "operator confirmed effect already applied"}
-            if tool == "write_file":
+            if tool in ("write_file", "patch_file"):
                 try:
                     result["digest"] = self.sandbox.read_file(args["path"]).get("digest")
                 except Exception:  # noqa: BLE001
