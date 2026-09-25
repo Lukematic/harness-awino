@@ -7,9 +7,21 @@ The snapshot is *derived* from the event log: every mutation goes through
 record() -> apply_event(). Crash recovery replays the log and reconciles the
 tail: a tool_called with no matching tool_result is an unknown effect — the
 loop pauses for inspection instead of blindly replaying it.
+
+Tamper evidence (journal chaining): every event recorded after this feature
+lands carries ``prev_hash`` and ``hash``. ``prev_hash`` is the SHA-256 of the
+canonical JSON of the previous event (``"GENESIS"`` for the first event);
+``hash`` is the SHA-256 of the canonical JSON of the event itself including
+``prev_hash``. ``verify_chain()`` walks ``events.jsonl`` and reports the
+first bad ``seq``. Events written before chaining existed carry no hash
+fields and are allowed as a legacy prefix so existing journals keep
+loading; each hashed event commits to its immediate predecessor's exact
+bytes, so only the pre-chain predecessor (not earlier legacy history) is
+tamper-evident.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -19,6 +31,18 @@ from pathlib import Path
 from secret_redaction import redact, redact_text
 
 SNAPSHOT_VERSION = 1
+
+# Journal chaining: hash-chain tamper evidence for the event log.
+CHAIN_VERSION = 1
+GENESIS_PREV_HASH = "GENESIS"
+
+
+def _canonical_bytes(ev: dict) -> bytes:
+    """Canonical bytes of an event for hashing: sorted keys, compact
+    separators, UTF-8. Key order and whitespace are normalized so the
+    digest is stable across record-time and verify-time computation."""
+    return json.dumps(ev, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=True).encode("utf-8")
 
 
 def _now() -> float:
@@ -356,8 +380,16 @@ class ProjectState:
         # compaction, turn history) only ever sees the redacted form.
         # redact() returns a new structure; the caller's dict is untouched.
         redacted_data = redact(data or {})
+        if self.events:
+            prev_hash = hashlib.sha256(
+                _canonical_bytes(self.events[-1])).hexdigest()
+        else:
+            prev_hash = GENESIS_PREV_HASH
         ev = {"seq": len(self.events), "id": _uid(), "ts": _now(),
-              "type": etype, "data": redacted_data}
+              "type": etype, "data": redacted_data, "prev_hash": prev_hash}
+        # The hash commits to the event including prev_hash (but not to
+        # itself — it is computed before the "hash" key exists).
+        ev["hash"] = hashlib.sha256(_canonical_bytes(ev)).hexdigest()
         line = (json.dumps(ev) + "\n").encode()
         with open(self.events_path, "ab") as f:
             f.write(line)
@@ -367,7 +399,54 @@ class ProjectState:
         apply_event(self.snapshot, ev)
         return ev
 
+    def verify_chain(self) -> tuple[bool, int | None]:
+        """Verify the journal hash chain by walking events.jsonl.
+
+        Returns (True, None) when every hashed event links correctly to
+        its predecessor. Returns (False, seq) naming the first bad
+        event's seq when a prev_hash does not match the predecessor's
+        bytes, a hash does not match the event's own bytes (payload
+        modified), or a line is not valid JSON (no seq available ->
+        None). Events without hash fields (written before chaining)
+        are allowed as a legacy prefix; each hashed event still commits
+        to its immediate predecessor's exact bytes, so tampering with
+        the pre-chain predecessor breaks the first hashed link, while
+        earlier legacy history is not tamper-evident.
+        """
+        if not self.events_path.exists():
+            return (True, None)
+        lines = self.events_path.read_bytes().split(b"\n")
+        if lines and lines[-1] == b"":
+            lines.pop()
+        events: list[dict] = []
+        for ln in lines:
+            if not ln.strip():
+                continue
+            try:
+                events.append(json.loads(ln))
+            except json.JSONDecodeError:
+                return (False, None)
+        prev_bytes: bytes | None = None
+        for ev in events:
+            seq = ev.get("seq")
+            h = ev.get("hash")
+            want_prev = (GENESIS_PREV_HASH if prev_bytes is None
+                         else hashlib.sha256(prev_bytes).hexdigest())
+            if h:
+                if ev.get("prev_hash") != want_prev:
+                    return (False, seq)
+                body = {k: v for k, v in ev.items() if k != "hash"}
+                if hashlib.sha256(_canonical_bytes(body)).hexdigest() != h:
+                    return (False, seq)
+            prev_bytes = _canonical_bytes(ev)
+        return (True, None)
+
     def persist_snapshot(self) -> None:
+        # journal_tip_hash: the hash of the last journaled event at the
+        # time the snapshot was written. Lets a reader detect tail
+        # truncation (removed tail events still leave a valid chain).
+        tip = self.events[-1].get("hash") if self.events else None
+        self.snapshot["journal_tip_hash"] = tip
         tmp = self.snapshot_path.with_suffix(".tmp")
         # Defense in depth: the snapshot is derived from already-redacted
         # events, but redact the serialized form anyway so a secret can
