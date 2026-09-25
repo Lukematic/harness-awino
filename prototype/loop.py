@@ -1248,11 +1248,16 @@ class Loop:
                           {"call_id": call_id, "tool": tool_name, "args": args,
                            "idem_key": idem_key,
                            "mission_rev": self.state.snapshot["mission_revision"]})
-        fn = getattr(self.sandbox, tool_name)
-        try:
-            result = fn(**args)
-        except Exception as ex:  # noqa: BLE001 - tool errors are data
-            result = {"error": f"{type(ex).__name__}: {ex}"}
+        if tool_name == "set_mission":
+            # Harness-owned tool (not a Sandbox method): the model calls it
+            # to converge the discovery interview into a recorded mission.
+            result = self._tool_set_mission(args or {})
+        else:
+            fn = getattr(self.sandbox, tool_name)
+            try:
+                result = fn(**args)
+            except Exception as ex:  # noqa: BLE001 - tool errors are data
+                result = {"error": f"{type(ex).__name__}: {ex}"}
         if tool_name == "patch_file":
             # Dedicated journal entry: the applied patch or the named
             # refusal, so the journal shows patch outcomes explicitly
@@ -1276,6 +1281,40 @@ class Loop:
                 "error" if _tool_failed(result) else "done",
                 _tool_result_summary(result), ms=_ms_since(t0))
         return {"tool": tool_name, "result": result}
+
+    def _tool_set_mission(self, args: dict) -> dict:
+        """Model-callable mission setter (interview convergence).
+
+        Turn-schema args are {str: str}, so `criteria` arrives as one
+        string; it is split on newlines/semicolons into the criteria list.
+        Tool errors are data, never exceptions: the model sees the error
+        result and can repair or report it. A worker's mission is fixed by
+        its parent, so workers are refused.
+        """
+        if self.state.snapshot.get("worker_id"):
+            return {"error": "set_mission refused: a worker's mission is "
+                             "fixed by its parent"}
+        text = args.get("text", "")
+        raw_criteria = args.get("criteria", "")
+        if not isinstance(text, str) or not text.strip():
+            return {"error": "set_mission needs a non-empty 'text'"}
+        if not isinstance(raw_criteria, str):
+            return {"error": "set_mission 'criteria' must be a string "
+                             "(semicolon- or newline-separated)"}
+        criteria = [c.strip() for c in re.split(r"[;\n]+", raw_criteria)
+                    if c.strip()]
+        if not criteria:
+            return {"error": "set_mission needs at least one done criterion "
+                             "in 'criteria'"}
+        try:
+            mission = self.set_mission(text.strip(), criteria)
+        except Exception as ex:  # noqa: BLE001 - e.g. SkillIntegrityError
+            return {"error": f"{type(ex).__name__}: {ex}"}
+        return {"ok": True,
+                "mission": {"id": mission["id"], "text": mission["text"],
+                            "kind": mission["kind"],
+                            "revision": mission["revision"]},
+                "said": f"Mission set: {mission['text'][:160]}"}
 
     def _execute_calls(self, turn_id: str, calls: list[dict], offset: int = 0) -> list[dict]:
         results = []

@@ -126,6 +126,9 @@ function ok(cond, name) {
 }
 
 // 1. turn_start builds the streaming card shell
+// 0. ready handshake: the webview announces itself once its message
+// listener is live, so the host can (re)deliver transcript + state.
+ok(posted.length === 1 && posted[0].type === "chatReady", "boot posts one chatReady handshake");
 fire({ event: "turn_start", turn_id: "t7", phase: "BUILD", mode: { id: "build", source: "stage" }, persona: null });
 ok(messages.children.length === 1, "turn_start creates one card");
 const card = messages.children[0];
@@ -238,8 +241,9 @@ ok(subtreeHtml(legacy).indexOf("<strong>body</strong>") >= 0, "legacy body rende
 ok(subtreeHtml(legacy).indexOf("<table") >= 0, "legacy tool table fallback present");
 
 // 12. stop posts the stop verb
+const postedBeforeStop = posted.length;
 ids["stop"].fire("click", {});
-ok(posted.length === 1 && posted[0].type === "stop", "stop button posts {type:stop}");
+ok(posted.length === postedBeforeStop + 1 && posted[posted.length - 1].type === "stop", "stop button posts {type:stop}");
 
 // 13. theme variants (refinement 2026-09-23): vibranium default, toggle, savanna, persistence
 ok(bodyEl.classList.contains("awino-vibranium"), "default theme is vibranium when no vscode-light class");

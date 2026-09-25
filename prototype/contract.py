@@ -18,14 +18,14 @@ from stances import STANCES, FLOORS
 # ---------------------------------------------------------------------------
 MODES = {
     "observe": {
-        "tools": ["read_file", "list_dir"],
+        "tools": ["read_file", "list_dir", "set_mission"],
         "consequential": [],
-        "desc": "Read-only. Questions, teaching, and exploration with no mission.",
+        "desc": "Read-only. Questions, teaching, and exploration with no mission. set_mission converges the discovery interview.",
     },
     "plan": {
-        "tools": ["read_file", "list_dir"],
+        "tools": ["read_file", "list_dir", "set_mission"],
         "consequential": [],
-        "desc": "Read-only planning. No edits on this floor.",
+        "desc": "Read-only planning. No edits on this floor. set_mission records the agreed objective.",
     },
     "build": {
         "tools": ["read_file", "list_dir", "write_file", "patch_file"],

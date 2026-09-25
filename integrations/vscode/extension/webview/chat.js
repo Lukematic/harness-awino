@@ -1441,5 +1441,9 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
   });
 
   refreshInput();
+  // Ready handshake: the message listener above is live, so the host can
+  // now (re)deliver the retained transcript + fresh state. Fires on every
+  // (re)load, i.e. exactly when the DOM is empty and needs filling.
+  vscode.postMessage({ type: "chatReady" });
 })();
 }

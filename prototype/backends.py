@@ -296,7 +296,7 @@ _OLLAMA_SYSTEM = """You are the model inside the A.W.I.N.O. turn loop. The harne
   ```
 - "objective": the current objective, in your own words.
 - "plan": list of step strings. Use [] when there is no plan.
-- "tool_calls": list of {"name": ..., "args": {...}}. Call ONLY tools the contract lists as offered for the current mode. Available tools: read_file {"path"}, list_dir {} (takes no arguments), run_command {"cmd"}, write_file {"path", "content"} (consequential: propose only when a plan exists and was approved), patch_file {"path", "diff"} (consequential: unified diff applied atomically; same approval and SCOPE rules as write_file).
+- "tool_calls": list of {"name": ..., "args": {...}}. Call ONLY tools the contract lists as offered for the current mode. Available tools: read_file {"path"}, list_dir {} (takes no arguments), run_command {"cmd"}, write_file {"path", "content"} (consequential: propose only when a plan exists and was approved), patch_file {"path", "diff"} (consequential: unified diff applied atomically; same approval and SCOPE rules as write_file), set_mission {"text", "criteria"} ("criteria" is one string: the done criteria separated by semicolons; call it when the discovery interview has converged — it records the mission and unblocks the floors).
 - "questions": list of question strings when you are blocked; otherwise [].
 - "assumptions": list of assumption strings; otherwise [].
 - "progress_delta": non-empty string describing what this turn does.
@@ -369,7 +369,12 @@ class OllamaBackend(ModelBackend):
             else:
                 text = self._chat(prompt, system)
         except Exception as e:  # server down, timeout, bad payload: safe fallback
-            return self._fallback(expected_header, f"backend error: {type(e).__name__}")
+            # Include the message (e.g. "endpoint HTTP 404"), not just the
+            # type: "backend error: RuntimeError" alone is undiagnosable.
+            # Key material never appears here — the key travels in the
+            # Authorization header, never in the URL or exception text.
+            return self._fallback(expected_header,
+                                  f"backend error: {type(e).__name__}: {e}")
         turn = _extract_json(text)
         if not isinstance(turn, dict):
             return self._fallback(expected_header, "model output was not a JSON object")

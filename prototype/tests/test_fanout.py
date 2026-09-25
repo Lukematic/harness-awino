@@ -221,7 +221,16 @@ class TestFanoutModeInheritance(unittest.TestCase):
             return {"status": "ok", "result": {}}
 
         loop.fanout("obj", _subtasks(("t1", "a/"),), run_worker=escalate)
-        self.assertEqual(seen["gate"], MODES["observe"]["tools"])
+        # The clamp is the intersection of the worker's (escalated) mode
+        # tools with the parent's policy: build-only tools stay forbidden,
+        # and set_mission (observe/plan-only interview tool) is not offered
+        # to a build-mode worker either. A worker's mission is fixed by its
+        # parent, so dropping it from the gate is correct.
+        self.assertEqual(seen["gate"],
+                         [t for t in MODES["build"]["tools"]
+                          if t in MODES["observe"]["tools"]])
+        self.assertNotIn("write_file", seen["gate"])
+        self.assertNotIn("patch_file", seen["gate"])
 
     def test_forbidden_tool_refused_end_to_end(self):
         # Parent in observe (no write_file). A persistently hostile worker

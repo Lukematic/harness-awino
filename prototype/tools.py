@@ -20,6 +20,11 @@ TOOL_DEFS = {
     "patch_file": {"consequential": True, "args": ["path", "diff"]},
     "list_dir": {"consequential": False, "args": []},
     "run_command": {"consequential": False, "args": ["cmd"]},
+    # Harness-owned (not a Sandbox method): the model sets the mission from
+    # the discovery interview. Non-consequential — the user is driving the
+    # interview, the mission is revision-tracked and visible, and the
+    # skill-kind gate still applies. Dispatched by Loop._execute_single.
+    "set_mission": {"consequential": False, "args": ["text", "criteria"]},
 }
 
 
