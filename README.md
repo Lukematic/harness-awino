@@ -21,7 +21,7 @@ Two things live here:
 ## Run it
 
 ```sh
-cd prototype && ./run_tests.sh   # full harness suite (745 tests, ~6 min; point TMPDIR at a roomy dir)
+cd prototype && ./run_tests.sh   # full harness suite (909 tests, ~3 min; point TMPDIR at a roomy dir)
 cd integrations/vscode/extension && npm test   # extension suite (node)
 ```
 
@@ -52,18 +52,22 @@ package.
 |---|---|---|
 | Per-turn contract loop | `prototype/contract_loop.py`, `loop.py` | Compiles and validates the turn contract pre-turn and pre-execute; refuses broken contracts with named reasons |
 | Modes (5) | `prototype/contract.py::MODES` | observe, plan, build, verify, ship — permission profiles, computed before the model acts |
-| Stances (9) | `prototype/stances.py` | steel-man, feynman, planning-grill, first-principles, premortem, devil's-advocate, advisor, triage, verifier — reasoning procedures with rubrics |
-| Skills (52) | `prototype/skills/` | Injected knowledge, SHA-256 pinned, verified at load. Core loop, rigor coach, osmani port, agent personas, references, durable-memory, debug, rpi |
+| Stances (9) | `prototype/stances.py` | steel-man, feynman, planning-grill, first-principles, premortem, devil's-advocate, advisor, triage, verifier — reasoning procedures with rubrics. The model picks one each turn and says why; the phase allows only some, and its floor rubric always runs (PLAN/BUILD first-principles, VERIFY devil's-advocate, REVIEW/SHIP premortem). Trigger words are the fallback |
+| Skills (53) | `prototype/skills/` | Injected knowledge, SHA-256 pinned, verified at load. Core loop, rigor coach, osmani port, agent personas, references, durable-memory, debug, rpi |
 | Judge panel | `prototype/judges.py` | N judges vote by quorum per turn; no single gatekeeper; fail-closed |
 | Skill synthesis | `prototype/synthesis.py` | Learnings → sandbox verification → pin → admit only on pass |
 | Fan-out | `prototype/loop.py` | Parallel workers with atomic overlap/budget checks and a fail-closed synthesis barrier; per-worker backend/model routing via a code-owned routing map |
-| Approval binding | `prototype/approvals.py` | Approval bound to canonical plan bytes, scope, base commit, approver, timestamp; re-approval chains via `supersedes_digest`. Shell cards show cwd-resolved absolute targets and flag out-of-workspace addressing |
+| Approvals | `prototype/loop.py` (`approve`, `_has_valid_approval`) | Consequential calls pause for approval bound to the exact arguments, mission revision and scope epoch; a scope change invalidates pending approvals. Shell cards show cwd-resolved absolute targets and flag out-of-workspace addressing |
 | patch_file | `prototype/tools.py` | Atomic, fail-closed unified-diff application (named refusal codes); build-mode only, consequential like `write_file` |
 | Secret redaction | `prototype/secret_redaction.py` | High-confidence credential shapes redacted at the journaling boundary and on sidecar log output; general PII scrubbing out of scope by design |
 | Durable memory | `prototype/memory_store.py` | Local-first JSONL store (`.awino/memory.jsonl`), chunked entries, content-hash dedup |
 | Bedrock SigV4 | `prototype/awino_sidecar.py` | Stdlib-only SigV4 from the AWS credential chain (env / `~/.aws` / SSO via GetRoleCredentials); fail-closed named errors; first live call still untested here |
 | Discovery interview | `prototype/skills/discovery.md` | Fires on new tasks; grill enforces one-question-at-a-time, ask-XOR-advance |
 | MCP server | `integrations/mcp-server/` | Standalone, client-agnostic: contract compiler, turn validator, judge panel, skill synthesis |
+| Mission loop | `prototype/loop.py` | Recursive model → tool → result rounds. A write moves BUILD → VERIFY; a failing test run routes back to BUILD to repair (three identical failures trip the three-strike rethink); a pass spawns an independent verifier; only evidence moves REVIEW → SHIP. Proven end to end in `tests/test_e2e_mission.py` |
+| Stories + brag board | `prototype/story.py`; VS Code *Stories* panel | Each session works one story (problem, plan, done criteria, branch, time spent). `story_plan` records the plan agreed with the user — Honda first, Bugatti pitched in brief. Closed stories land on the brag board with date and outcome. Open stories and due parked ideas show at session start |
+| Stretch goals | `stretch_goal` tool | The harness pitches a bigger idea as Need / Approach / Benefits / Competition with 3–5 steps; it is parked with a revisit date and never built unasked |
+| Project memory | `<project>/.awino/` | Stories, registry, and session journals live in the project, shared by the CLI and the extension; journals are gitignored |
 
 Full inventory: [`CAPABILITY_REGISTRY.md`](CAPABILITY_REGISTRY.md).
 
@@ -81,11 +85,15 @@ Full inventory: [`CAPABILITY_REGISTRY.md`](CAPABILITY_REGISTRY.md).
 
 ## Status
 
-`main` carries the integrated harness (52 skills, 9 stances, fan-out,
-judges, synthesis, adapter contract) and the 0.5.2 extension (bundled
-Python, zero setup, honest-gaps fixes — the beta build).
-Prerelease betas ship from tags via the release pipeline. Open gaps are
-tracked at the bottom of `CAPABILITY_REGISTRY.md`.
+`main` carries 0.6.1 (the recursive build loop plus the native-tools
+auth fix). The 0.7 work — the end-to-end loop fixes, model-chosen stances,
+stories and brag board in VS Code, stretch goals, readable chat, and
+plain-language errors — is on `claude/native-tools-auth-hotfix-bhsr45`
+and tracked in [`docs/BUILD_PLAN_v0.7.md`](docs/BUILD_PLAN_v0.7.md),
+including an audit of every request so far (done / partial / not done).
+None of it has been run in a live VS Code window with a real model yet;
+that is the release gate. Prerelease betas ship from `vsix-v*` tags via
+the release pipeline.
 
 Product name is still open — "Awino" appears throughout as the working name,
 not the final brand.

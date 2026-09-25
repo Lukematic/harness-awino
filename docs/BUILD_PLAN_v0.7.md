@@ -86,6 +86,10 @@ Done on `claude/native-tools-auth-hotfix-bhsr45` (tests in `tests/test_tool_prom
   endpoint/model, 429, 5xx, timeout, unreachable, non-JSON) instead of asking "What should I
   do next?"; still a safe no-tools turn. `tests/test_ollama_backend.py::ExplainFailureTest`.
 
+- **T26 partial.** README (test count, approvals location, new rows, honest status) and a
+  CHANGELOG "Unreleased (0.7)" entry now match the code. CAPABILITY_REGISTRY still needs its
+  statuses refreshed from the audit above.
+
 Everything else below is still open.
 
 **Build order (agreed 09-26):** T4 one memory → T10 stories + brag board in VS Code →

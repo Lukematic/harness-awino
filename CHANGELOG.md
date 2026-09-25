@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased (0.7) — the loop runs end to end
+
+- The mission loop now completes on its own: a failing test run routes
+  VERIFY → BUILD for repair (three identical failures trigger the
+  three-strike rethink); `task_update` closes the plan's tasks and needs an
+  evidence file to mark one done; the journal integrity check passes
+  end to end. Proven by `tests/test_e2e_mission.py`.
+- The model's tool list is generated from the real schemas (the old prompt
+  said `list_dir` takes no arguments, so it could only list the root);
+  `search_files` accepts its documented arguments.
+- Stances: the model picks one per turn and says why, within the phase's
+  allowed set; phase floors always run. Challenges fire on ideas, "is this
+  a good idea", "should we", "X vs Y". With no mission, "build X" starts the
+  interview instead of a write mode.
+- Stories: `story_plan` and `stretch_goal` tools; a Stories panel with the
+  brag board; start / resume / close commands; open stories at session
+  start; the user is asked to close a verified story.
+- One project memory in `<project>/.awino`, shared by the CLI and the
+  extension (old `~/.awino-loop` state is copied in once).
+- Chat: replies render as prose with a "Next" line (no raw contract
+  header); "Sidecar ready" shows once; model errors name the cause and the
+  fix.
+
 ## 0.6.1 — native-tools auth hotfix (2026-09-25)
 
 - Fix: tool-using turns returned HTTP 401 on keyed OpenAI-compatible
