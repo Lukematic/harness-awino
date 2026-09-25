@@ -96,13 +96,15 @@ class TestLayerPlacement(unittest.TestCase):
         self.assertEqual(set(layers), set(manifest))
 
     def test_layer_counts(self):
-        # 43 ceremony + 7 reference; no .md file is mechanical (mechanical
+        # 46 ceremony + 7 reference; no .md file is mechanical (mechanical
         # is code: floor_checks.py and the existing fail-closed gates).
+        # (Was 43 ceremony before the 0.5.2 skills debug, rpi,
+        # durable-memory joined ceremony.)
         store = SkillStore.default()
         counts = {}
         for name in store.names():
             counts[store.layer_of(name)] = counts.get(store.layer_of(name), 0) + 1
-        self.assertEqual(counts, {"ceremony": 43, "reference": 7})
+        self.assertEqual(counts, {"ceremony": 46, "reference": 7})
 
     def test_spot_assignments(self):
         store = SkillStore.default()

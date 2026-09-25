@@ -73,11 +73,13 @@ reaches a turn; reference entries have no route (that is the point).
 | code-review | ceremony | REVIEW floor — the thin checklist; `osmani-code-review` is the deep review. Both kept: speed vs depth. |
 | completion-summary | reference | mission-close template, pulled on demand |
 | critical-thinking | reference | standing reference |
+| debug | ceremony | BUILD floor — reproduce→diagnose→fix→verify procedure |
 | decision-analysis | ceremony | PLAN floor + advise intent |
 | definition-of-done | reference | the standing bar; cited by gates, never injected |
 | discovery | ceremony | DEFINE floor + new-task intent |
 | domain | ceremony | PLAN floor + opinion/teach/advise/triage intents |
 | dora-metrics | reference | SHIP-side measurement reference |
+| durable-memory | ceremony | DEFINE floor + new-task intent — recall before planning |
 | explainer | ceremony | teach intent |
 | incident-response | ceremony | on-demand via explicit skill_add (preemptive, no phase floor) |
 | layered-loading | reference | this document |
@@ -115,6 +117,7 @@ reaches a turn; reference entries have no route (that is the point).
 | rigor-proof-cycles | ceremony | BUILD floor + fix intent |
 | rigor-scope | ceremony | PLAN floor |
 | rigor-three-strike | ceremony | circuit-breaker injection only — never phase- or intent-routed |
+| rpi | ceremony | BUILD floor — multi-file loop-owner workflow |
 | testing | ceremony | VERIFY floor — "run the suite, exit code is the verdict"; the thin runner to `osmani-tdd`'s discipline |
 | triage | ceremony | triage intent |
 | verification | ceremony | SHIP floor — the ship-gate checklist |
