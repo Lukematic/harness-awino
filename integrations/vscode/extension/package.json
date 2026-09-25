@@ -292,5 +292,5 @@
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run compile && node ./scripts/bundle-sidecar.js && node ./scripts/fetch-python-runtimes.js"
   },
-  "version": "0.5.0"
+  "version": "0.5.1"
 }
