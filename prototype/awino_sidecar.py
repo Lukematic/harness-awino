@@ -3945,6 +3945,14 @@ class Sidecar:
                       "said": f"sidecar internal error: "
                               f"{type(e).__name__}: {e}"}
         self._emit_turn_result(result)
+        # v0.6: approving/denying resumes the recursive loop, which may pause
+        # for approval AGAIN in a later round. The client needs the new
+        # approval_requested event (with IDs) to act on it — without this,
+        # the operator sees "awaiting approval" but gets no approval card.
+        # Mirrors the _do_user_message post-emit.
+        if isinstance(result, dict) and result.get("status") == \
+                "awaiting_approval":
+            self._emit_approvals(result)
 
     # --------------------------------------------------------------- command
     def _say(self, kind: str, text: str) -> None:

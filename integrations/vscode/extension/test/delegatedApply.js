@@ -135,12 +135,24 @@ async function main() {
       assumptions: ["Hypothesis: a.txt is new; seed.txt exists with 'seed'."],
       progress_delta: "Writing a.txt and patching seed.txt.",
     }),
+    // v0.6: the recursive loop continues after the approval drain, so a
+    // no-op turn lets "do the writes" exit cleanly with "ok" after the
+    // delegated apply completes.
+    turn({
+      assumptions: ["Hypothesis: no further action is needed; the delegated writes already address the objective."],
+      progress_delta: "Writes delegated; nothing further.",
+    }),
     turn({
       tool_calls: [{ name: "run_command", args: { cmd: "echo hello-terminal" } }],
       assumptions: [
         "Attack: the command could fail silently, so its absence afterwards is the falsifier.",
       ],
       progress_delta: "Running the terminal command.",
+    }),
+    // v0.6: no-op for the terminal round-trip to exit cleanly.
+    turn({
+      assumptions: ["Hypothesis: no further action is needed; the terminal command already address the objective."],
+      progress_delta: "Terminal command done; nothing further.",
     }),
   ];
 

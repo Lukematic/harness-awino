@@ -20,10 +20,13 @@ def build_ready_loop(**kw):
         # v0.6: approve()/deny() resume the recursive loop instead of
         # finalizing, so the script carries the post-drain round the
         # resumed loop consumes: a no-call round that observes the
-        # grant/deny outcome and exits normally.
+        # grant/deny outcome and exits normally. The assumption is
+        # devil's-advocate-proof (>= 8 words): the write moves BUILD ->
+        # VERIFY, so the resumed round validates under the VERIFY stance.
         T(plan=["Write it"],
           progress_delta="Observed the approval outcome.",
-          assumptions=["Cause: the file was missing."]),
+          assumptions=["Hypothesis: the approved write completed; no further "
+                       "action is needed to address the objective."]),
     ])
     loop, _ = make_loop(backend=backend, **kw)
     loop.set_mission("Write the file", ["manual"])

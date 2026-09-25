@@ -45,22 +45,26 @@ def drive_to_review(loop):
 
     v0.6: approve() resumes the recursive loop, and the resumed round
     runs the verify turn itself — there is no separate "run the tests"
-    user turn anymore. The phase is VERIFY when the drain returns.
+    user turn anymore. Track G auto-verify may already advance VERIFY ->
+    REVIEW when the criteria hold; only drive the manual verifier if the
+    phase is still VERIFY.
     """
     loop.run_user_turn("draft the plan")
     loop.approve_contract()
     loop.approve_contract(["fix.py"])
     loop.run_user_turn("fix it now")
     loop.approve()
-    assert loop.state.snapshot["phase"] == "VERIFY", loop.state.snapshot["phase"]
-    # Track G: the verifier worker must journal a pass verdict.
-    res = drive_verification(
-        loop, evidence_links={"artifact exists: fix.py": "tests/common.py",
-                              "manual (operator sign-off)": "tests/common.py",
-                              "event: tool_result": "tests/common.py"})
-    assert res["passed"], res.get("said")
-    r = loop.request_phase("REVIEW", reason="verifier passed")
-    assert r["status"] == "ok", r
+    assert loop.state.snapshot["phase"] in ("VERIFY", "REVIEW"), \
+        loop.state.snapshot["phase"]
+    if loop.state.snapshot["phase"] == "VERIFY":
+        # Track G: the verifier worker must journal a pass verdict.
+        res = drive_verification(
+            loop, evidence_links={"artifact exists: fix.py": "tests/common.py",
+                                  "manual (operator sign-off)": "tests/common.py",
+                                  "event: tool_result": "tests/common.py"})
+        assert res["passed"], res.get("said")
+        r = loop.request_phase("REVIEW", reason="verifier passed")
+        assert r["status"] == "ok", r
     assert loop.state.snapshot["phase"] == "REVIEW", loop.state.snapshot["phase"]
 
 

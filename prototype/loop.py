@@ -1330,6 +1330,7 @@ class Loop:
             # the journal pre-check above is the verification.
             self.state.record("verify_passed",
                               {"worker_id": None,
+                               "verdict": "pass",
                                "note": ("auto-verify: no artifact criteria; "
                                         "exit 0 + journal criteria hold")})
             self.state.persist_snapshot()
@@ -1498,8 +1499,21 @@ class Loop:
             # phase — a stale routing would validate the round against the
             # wrong mode's tool set. _sensor_route only journals on actual
             # change, so steady-state rounds are journal-quiet.
+            #
+            # v0.6 fix: only the turn's first round honors the user's
+            # utterance (intent patterns may override the floor default, as
+            # in v0.5). Later rounds re-route against the CURRENT phase's
+            # floor: re-matching the original text would let a stale intent
+            # ("fix it now" -> build mode) pin the mode/stance to the turn's
+            # first phase forever, contradicting the elevator (e.g.
+            # run_command refused after BUILD -> VERIFY because it is not
+            # offered in build mode). Neutral text+kind also keeps
+            # new_objective from re-firing after a mid-turn set_mission.
             self._check_elevator_gates(turn_id)
-            routing = self._sensor_route(user_text, input_kind)
+            if round_no == 0:
+                routing = self._sensor_route(user_text, input_kind)
+            else:
+                routing = self._sensor_route("", "info")
             offered = self._permission_gate()
             tcontract = compile_turn_contract(self.state)
             self._round_schemas = schemas_for(offered)
