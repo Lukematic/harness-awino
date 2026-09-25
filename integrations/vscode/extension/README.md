@@ -110,6 +110,18 @@ deliberately never read.
   skills can be assumed, and the persona can never widen the contract's
   tool policy.
 
+## Install (beta)
+
+Grab the `.vsix` from the repo's
+[releases page](https://github.com/Lukematic/harness-awino/releases), then:
+
+```bash
+code --install-extension <downloaded-file>.vsix
+```
+
+or in VS Code: Extensions view → `…` → *Install from VSIX…*. No Python
+setup needed — the runtime ships inside the package.
+
 ## Build & test
 
 ```bash

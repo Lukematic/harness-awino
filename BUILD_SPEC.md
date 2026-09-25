@@ -1,7 +1,7 @@
 # A.W.I.N.O. Loop-Owner — Merged Build Spec
 
 **Date:** 2026-09-18
-**Status:** Authoritative build spec. Supersedes `ARCHITECTURE.md` (rebuild draft) and incorporates `harness-decision-whitepaper.md` (Deep Agents evaluation).
+**Status:** **Complete.** All five phases built, tested, and merged. Kept for history — see `ARCHITECTURE.md` (as built) and `CHANGELOG.md` for the current system.
 **Product:** a chat runtime where the conversation *is* the state. The human+AI pair chat; the harness owns the loop, carries missions project-to-project, and enforces the contract every turn in code.
 
 ---
