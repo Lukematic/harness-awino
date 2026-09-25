@@ -43,6 +43,7 @@ from contract_loop import (
 from cancel import CancelToken, Cancelled
 from tool_schema import schemas_for
 from provider_tools import NormalizationError
+from hooks import HookRegistry
 
 
 SCOPE_CHANGE_RE = re.compile(
@@ -371,6 +372,11 @@ class Loop:
         # streamed). Persists after the pipeline so approval resume and
         # turn_result enrichment can reference the turn's context.
         self._turn_stream: _SidecarStream | None = None
+        # v0.6 back half: user-definable hooks on loop events
+        # (turn_start/end, tool_result, approval_requested/decided,
+        # mission_set/complete, context_compacted). Error-isolated: a
+        # failing hook never breaks the loop.
+        self.hooks = HookRegistry()
 
     # ------------------------------------------------------------------ setup
     def _check_sandbox_writable(self) -> str | None:
@@ -409,6 +415,21 @@ class Loop:
         self.history.append({"role": role, "text": text})
         self.history = self.history[-20:]
 
+    def maybe_compact(self, source: str = "turn") -> dict | None:
+        """State-authoritative compaction (v0.6 back half).
+
+        When the working context (contract block + history + round
+        transcript) exceeds ``config["context_budget_tokens"]``, compact
+        it DOWN TO the authoritative state and rebuild the working
+        context from state alone — never the reverse. Returns the
+        compaction report, or None when under budget (no-op).
+
+        Approval-free by design: compaction never touches state, so
+        post-compaction behavior is identical.
+        """
+        from compaction import maybe_compact as _maybe_compact
+        return _maybe_compact(self, source=source)
+
     # ---------------------------------------------------------------- mission
     def set_mission(self, text: str, criteria: list) -> dict:
         snap = self.state.snapshot
@@ -428,6 +449,11 @@ class Loop:
                    "done_criteria": [parse_criteria(c) for c in criteria],
                    "revision": revision}
         self.state.record("mission_set", {"mission": mission})
+        # v0.6 back half: mission_set hook (error-isolated).
+        self.hooks.fire("mission_set",
+                        {"mission_id": mission["id"],
+                         "revision": mission["revision"],
+                         "text": mission["text"][:200]})
         # Story ledger: a new mission arriving while stories are still
         # doing/open journals `stale_stories` — the session must surface
         # "we started this new thing, but X is still open — what's up?"
@@ -600,11 +626,20 @@ class Loop:
         passes the token it also hands to its stdin pump so typing
         /cancel while a turn runs stops the loop at the next checkpoint.
         """
+        # v0.6 back half: turn_start hook (error-isolated; never breaks the turn).
+        self.hooks.fire("turn_start", {
+            "text": text,
+            "turn_no": self.state.snapshot.get("turn_count", 0) + 1})
         result = self._run_user_turn_inner(text, cancel_token)
         try:
             self._stories_nudge_check(result)
         except Exception:
             pass  # the nudge is advisory; never break a turn
+        # v0.6 back half: turn_end hook. fire() is error-isolated, so this
+        # can never break the turn's return path.
+        self.hooks.fire("turn_end", {
+            "status": result.get("status") if isinstance(result, dict) else None,
+            "turn_no": self.state.snapshot.get("turn_count", 0)})
         return result
 
     def _stories_nudge_check(self, result: dict) -> None:
@@ -757,6 +792,10 @@ class Loop:
             return {"status": "setup_blocked",
                     "said": "Setup blocked: " + "; ".join(setup_errs)}
 
+        # v0.6 back half: state-authoritative compaction. When the working
+        # context exceeds budget, compact it down to state and rebuild
+        # from state alone. Approval-free: state is untouched.
+        self.maybe_compact("turn")
         return self._pipeline(user_text, input_kind)
 
     def _begin_stream(self, turn_id: str) -> "_SidecarStream | None":
@@ -1075,6 +1114,11 @@ class Loop:
                            "idem_key": self._idem(call), "result": inner,
                            "harness": True,
                            "mission_rev": self.state.snapshot["mission_revision"]})
+        # v0.6 back half: tool_result hook (error-isolated; harness tools
+        # journal tool_result entries too).
+        self.hooks.fire("tool_result",
+                        {"call_id": call_id, "tool": name,
+                         "ok": "error" not in inner, "harness": True})
         return {"tool": name, "result": inner}
 
     # ------------------------------------------------- harness tool bodies
@@ -1525,6 +1569,10 @@ class Loop:
             tok = self._cancel_token
             if tok is not None and tok.is_set():
                 return self._halt_turn("cancelled", turn_id, turn_no, round_no)
+            # v0.6 back half: per-round compaction check — the round
+            # transcript grows within a turn; compact down to state when
+            # over budget. Approval-free: state is untouched.
+            self.maybe_compact("round")
             self._round_no = round_no
             # Per-round control-plane refresh: the elevator may have moved
             # the phase (after the last round's tool results, or after an
@@ -2066,6 +2114,10 @@ class Loop:
                           {"call_id": call_id, "tool": tool_name, "args": args,
                            "idem_key": idem_key, "result": result,
                            "mission_rev": self.state.snapshot["mission_revision"]})
+        # v0.6 back half: tool_result hook (error-isolated).
+        self.hooks.fire("tool_result",
+                        {"call_id": call_id, "tool": tool_name,
+                         "ok": "error" not in result, "harness": False})
         if stream is not None:
             stream.tool_progress(
                 tool_name,
@@ -2295,6 +2347,9 @@ class Loop:
                            "round_ctx": round_ctx or {}})
         self.state.persist_snapshot()
         ids = [a["id"] for a in approvals]
+        # v0.6 back half: approval_requested hook (error-isolated).
+        self.hooks.fire("approval_requested",
+                        {"turn_id": turn_id, "approval_ids": ids})
         return {"status": "awaiting_approval",
                 "said": f"Consequential action(s) need approval: {ids}. "
                         f"/approve <id> or /deny <id>.",
@@ -2346,6 +2401,11 @@ class Loop:
                     "said": f"Approval {ap['id']} is stale (scope changed). "
                             f"The action was NOT executed."}
         self.state.record("approval_granted", {"id": ap["id"]})
+        # v0.6 back half: approval_decided hook (error-isolated). Fires
+        # per decision, right where the decision is journaled — including
+        # the early-return path below (other approvals still pending).
+        self.hooks.fire("approval_decided",
+                        {"approval_id": ap["id"], "decision": "granted"})
         _s = self._stream_for(self._turn_of_call(ap.get("call_id", "")))
         if _s is not None:
             # Parallel _emit: surface the gate decision; the journal record
@@ -2372,7 +2432,17 @@ class Loop:
         ap = next((a for a in pend if a["id"] == approval_id), None) if approval_id else pend[0]
         if ap is None:
             return {"status": "none", "said": f"No pending approval {approval_id}."}
+        # v0.6 back half: compute BEFORE recording — the approval_denied
+        # fold removes the denied call from pending_calls, so computing
+        # after would always yield []. The id feeds the resume note and
+        # the approval_decided hook payload.
+        denied_ids = [ap["id"]]
         self.state.record("approval_denied", {"id": ap["id"]})
+        # v0.6 back half: approval_decided hook (error-isolated). Fires
+        # per decision, right where the decision is journaled — including
+        # the early-return path below (other approvals still pending).
+        self.hooks.fire("approval_decided",
+                        {"approval_id": ap["id"], "decision": "denied"})
         _s = self._stream_for(self._turn_of_call(ap.get("call_id", "")))
         if _s is not None:
             # Parallel _emit: surface the gate decision; the journal record
@@ -2387,13 +2457,8 @@ class Loop:
             return {"status": "awaiting_approval",
                     "said": f"Approval {ap['id']} denied; "
                             f"{len(remaining)} still pending."}
-        # The round's denied IDs (for the results note) are those with
-        # pending calls — earlier rounds' denials are already journaled.
-        s = self.state.snapshot
-        denied_ids = [a["id"] for a in s["approvals"]
-                      if a["status"] == "denied"
-                      and any(pc.get("approval_id") == a["id"]
-                              for pc in s["pending_calls"])]
+        # The round's denied IDs were computed above, before the fold
+        # removed the denied call from pending_calls.
         return self._drain_pending(denied=denied_ids)
 
     def _drain_pending(self, denied: list[str] | None = None) -> dict:
@@ -2842,6 +2907,11 @@ class Loop:
                                "via": done.get("via", "attempt_completion"),
                                "evidence": done.get("evidence"),
                                "summary": done.get("summary")})
+            # v0.6 back half: mission_complete hook (error-isolated).
+            self.hooks.fire("mission_complete",
+                            {"turn_id": turn_id,
+                             "via": done.get("via", "attempt_completion"),
+                             "summary": done.get("summary")})
             s = self.state.snapshot
         sig = self._progress_sig()
         stalls = s["consecutive_stalls"] + 1 if sig == s["last_progress_sig"] else 0
@@ -2961,6 +3031,10 @@ class Loop:
         if ok:
             self.request_phase("REVIEW", reason="done criteria verified")
             self.state.record("mission_done", {"via": "operator"})
+            # v0.6 back half: mission_complete hook (error-isolated) —
+            # the operator path completes the mission too.
+            self.hooks.fire("mission_complete",
+                            {"via": "operator", "summary": None})
             self.state.persist_snapshot()
             return {"status": "done",
                     "said": "Mission complete. All criteria verified from evidence."}
