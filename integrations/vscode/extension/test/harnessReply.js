@@ -16,8 +16,8 @@ const said = [
   "Floor: IDLE | Next action: answer: What should the mission be? | Blocked on: user answers.",
 ].join("\n");
 t("field sample from the screenshots", said,
-  "[Certain] Listing the root directory to inspect project structure.\n" +
-  "**Questions**\n\n- What should the mission be?\n- Who is it for?\n" +
+  "[Certain] Listing the root directory to inspect project structure.\n\n" +
+  "**Questions**\n\n- What should the mission be?\n- Who is it for?\n\n" +
   "**Assumptions**\n\n- [Likely] Context is in the repo\n\n" +
   "*Next:* answer: What should the mission be? · *waiting on* user answers");
 t("nothing blocking omits the waiting part",

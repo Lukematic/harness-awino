@@ -261,11 +261,11 @@ function harnessReplyMarkdown(said) {
       if (blocked && blocked !== "nothing") next += " · *waiting on* " + blocked;
       continue;
     }
-    if (/^Questions: /.test(ln)) { out.push(bullets("Questions", ln.slice(11))); continue; }
-    if (/^Assuming: /.test(ln)) { out.push(bullets("Assumptions", ln.slice(10))); continue; }
+    if (/^Questions: /.test(ln)) { out.push("", bullets("Questions", ln.slice(11)), ""); continue; }
+    if (/^Assuming: /.test(ln)) { out.push("", bullets("Assumptions", ln.slice(10)), ""); continue; }
     out.push(ln);
   }
-  var body = out.join("\n").trim();
+  var body = out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
   return next ? (body ? body + "\n\n" : "") + next : body;
 }
 
@@ -585,7 +585,9 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
       esc(String(s.phase || "?").toUpperCase()) +
         (s.mission_revision != null ? " &middot; rev " + esc(s.mission_revision) : "")
     );
-    out += row("Verified", esc(s.criteria_verified) + "/" + esc(s.criteria_total) + " done criteria");
+    if (s.criteria_total != null) {
+      out += row("Verified", esc(s.criteria_verified) + "/" + esc(s.criteria_total) + " done criteria");
+    }
     var labels = s.verified_labels || [];
     if (labels.length) {
       out += row("Done", labels.map(esc).join("; "));
