@@ -66,6 +66,12 @@ Done on `claude/native-tools-auth-hotfix-bhsr45` (tests in `tests/test_tool_prom
   `tests/test_sidecar_stories.py`, `test/storiesView.js`. Not yet clicked through in a live
   VS Code window (T25).
 
+- **T14 done.** The turn may declare `stance` + `stance_why`; the harness accepts only the
+  phase's allowed stances, always runs the phase floor rubric too (PLAN/BUILD
+  first-principles, VERIFY devil's-advocate, REVIEW/SHIP premortem), journals the model's
+  reason, and falls back to the router when nothing is declared. The contract lists the
+  menu outside the 600-word core budget. `tests/test_model_stance.py`.
+
 Everything else below is still open.
 
 **Build order (agreed 09-26):** T4 one memory → T10 stories + brag board in VS Code →

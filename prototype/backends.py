@@ -333,6 +333,7 @@ _OLLAMA_SYSTEM = """You are the model inside the A.W.I.N.O. turn loop. The harne
 - "assumptions": list of assumption strings; otherwise [].
 - "progress_delta": non-empty string describing what this turn does.
 - "done_claim": true only when every done criterion is met with evidence; otherwise false.
+- "stance" and "stance_why" (optional): pick how to think this turn from the contract's CHOOSE YOUR STANCE list and say why in one line; your turn is checked against that stance's rubric.
 Rules: never invent approvals or evidence; never claim done without evidence; if you cannot comply, return a valid JSON turn carrying a question instead of acting.
 Format traps that WILL get the turn rejected — avoid them:
 - "args" must ALWAYS be a JSON object, never an array. Pass every argument the user's request implies — e.g. to look inside a folder call list_dir with {"path": "<that folder>"}; {} lists the workspace root only.

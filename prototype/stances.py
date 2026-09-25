@@ -12,7 +12,9 @@ mode (permission profile), and exit gate. Intent patterns override the floor
 defaults; when nothing matches, the floor defaults apply. IDLE (no mission)
 falls back to a neutral advisor.
 
-Firing a stance = (1) routed by CODE from the user input (never model-chosen),
+Firing a stance = (1) declared by the model with a reason (T14), limited to
+the phase's allowed set plus the phase floor, else routed by CODE from the
+user input,
 (2) the full procedure loaded into the contract block, (3) the turn output
 evaluated against a deterministic rubric. Rubric FAIL rejects the turn exactly
 like a judge FAIL (bounded retries, then escalate).
@@ -251,6 +253,61 @@ def route_stance(snapshot: dict, text: str,
     """Backwards-compatible wrapper: primary stance + trigger label."""
     _intent, _mode, chain, _skills, trigger = route_triple(snapshot, text, kind)
     return (chain[0], trigger)
+
+
+# ---------------------------------------------------------------------------
+# Model-chosen stances (T14). With a real model plugged in, the model picks
+# how to think each turn and says why; code keeps the guardrails: only the
+# stances a phase allows, and the phase floor's rubric always runs too.
+# Declaring nothing falls back to the router above.
+# ---------------------------------------------------------------------------
+STANCE_SUMMARY = {
+    "advisor": "answer directly from the mission and knowledge",
+    "planning-grill": "interview: one material question at a time until "
+                      "success is defined",
+    "steel-man": "restate the user's idea fairly, then give the strongest "
+                 "counter-case",
+    "feynman": "teach: analogy, one gap question, example, one-line snapshot",
+    "first-principles": "state the cause or decomposition before acting",
+    "premortem": "assume it failed; list how, and the tripwire that catches it",
+    "devil's-advocate": "attack the evidence: could the result mislead?",
+    "triage": "name the failure mode, its falsifier, and the next probe",
+}
+_THINKING = {"planning-grill", "steel-man", "feynman", "first-principles",
+             "premortem", "triage", "advisor"}
+PHASE_STANCES = {
+    "IDLE": _THINKING,
+    "DEFINE": _THINKING,
+    "PLAN": _THINKING,
+    "BUILD": {"first-principles", "steel-man", "premortem", "triage",
+              "advisor"},
+    "VERIFY": {"devil's-advocate", "premortem", "first-principles", "triage"},
+    "REVIEW": {"premortem", "devil's-advocate", "steel-man"},
+    "SHIP": {"premortem", "devil's-advocate"},
+}
+PHASE_FLOOR = {"PLAN": "first-principles", "BUILD": "first-principles",
+               "VERIFY": "devil's-advocate", "REVIEW": "premortem",
+               "SHIP": "premortem"}
+
+
+def allowed_stances(phase: str | None) -> list[str]:
+    return sorted(PHASE_STANCES.get(phase or "IDLE", _THINKING))
+
+
+def resolve_declared_stance(phase: str | None, declared: str,
+                            why: str) -> tuple[list[str] | None, str | None]:
+    """The chain a model-declared stance runs under, or an error."""
+    phase = phase or "IDLE"
+    if declared not in STANCE_SUMMARY:
+        return None, (f"unknown stance {declared!r}; choose from "
+                      f"{', '.join(allowed_stances(phase))}")
+    if declared not in PHASE_STANCES.get(phase, _THINKING):
+        return None, (f"stance {declared!r} is not allowed in {phase}; "
+                      f"choose from {', '.join(allowed_stances(phase))}")
+    if not (why or "").strip():
+        return None, "a declared stance needs a one-line stance_why"
+    floor = PHASE_FLOOR.get(phase)
+    return [declared] + ([floor] if floor and floor != declared else []), None
 
 
 STANCES = {

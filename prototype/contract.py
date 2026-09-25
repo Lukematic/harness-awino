@@ -217,6 +217,9 @@ def validate_schema(raw) -> list[str]:
     for field in ("questions", "assumptions"):
         if isinstance(raw.get(field), list) and any(not isinstance(x, str) for x in raw[field]):
             errs.append(f"{field} must be a list of strings")
+    for field in ("stance", "stance_why"):
+        if field in raw and not isinstance(raw[field], str):
+            errs.append(f"field '{field}' must be str")
     if isinstance(raw.get("progress_delta"), str) and not raw["progress_delta"].strip():
         errs.append("progress_delta is required and must be non-empty")
     return errs
@@ -569,6 +572,19 @@ def compile_contract(state, turn_no: int | None = None,
         A(role_contract_section(rm["role"], rm.get("reason", ""),
                                 offered, offered))
         A("")
+    from stances import (STANCE_SUMMARY, PHASE_FLOOR, allowed_stances)
+    phase = s.get("phase") or "IDLE"
+    A(f"## CHOOSE YOUR STANCE ({phase})")
+    A('Pick how to think this turn: set "stance" to one of these and '
+      '"stance_why" to one line on why it fits what is going on. Your turn '
+      "is checked against that stance's rubric. Omit both to use the "
+      "routed default above.")
+    for st in allowed_stances(phase):
+        A(f"- {st}: {STANCE_SUMMARY[st]}")
+    if PHASE_FLOOR.get(phase):
+        A(f"Floor: {PHASE_FLOOR[phase]} is always checked in {phase}, "
+          f"whatever you choose.")
+    A("")
     A(f"## CONTEXT\nproject: {s['project_id']} | turn: {turn_no} "
       f"| knowledge: {knowledge[0]}/{knowledge[1]}")
     A("")
@@ -617,7 +633,7 @@ def compile_contract(state, turn_no: int | None = None,
         A("(all routed skills: network none — any egress this turn is "
           "flagged undeclared in the journal)")
     A("")
-    A("## STANCE (routed by harness code — never model-chosen)")
+    A("## STANCE (routed default — CHOOSE YOUR STANCE above to pick another)")
     chain = s.get("stance_chain") or [s.get("stance", "advisor")]
     A(f"{' -> '.join(chain)} (trigger: {s.get('stance_trigger', 'default')})")
     for st in chain:

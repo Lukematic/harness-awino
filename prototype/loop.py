@@ -29,7 +29,8 @@ from contract import (
 import modes as _modes
 from skills import SkillIntegrityError
 from synthesis import synthesize_learning as _synthesize_learning
-from stances import evaluate_chain, route_triple, FLOORS
+from stances import (evaluate_chain, route_triple, FLOORS,
+                     resolve_declared_stance)
 from tools import (Sandbox, TOOL_DEFS, _parse_unified_diff, _apply_hunks,
                     PatchRefusal)
 from approval_targets import resolve_shell_targets
@@ -1016,26 +1017,39 @@ class Loop:
                             stream.harness_check(f"judge:{name}",
                                                  "pass" if ok else "fail",
                                                  reason[:200])
-                if not errs and routing["chain"] != ["advisor"]:
-                    ok, failures = evaluate_chain(routing["chain"], raw, user_text)
+                chain = routing["chain"]
+                declared = (raw.get("stance") or "").strip()
+                if not errs and declared:
+                    chain, err = resolve_declared_stance(
+                        self.state.snapshot.get("phase"), declared,
+                        raw.get("stance_why", ""))
+                    if err:
+                        errs = [err]
+                if not errs and chain != ["advisor"]:
+                    ok, failures = evaluate_chain(chain, raw, user_text)
                     if ok:
                         self.state.record("stance_rubric_passed",
                                           {"turn_id": turn_id,
-                                           "stance": "->".join(routing["chain"])})
-                        if "feynman" in routing["chain"]:
+                                           "stance": "->".join(chain)})
+                        if "feynman" in chain:
                             self.state.record("learning_recorded",
                                               {"kind": "feynman",
                                                "text": raw.get("progress_delta", "")[:500]})
-                        if "premortem" in routing["chain"]:
+                        if "premortem" in chain:
                             self.state.record("premortem_completed",
                                               {"turn_id": turn_id})
                     else:
                         self.state.record("stance_rubric_failed",
                                           {"turn_id": turn_id,
-                                           "stance": "->".join(routing["chain"]),
+                                           "stance": "->".join(chain),
                                            "failures": failures})
-                        errs = [f"stance rubric FAIL ({'->'.join(routing['chain'])}): "
+                        errs = [f"stance rubric FAIL ({'->'.join(chain)}): "
                                 + "; ".join(failures)]
+                if not errs and declared:
+                    self.state.record("stance_routed", {
+                        "stance": declared, "chain": chain,
+                        "trigger": ("model: "
+                                    + raw.get("stance_why", "").strip()[:200])})
             if not errs:
                 turn = raw
                 self.state.record("turn_validated",
