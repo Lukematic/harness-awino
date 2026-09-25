@@ -22,7 +22,7 @@ not a mode.
 The permission gate computes the offered set from the mode alone, before the
 model acts. Stances never widen it.
 
-## Stances (8) — prototype `stances.py::STANCES` + `RUBRICS`
+## Stances (9) — prototype `stances.py::STANCES` + `RUBRICS`
 
 | Stance | Trigger | Mode affinity | Tool discipline | Rubric checks |
 |---|---|---|---|---|
@@ -34,16 +34,30 @@ model acts. Stances never widen it.
 | devil's-advocate | VERIFY floor default | verify | test commands only | substantive attack on results in assumptions |
 | advisor | chain wrapper (no procedure) | — | — | none (delegates to chain) |
 | triage | vague agent complaint ("you're not working", "misbehaving") | plan | read-only; diagnosis, not repair | named failure mode; falsifier stated |
+| verifier | Track G — independent verification of builder work | verify | **no tool calls at all** (read-only judge) | per-criterion verdict shape (criterion / needed_evidence / accomplished / proof_link); never grades own builder work |
 
-## Skills (11) — prototype `contract.py::SKILLS` (harness-injected bodies)
+## Skills (18) — prototype `contract.py::SKILLS` (harness-injected bodies)
 
-mission-definition, discovery, decision-analysis, domain, repo, code,
-testing, code-review, verification, explainer, triage.
+Pinned by sha256 in `prototype/skills/manifest.json` and verified at load by
+`prototype/skills.py::SkillStore`. The model never fetches them; the router
+injects full bodies into the contract block.
 
-These are injected into the contract block by the router. The model never
-fetches them. Bodies live in `prototype/skills/<name>.md`, pinned by sha256
-in `prototype/skills/manifest.json` and verified at load by
-`prototype/skills.py::SkillStore` (Phase A; hardened to mandatory in Phase C).
+**Core loop skills (11):** mission-definition, discovery, decision-analysis,
+domain, repo, code, testing, code-review, verification, explainer, triage.
+
+**Agent persona skills (5):** mode-ai-architect, mode-ai-researcher,
+mode-cybersecurity-engineer, mode-forward-deployed-engineer,
+mode-software-engineer.
+
+**Bootstrap (1):** project-bootstrap — new-project scaffolding
+(loop-owner counterpart of the old `awino-bootstrap` repo skill).
+
+**Contract helper (1):** verify.
+
+> Unmerged feature branches carry more (osmani port: 14 skills + 5
+> references; harness adoption: incident-response, dora-metrics,
+> completion-summary; rigor coach: 11 rigor-* skills). Their registries
+> describe their own trees; this file describes `main`.
 
 ## Intent table — prototype `stances.py::INTENT_TABLE` (first match wins)
 
@@ -89,13 +103,13 @@ model this rebuild replaces. Mapping to the loop-owner:
 | awino-evidence | verification skill + VERIFY floor | partial |
 | awino-triage | triage stance + skill | **done (authored via template, 2026-09-18)** |
 | awino-rpi | — | gap |
-| awino-delegate | — | gap |
+| awino-delegate | — | gap on `main` (parallel decomposition built as the fan-out primitive on `feature/fanout`, unmerged) |
 | awino-ralph | the harness loop itself | superseded |
 | awino-memory | — | gap |
 | awino-visualize | — | gap |
 | awino-reproducibility | — | gap |
 | awino-self-update | — | gap |
-| awino-bootstrap | — | gap |
+| awino-bootstrap | project-bootstrap skill | **done** |
 | awino-config-review | — | gap |
 | awino-author-agent | — | gap |
 | awino-author-tool | this template | superseded |
@@ -108,8 +122,10 @@ model this rebuild replaces. Mapping to the loop-owner:
 2. **debug procedure** — fix intent routes first-principles (cause in
    assumptions) but there's no reproduce→diagnose→fix procedure body.
 3. **rpi / delegate** — multi-file change workflow and parallel subagent
-   decomposition have no loop-owner form yet.
+   decomposition. Delegate is built (fan-out primitive, `feature/fanout`)
+   but unmerged; rpi still has no loop-owner form.
 4. **memory** — no durable-memory skill in the harness; currently handled
-   outside the loop.
+   outside the loop. (A MemPalace head-to-head evaluation is running to
+   decide: adopt wholesale, cherry-pick, or pass.)
 
 When you fill a gap, follow `AUTHORING_TEMPLATE.md` and add the row here.
