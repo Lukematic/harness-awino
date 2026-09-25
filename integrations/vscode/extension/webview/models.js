@@ -327,6 +327,12 @@
     } else if (m.type === "reconnected") {
       $("envResult").textContent = m.ok ? "reconnected" : "reconnect failed — see output channel";
       vscode.postMessage({ type: "init" }); // refresh state
+    } else if (m.type === "saveFailed") {
+      // A key could not be written to secret storage (e.g. no working
+      // system keyring): surface it in the panel instead of hanging on
+      // "reconnecting…". Non-secret settings were already saved.
+      status.textContent = "Could not save API key: " + (m.error || "unknown error");
+      vscode.postMessage({ type: "init" }); // refresh state
     } else if (m.type === "envSwitched") {
       $("envResult").textContent = m.ok
         ? "environment switched"

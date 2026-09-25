@@ -53,6 +53,45 @@ const KEY_OPENAI = "awino.apiKey.openai"; // -> AWINO_API_KEY
 const KEY_ANTHROPIC = "awino.apiKey.anthropic"; // -> ANTHROPIC_API_KEY
 const KEY_BEDROCK = "awino.apiKey.bedrock"; // Bedrock API key -> AWINO_API_KEY (Bearer)
 
+// ------------------------------------------------------------------ secrets
+// SecretStorage can hang indefinitely on machines without a working OS
+// keyring (observed: store() never resolves under headless Xvfb). A hanging
+// store with no timeout and no error surface = a dead "Save & Connect"
+// button. Every secret write/delete goes through these helpers: they race
+// the operation against a timeout and throw a human-readable error the
+// caller must surface in the UI (wizard error line, notification, panel).
+const SECRET_OP_TIMEOUT_MS = 15000;
+
+function secretTimeoutError(op: string): Error {
+  return new Error(
+    `Timed out ${op} the API key in secret storage after ${SECRET_OP_TIMEOUT_MS / 1000}s. ` +
+      `Your system keyring may be unavailable — set the key via the ` +
+      `AWINO_API_KEY / ANTHROPIC_API_KEY environment variable instead, or fix the keyring and retry.`
+  );
+}
+
+async function storeSecret(
+  secrets: vscode.SecretStorage,
+  key: string,
+  value: string
+): Promise<void> {
+  await Promise.race([
+    secrets.store(key, value),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(secretTimeoutError("storing")), SECRET_OP_TIMEOUT_MS)
+    ),
+  ]);
+}
+
+async function deleteSecret(secrets: vscode.SecretStorage, key: string): Promise<void> {
+  await Promise.race([
+    secrets.delete(key),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(secretTimeoutError("deleting")), SECRET_OP_TIMEOUT_MS)
+    ),
+  ]);
+}
+
 // ------------------------------------------------------------------ config
 
 interface AwinoConfig {
@@ -600,7 +639,17 @@ async function saveWizardSettings(
   if (keyed && key) {
     const target =
       provider === "anthropic" ? KEY_ANTHROPIC : provider === "bedrock" ? KEY_BEDROCK : KEY_OPENAI;
-    await context.secrets.store(target, key);
+    // Fail visibly, not silently: a hanging/failing secret store must not
+    // leave the wizard on a dead "Save & Connect" click. The webview shows
+    // the error inline and re-enables the button.
+    try {
+      await storeSecret(context.secrets, target, key);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`wizardSave: secret store failed: ${msg}`);
+      postToChat({ type: "wizardSaveFailed", error: msg });
+      return;
+    }
     const label = String(m.keyLabel ?? "").trim().slice(0, 40);
     if (label) {
       const labels = readKeyLabels();
@@ -1542,7 +1591,14 @@ function registerCommands(context: vscode.ExtensionContext): void {
     if (!value) {
       return;
     }
-    await context.secrets.store(provider.key, value);
+    try {
+      await storeSecret(context.secrets, provider.key, value);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`setApiKey: secret store failed: ${msg}`);
+      vscode.window.showErrorMessage(`Awino: could not store the key — ${msg}`);
+      return;
+    }
     vscode.window.showInformationMessage(`Awino: key stored securely. Reconnect to apply.`);
   });
 
@@ -1558,7 +1614,14 @@ function registerCommands(context: vscode.ExtensionContext): void {
     if (!provider) {
       return;
     }
-    await context.secrets.delete(provider.key);
+    try {
+      await deleteSecret(context.secrets, provider.key);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log(`clearApiKey: secret delete failed: ${msg}`);
+      vscode.window.showErrorMessage(`Awino: could not clear the key — ${msg}`);
+      return;
+    }
     vscode.window.showInformationMessage(`Awino: key cleared from secret storage.`);
   });
 
@@ -1718,7 +1781,14 @@ function registerCommands(context: vscode.ExtensionContext): void {
         return;
       }
       key = typed.trim();
-      await context.secrets.store(KEY_BEDROCK, key);
+      try {
+        await storeSecret(context.secrets, KEY_BEDROCK, key);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log(`bedrock setup: secret store failed: ${msg}`);
+        vscode.window.showErrorMessage(`Awino: could not store the Bedrock key — ${msg}`);
+        return;
+      }
     }
 
     // 4. optional live connection test (lists models; nothing is sent anywhere else)
@@ -2104,14 +2174,30 @@ function openModelsPanel(context: vscode.ExtensionContext): void {
         await cfg.update("model", String(m.model ?? ""), vscode.ConfigurationTarget.Workspace);
         await cfg.update("bedrockRegion", String(m.bedrockRegion ?? ""), vscode.ConfigurationTarget.Workspace);
         await cfg.update("timeout", Number(m.timeout ?? 180), vscode.ConfigurationTarget.Workspace);
+        // Secret writes go through the timeout helper: a hanging keyring
+        // must surface an error in the panel, never freeze the save.
+        const secretError = async (op: Promise<void>): Promise<string | null> => {
+          try {
+            await op;
+            return null;
+          } catch (err) {
+            return err instanceof Error ? err.message : String(err);
+          }
+        };
+        let keyError: string | null = null;
         if (typeof m.openaiKey === "string" && m.openaiKey) {
-          await context.secrets.store(KEY_OPENAI, m.openaiKey);
+          keyError = await secretError(storeSecret(context.secrets, KEY_OPENAI, m.openaiKey));
         }
-        if (typeof m.anthropicKey === "string" && m.anthropicKey) {
-          await context.secrets.store(KEY_ANTHROPIC, m.anthropicKey);
+        if (!keyError && typeof m.anthropicKey === "string" && m.anthropicKey) {
+          keyError = await secretError(storeSecret(context.secrets, KEY_ANTHROPIC, m.anthropicKey));
         }
-        if (typeof m.bedrockKey === "string" && m.bedrockKey) {
-          await context.secrets.store(KEY_BEDROCK, m.bedrockKey);
+        if (!keyError && typeof m.bedrockKey === "string" && m.bedrockKey) {
+          keyError = await secretError(storeSecret(context.secrets, KEY_BEDROCK, m.bedrockKey));
+        }
+        if (keyError) {
+          log(`models panel save: secret store failed: ${keyError}`);
+          panel.webview.postMessage({ type: "saveFailed", error: keyError });
+          break;
         }
         // Key labels are not secret — they live in settings, next to the
         // other awino.* values. Only non-empty labels are stored.
@@ -2129,9 +2215,15 @@ function openModelsPanel(context: vscode.ExtensionContext): void {
         }
         await cfg.update("keyLabels", labels, vscode.ConfigurationTarget.Workspace);
         if (m.clearKeys) {
-          await context.secrets.delete(KEY_OPENAI);
-          await context.secrets.delete(KEY_ANTHROPIC);
-          await context.secrets.delete(KEY_BEDROCK);
+          const delError =
+            (await secretError(deleteSecret(context.secrets, KEY_OPENAI))) ??
+            (await secretError(deleteSecret(context.secrets, KEY_ANTHROPIC))) ??
+            (await secretError(deleteSecret(context.secrets, KEY_BEDROCK)));
+          if (delError) {
+            log(`models panel save: secret delete failed: ${delError}`);
+            panel.webview.postMessage({ type: "saveFailed", error: delError });
+            break;
+          }
         }
         vscode.window.showInformationMessage("Awino: settings saved — reconnecting sidecar…");
         await connect(context);

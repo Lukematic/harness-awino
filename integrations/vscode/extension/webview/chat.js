@@ -568,6 +568,18 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     wError.textContent = t || "";
   }
 
+  // Busy state for Save & Connect: the secret store can take seconds (or
+  // fail), so the button must show work is happening and never double-fire.
+  var WIZ_SAVE_LABEL = "Save & Connect";
+  function setWizardSaving(saving) {
+    if (!wDone) return;
+    wDone.disabled = saving;
+    wDone.textContent = saving ? "Saving…" : WIZ_SAVE_LABEL;
+  }
+  function resetWizardSaveButton() {
+    setWizardSaving(false);
+  }
+
   function currentWizardModel() {
     if (wModelSelect && !wModelSelect.hidden && wModelSelect.value !== WIZ_MANUAL) {
       return wModelSelect.value;
@@ -698,6 +710,7 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     if (show && !wizardActive) {
       wizardActive = true;
       populateWizard(m);
+      resetWizardSaveButton();
       wizardEl.hidden = false;
       // Spec 1.3: input bar stays in the DOM — only disabled, never hidden.
       setSetupCard(false);
@@ -1239,6 +1252,7 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
       return;
     }
     setWizardError("");
+    setWizardSaving(true);
     vscode.postMessage({
       type: "wizardSave",
       provider: provider,
@@ -1272,6 +1286,7 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
       // Spec 2.1 Step 3: settings saved and sidecar connected — show the
       // prove-it step. The earlier steps are done; only the test message
       // remains.
+      resetWizardSaveButton();
       if (wProveStep) wProveStep.hidden = false;
       if (wProveNote) wProveNote.textContent = "";
       if (wProve) wProve.disabled = false;
@@ -1286,6 +1301,12 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
       if (wProve) wProve.disabled = false;
       setWizardError("The test message failed: " + (m.error || "unknown error") +
         " — check the key, endpoint, and model, then try again.");
+    } else if (m.type === "wizardSaveFailed") {
+      // The key could not be stored (e.g. no working system keyring):
+      // surface it inline and re-enable Save & Connect. The button was
+      // disabled on click so a second attempt is always possible.
+      resetWizardSaveButton();
+      setWizardError("Could not save the API key: " + (m.error || "unknown error"));
     } else if (m.type === "wizardModels") {
       // Model discovery results for the onboarding wizard (host-side fetch).
       if (m.ok && m.models && m.models.length) {
