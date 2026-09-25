@@ -188,6 +188,25 @@ Code window with a real model — that is the publish gate (T25).
 | 09-25 06:33–06:41 | mempalace; claude-code-build-system standards | Not evaluated | Read and decide → **T24** |
 | 09-25 06:18 | Audit `services/` for the retry bug in "the linked issue" | Blocked | The issue link was never provided — **needs you** |
 
+### Added after a full read of part 3 and the repo docs (09-26)
+
+The first pass read only half of the Sep 25 transcript and skimmed the repo docs.
+These rows come from the rest.
+
+| When / source | Request | Status | Evidence / task |
+|---|---|---|---|
+| 09-23 05:31; 09-25 08:46 review | Web fetch tool | Not done | → **T27** |
+| 09-25 08:46, 09:10 reviews | Tool suite: create/delete file, git log/show/branch, VS Code problems, read command output | Partial | `write_file` creates; `diagnostics` is a Python syntax check only → **T27** |
+| 09-25 08:46, 09:10 | Model-callable `switch_mode`, `spawn_agent`, `ask_user`, `update_plan` | Partial | Phases move by gates; fan-out exists but only the harness calls it; questions/plan are turn fields → **T28** |
+| 09-25 08:44, 09:10 | Approval bound to file hash: file changed since approval → approval invalid | Not done | Approvals bind args + mission revision + scope epoch → **T21** |
+| 09-25 08:44 | Stop that says what already ran vs what was prevented | Partial | Cooperative cancel (0.6); UI says "effects already executed remain" without listing them → **T29** |
+| 09-25 09:10 | Read project instructions (AGENTS.md, CLAUDE.md, copilot-instructions) and a repo profile at bootstrap | Not done | → **T19** |
+| 09-25 09:10 | A written run contract: what every run guarantees (goal, scope, mode, tools, approval policy, budget, evidence, completion, recovery, audit) | Not done | → **T24** (charter) |
+| 09-25 09:10 | Study Cline SDK, OpenHarness, HarnessOS | Not evaluated | Reference reading, record adopt/skip → **T24** |
+| 09-25 06:18 | "Audit services/ for the retry bug in the linked issue" | Likely pasted example text | Came with the dynamic-workflows blog link; no services/ in this repo |
+| `prototype/docs/STORY_PLANNING.md` | "No separate forward-thinking mechanism — the mandatory Bugatti in every plan is it" | **Conflict** | T17 added `stretch_goal` as a second channel. Reconcile: keep it only for ideas outside a story plan (e.g. at SHIP), or fold it into the Bugatti/parked flow → **needs your call** |
+| `BUILD_SPEC.md` §3, `ARCHITECTURE.md` | Stances "code-routed, never model-chosen" | **Changed on request** | T14 (09-26) lets the model choose within phase limits; modes stay code-routed. Docs to update → **T26** |
+
 ### Testing and distribution
 
 | When | Request | Status | Evidence / task |
@@ -355,6 +374,18 @@ Take items from the spec doc "A.W.I.N.O. — Spec: Beat Cline, Roo & Copilot" (r
 ### T26. Docs match the code
 - **Change:** README (test counts, install, what works), CHANGELOG 0.7 entry, CAPABILITY_REGISTRY statuses from this audit, ARCHITECTURE for the new loop behavior.
 - **Accept:** every number and status in the docs traces to a test or file.
+
+### T27. Missing everyday tools
+- **Change:** `web_fetch` (read-only, network-declared, text extracted, size-capped, approval in plan/observe), `delete_file` (consequential, scoped), `git_log`/`git_show`, and VS Code Problems via the extension (`vscode.languages.getDiagnostics`) replacing the Python-only `diagnostics` when the extension is attached.
+- **Accept:** each tool has a schema, a mode entry, a gate test, and appears in the generated catalog.
+
+### T28. Model-callable control tools
+- **Change:** `request_phase` (asks for a transition; gates still decide), `spawn_research` (read-only fan-out worker with its own context, result synthesized back), `ask_user` (structured question that pauses the loop).
+- **Accept:** `request_phase` to BUILD without approval is refused with the gate's reason; research worker cannot write; ask_user pauses and resumes.
+
+### T29. Stop that reports what happened
+- **Change:** on cancel, the chat lists tool calls completed, the one interrupted, and those prevented.
+- **Accept:** cancel mid-round → three lists match the journal.
 
 ### T18. Name (needs the user)
 - **Change:** once a name is chosen, centralize display name and IDs so a rename is one change.
