@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.4 — header model picker (2026-09-25)
+
+Pre-release (beta channel). One reported request:
+
+- Model selection from the chat header: clicking the provider pill
+  ("provider · model") now shows a model picker — the provider's
+  discovered models with the current one checked, manual entry, and a
+  shortcut to Models & Providers — instead of jumping to Settings. The
+  ⚙ gear keeps opening Models & Providers. Changing the model marks
+  settings dirty and the existing flow offers the sidecar reconnect.
+
 ## 0.5.3 — interview-convergence + transcript-persistence hotfix (2026-09-25)
 
 Pre-release (beta channel). Fixes two reported blockers:
