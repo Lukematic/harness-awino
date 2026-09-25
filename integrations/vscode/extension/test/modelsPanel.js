@@ -275,5 +275,10 @@ ok(ids["provider"].children.length === 6, "legacy binding added as an option");
 ok(ids["provider"].children[0].value === "scripted", "legacy option carries the binding id");
 ok(ids["provider"].children[0].textContent.indexOf("(current)") >= 0, "legacy option labeled as current");
 
+// 14. saveFailed surfaces a secret-storage failure in the panel (no hang on "reconnecting…")
+dispatch({ type: "saveFailed", error: "keyring timeout" });
+ok(ids["status"].textContent.indexOf("keyring timeout") >= 0,
+  "panel shows the secret-storage error instead of hanging");
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

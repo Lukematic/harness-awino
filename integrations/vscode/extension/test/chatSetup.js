@@ -242,6 +242,21 @@ ids["w-done"].fire("click", {});
 const ws = lastPosted("wizardSave");
 ok(ws && ws.provider === "openai" && ws.key === "sk-test" && ws.keyLabel === "work",
   "wizardSave carries provider, key, and label");
+// 13b. Done shows a busy state while the host stores the key (no dead click)
+ok(ids["w-done"].disabled === true, "Save & Connect disabled while the key is being stored");
+ok(ids["w-done"].textContent === "Saving…", "Save & Connect shows Saving… while storing");
+// 13c. wizardSaveFailed surfaces the storage error inline and re-enables Save
+messageListeners.forEach(function (fn) { fn({ data: { type: "wizardSaveFailed", error: "keyring boom" } }); });
+ok(ids["w-done"].disabled === false, "Save & Connect re-enabled after the save fails");
+ok(ids["w-done"].textContent === "Save & Connect", "button label restored after the save fails");
+ok(ids["w-error"].hidden === false, "inline error shown when the key could not be stored");
+ok(ids["w-error"].textContent.indexOf("keyring boom") >= 0, "error names the storage failure");
+// 13d. wizardProveReady resets the button for the prove-it step
+ids["w-done"].fire("click", {});
+ok(ids["w-done"].disabled === true, "busy again on re-save");
+messageListeners.forEach(function (fn) { fn({ data: { type: "wizardProveReady" } }); });
+ok(ids["w-done"].disabled === false, "Save & Connect re-enabled when the prove-it step appears");
+ok(ids["w-provestep"].hidden === false, "prove-it step shown on wizardProveReady");
 // 14. keyless path needs no key: echo Done posts wizardSave immediately
 ids["w-provider"].value = "echo";
 ids["w-provider"].fire("change", {});
