@@ -162,3 +162,33 @@ class TestExtractJson(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExplainFailureTest(unittest.TestCase):
+    """T3: a failed model call names the cause and the fix."""
+
+    def test_known_failures(self):
+        from backends import explain_backend_failure as ex
+        cases = {
+            "backend error: RuntimeError: endpoint HTTP 401": "API key",
+            "backend error: HTTPError: HTTP Error 404: Not Found": "not found",
+            "backend error: RuntimeError: endpoint HTTP 429": "rate-limiting",
+            "backend error: RuntimeError: endpoint HTTP 502": "server error",
+            "backend error: TimeoutError: timed out": "too long",
+            "backend error: URLError: <urlopen error [Errno 111] Connection refused>":
+                "could not be reached",
+            "model output was not a JSON object": "JSON",
+        }
+        for why, want in cases.items():
+            cause, fix = ex(why)
+            self.assertIn(want, cause, why)
+            self.assertTrue(fix)
+
+    def test_fallback_names_fix_not_open_question(self):
+        b = OllamaBackend(model="test-model", host="http://127.0.0.1:9")
+        err = RuntimeError("endpoint HTTP 401")
+        with patch("urllib.request.urlopen", side_effect=err):
+            turn = b.generate(HEADER + "\ncontract", [], None)
+        self.assertIn("API key", turn["progress_delta"])
+        self.assertIn("Models & Providers", turn["questions"][0])
+        self.assertNotIn("What should I do next", turn["questions"][0])

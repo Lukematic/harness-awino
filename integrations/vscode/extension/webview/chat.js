@@ -237,8 +237,42 @@ AwinoMarkdown.wireCopyButtons = function (root) {
 /* Test hook: reset the code-block id counter so fixtures are deterministic. */
 AwinoMarkdown._resetIds = function () { __awinoCbSeq = 0; };
 
+// The harness reply carries its contract header, the stance line and a
+// "Floor | Next action | Blocked on" footer for the CLI. In chat those
+// live in the status chips; the message shows the prose, questions,
+// assumptions, and one quiet "Next" line.
+function harnessReplyMarkdown(said) {
+  var lines = String(said || "").replace(/\r\n?/g, "\n").split("\n");
+  var out = [];
+  var next = null;
+  function bullets(title, rest) {
+    var items = rest.split(" | ").map(function (x) { return x.trim(); })
+      .filter(Boolean);
+    return "**" + title + "**\n\n" + items.map(function (x) { return "- " + x; }).join("\n");
+  }
+  for (var i = 0; i < lines.length; i++) {
+    var ln = lines[i];
+    if (/^\[A\.W\.I\.N\.O\. \|/.test(ln)) continue;
+    if (/^STANCE -> /.test(ln)) continue;
+    var m = /^Floor: .*? \| Next action: (.*?) \| Blocked on: (.*)$/.exec(ln);
+    if (m) {
+      next = "*Next:* " + m[1].trim();
+      var blocked = m[2].trim().replace(/\.$/, "");
+      if (blocked && blocked !== "nothing") next += " · *waiting on* " + blocked;
+      continue;
+    }
+    if (/^Questions: /.test(ln)) { out.push(bullets("Questions", ln.slice(11))); continue; }
+    if (/^Assuming: /.test(ln)) { out.push(bullets("Assumptions", ln.slice(10))); continue; }
+    out.push(ln);
+  }
+  var body = out.join("\n").trim();
+  return next ? (body ? body + "\n\n" : "") + next : body;
+}
+
 if (typeof window !== "undefined") window.AwinoMarkdown = AwinoMarkdown;
-if (typeof module !== "undefined" && module.exports) module.exports = { AwinoMarkdown: AwinoMarkdown };
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { AwinoMarkdown: AwinoMarkdown, harnessReplyMarkdown: harnessReplyMarkdown };
+}
 
 // The chat UI boots only inside a VS Code webview (acquireVsCodeApi +
 // document). Under node this file just exports AwinoMarkdown for the
@@ -932,6 +966,8 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
       lab.textContent = "not exposed by this provider";
     }
     st.thinkSummary.appendChild(lab);
+    // Nothing to show: keep the chat quiet instead of a placeholder row.
+    st.thinkDetails.hidden = !thinking;
   }
 
   function finalizeStream(st, r) {
@@ -939,7 +975,7 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     st.finalized = true;
     collapseThinking(st, st.thinkBuf || r.thinking || null);
     st.saidBuf = r.said != null ? String(r.said) : st.saidBuf;
-    st.bodyEl.innerHTML = AwinoMarkdown(st.saidBuf);
+    st.bodyEl.innerHTML = AwinoMarkdown(harnessReplyMarkdown(st.saidBuf));
     AwinoMarkdown.wireCopyButtons(st.bodyEl);
     if (Array.isArray(r.checks) && r.checks.length) {
       st.checksRows.innerHTML = "";
@@ -986,7 +1022,7 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     card.appendChild(thinkDetails);
     collapseThinking({ thinkDetails: thinkDetails, thinkSummary: thinkSummary, thinkBody: thinkBody },
       r.thinking || null);
-    const body = mk("div", "said md", AwinoMarkdown(r.said || ""));
+    const body = mk("div", "said md", AwinoMarkdown(harnessReplyMarkdown(r.said || "")));
     card.appendChild(body);
     AwinoMarkdown.wireCopyButtons(card);
     const results = r.results || r.tool_results || [];

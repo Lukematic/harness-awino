@@ -203,6 +203,7 @@ fire({ event: "turn_result", turn_id: "t8", result: { said: "plan text", thinkin
 const card8 = messages.children[1];
 ok(byClass(card8, "thinking-status")[0].textContent.indexOf("not exposed by this provider") >= 0,
   "honest null thinking label rendered");
+ok(byClass(card8, "thinking")[0].hidden === true, "no provider thinking: the thinking row is hidden");
 ok(byClass(card8, "checks")[0].open === false, "checks collapse when all pass");
 
 // 8. deltas for an unknown turn_id create a card without throwing

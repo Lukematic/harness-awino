@@ -471,7 +471,8 @@ class OpenAIBackendTest(unittest.TestCase):
             self.assertEqual(e["event"], "turn_result")
             # safe fallback: asks a question, proposes no tool calls
             said = e["result"]["said"]
-            self.assertIn("could not produce a valid turn", said)
+            self.assertIn("Couldn't get a usable reply", said)
+            self.assertNotIn("What should I do next", said)
             r = c.cmd("status")
             self.assertTrue(r["ok"])  # sidecar alive
             j = c.cmd("journal")

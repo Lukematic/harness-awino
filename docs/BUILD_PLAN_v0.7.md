@@ -78,6 +78,14 @@ Done on `claude/native-tools-auth-hotfix-bhsr45` (tests in `tests/test_tool_prom
   panel and on the session-start card when due. The planner role is told to use it.
   `tests/test_story.py::StretchGoalToolTest`.
 
+- **T6 done.** Chat shows the reply as prose: the contract header and `STANCE ->` line are
+  dropped (the chips already show them), questions and assumptions become lists, and the
+  `Floor | Next action | Blocked on` footer becomes one "Next" line. The thinking row is
+  hidden when the provider sent none. `test/harnessReply.js`, `test/streaming.js`.
+- **T3 done.** A failed model call names the cause and the fix (401/403 key, 404
+  endpoint/model, 429, 5xx, timeout, unreachable, non-JSON) instead of asking "What should I
+  do next?"; still a safe no-tools turn. `tests/test_ollama_backend.py::ExplainFailureTest`.
+
 Everything else below is still open.
 
 **Build order (agreed 09-26):** T4 one memory → T10 stories + brag board in VS Code →

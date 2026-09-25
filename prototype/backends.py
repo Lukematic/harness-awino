@@ -315,6 +315,39 @@ class EchoBackend(ModelBackend):
 # OllamaBackend: a REAL model backend (local LLM via Ollama). stdlib only.
 # ---------------------------------------------------------------------------
 
+def explain_backend_failure(why: str) -> tuple[str, str]:
+    """(cause, fix) in plain words for a backend failure string such as
+    "backend error: RuntimeError: endpoint HTTP 401"."""
+    w = why or ""
+    m = re.search(r"HTTP (?:Error )?(\d{3})", w)
+    code = int(m.group(1)) if m else None
+    if code in (401, 403):
+        return (f"the provider rejected the API key (HTTP {code}).",
+                "Check the key and endpoint in Models & Providers.")
+    if code == 404:
+        return ("the endpoint or model was not found (HTTP 404).",
+                "Check the endpoint URL and the model name.")
+    if code == 429:
+        return ("the provider is rate-limiting requests (HTTP 429).",
+                "Wait a moment or switch model.")
+    if code is not None and code >= 500:
+        return (f"the provider had a server error (HTTP {code}).",
+                "Try again shortly or switch model.")
+    if re.search(r"timed? ?out|TimeoutError", w, re.I):
+        return ("the model took too long to answer.",
+                "Try again, raise the timeout in settings, or pick a faster "
+                "model.")
+    if re.search(r"Connection|URLError|refused|Name or service|getaddrinfo",
+                 w, re.I):
+        return ("the endpoint could not be reached.",
+                "Check the endpoint URL and that the server is running.")
+    if "not a JSON object" in w:
+        return ("the model answered without the required JSON turn.",
+                "Resend, or pick a model that follows instructions more "
+                "closely.")
+    return (f"{w}.", "Check Models & Providers.")
+
+
 _OLLAMA_SYSTEM = """You are the model inside the A.W.I.N.O. turn loop. The harness owns the turn: it compiled the contract below from its own state. Reply with ONLY a JSON object — no prose, no markdown fences — with exactly these fields:
 - "header": echo the FIRST LINE of the contract block below EXACTLY,
   character for character. It is shown again here in a code block — copy
@@ -599,16 +632,18 @@ class OllamaBackend(ModelBackend):
 
     @staticmethod
     def _fallback(expected_header: str, why: str) -> dict:
+        """Safe no-tools turn when the model gave nothing usable. It names
+        the cause and the fix instead of asking the user what to do."""
+        cause, fix = explain_backend_failure(why)
         return {
             "header": expected_header,
             "objective": "(awaiting direction)",
             "plan": [],
             "tool_calls": [],
-            "questions": [f"I could not produce a valid turn ({why}). "
-                          "What should I do next?"],
+            "questions": [f"{fix} Then resend your message. (details: {why})"],
             "assumptions": [],
-            "progress_delta": f"Safe fallback: no valid model output ({why}); "
-                              "asking for direction instead of acting.",
+            "progress_delta": (f"Couldn't get a usable reply from the model: "
+                               f"{cause} Nothing was run."),
             "done_claim": False,
         }
 
