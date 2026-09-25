@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (0.7) — the loop runs end to end
+## 0.7.0 — the loop runs end to end (2026-09-26)
 
 - The mission loop now completes on its own: a failing test run routes
   VERIFY → BUILD for repair (three identical failures trigger the

@@ -85,15 +85,15 @@ Full inventory: [`CAPABILITY_REGISTRY.md`](CAPABILITY_REGISTRY.md).
 
 ## Status
 
-`main` carries 0.6.1 (the recursive build loop plus the native-tools
-auth fix). The 0.7 work — the end-to-end loop fixes, model-chosen stances,
-stories and brag board in VS Code, stretch goals, readable chat, and
-plain-language errors — is on `claude/native-tools-auth-hotfix-bhsr45`
-and tracked in [`docs/BUILD_PLAN_v0.7.md`](docs/BUILD_PLAN_v0.7.md),
-including an audit of every request so far (done / partial / not done).
-None of it has been run in a live VS Code window with a real model yet;
-that is the release gate. Prerelease betas ship from `vsix-v*` tags via
-the release pipeline.
+`main` carries 0.7.0: the end-to-end mission loop (write → test → repair →
+verify → ship), model-chosen stances within phase limits, stories and the
+brag board in VS Code, stretch goals, readable chat, plain-language errors,
+and one project memory shared by the CLI and the extension. What is proven
+and how: [`docs/BUILD_PLAN_v0.7.md`](docs/BUILD_PLAN_v0.7.md) (with an
+audit of every request so far) and `proof/demo-agentic-learning/` (a
+recorded sandbox mission). The VSIX installs and passes the GUI proof in
+real VS Code on Windows (CI); it has not yet run a mission against a live
+model — that is the release gate. Betas ship from `vsix-v*` tags.
 
 Product name is still open — "Awino" appears throughout as the working name,
 not the final brand.

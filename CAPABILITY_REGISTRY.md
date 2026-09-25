@@ -13,20 +13,26 @@ not a mode.
 
 | Mode | Tools granted | Consequential | Routed when |
 |---|---|---|---|
-| observe | read_file, list_dir | — | teach intent (Feynman) |
-| plan | read_file, list_dir | — | opinion / advise / triage intents; DEFINE+PLAN floors |
-| build | + write_file, patch_file | write_file + patch_file (need approval; SCOPE-bounded) | fix intent; BUILD floor (only after /approve-contract + SCOPE) |
-| verify | + run_command | — | VERIFY/REVIEW floors (no write tool offered: tests can't be edited to force a pass) |
-| ship | read_file, list_dir | — | ship intent; SHIP floor |
+| observe | reads + search/symbols/git/diagnostics + set_mission, story_plan, stretch_goal | — | teach intent (Feynman); IDLE default |
+| plan | same as observe | — | opinion / challenge / decide / advise / triage / new-task intents; DEFINE+PLAN floors |
+| build | + write_file, patch_file | write_file + patch_file (need approval; SCOPE-bounded) | fix intent **with a mission** (without one: the interview); BUILD floor (only after /approve-contract + SCOPE) |
+| verify | + run_command (sidecar: approval-gated) | — | VERIFY/REVIEW floors (no write tool offered: tests can't be edited to force a pass); a failing run routes back to BUILD |
+| ship | reads + stretch_goal | — | ship intent; SHIP floor |
+
+Harness tools in every mode: `task_add`, `task_update` (plan tasks need an evidence file to be done), `attempt_completion`. Workers never get `set_mission`, `story_plan` or `stretch_goal`.
 
 The permission gate computes the offered set from the mode alone, before the
 model acts. Stances never widen it.
 
 ## Stances (9) — prototype `stances.py::STANCES` + `RUBRICS`
 
+Since 0.7 the model may declare the stance (`stance` + `stance_why`) within
+`stances.PHASE_STANCES[phase]`; the phase floor (`PHASE_FLOOR`) rubric always
+runs too. The triggers below are the fallback when nothing is declared.
+
 | Stance | Trigger | Mode affinity | Tool discipline | Rubric checks |
 |---|---|---|---|---|
-| steel-man | "i think / we should" | plan | reads only (mode) | fair restatement (≥2 shared terms); substantive counter-case in assumptions |
+| steel-man | "i think / we should / my idea / what about / is this a good idea / challenge me / should we / X vs Y" | plan | reads only (mode) | fair restatement (≥2 shared terms); substantive counter-case in assumptions |
 | feynman | "teach me / how does / learn" | observe | **no tool calls at all** | analogy → example → snapshot in order; one gap question |
 | planning-grill | new task / raw idea | plan | no acting while questions open | exactly one question per turn; ask XOR advance (PLAN_RUSH fails); no tool calls in a question turn |
 | first-principles | "fix / bug / patch" | build | scoped writes only | non-empty derived plan; hypothesized cause in assumptions |
@@ -36,7 +42,7 @@ model acts. Stances never widen it.
 | triage | vague agent complaint ("you're not working", "misbehaving") | plan | read-only; diagnosis, not repair | named failure mode; falsifier stated |
 | verifier | Track G — independent verification of builder work | verify | **no tool calls at all** (read-only judge) | per-criterion verdict shape (criterion / needed_evidence / accomplished / proof_link); never grades own builder work |
 
-## Skills (52) — prototype `contract.py::SKILLS` (harness-injected bodies)
+## Skills (53) — prototype `contract.py::SKILLS` (harness-injected bodies)
 
 Pinned by sha256 in `prototype/skills/manifest.json` and verified at load by
 `prototype/skills.py::SkillStore`. The model never fetches them; the router

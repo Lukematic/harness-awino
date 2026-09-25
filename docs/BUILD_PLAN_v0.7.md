@@ -86,9 +86,16 @@ Done on `claude/native-tools-auth-hotfix-bhsr45` (tests in `tests/test_tool_prom
   endpoint/model, 429, 5xx, timeout, unreachable, non-JSON) instead of asking "What should I
   do next?"; still a safe no-tools turn. `tests/test_ollama_backend.py::ExplainFailureTest`.
 
-- **T26 partial.** README (test count, approvals location, new rows, honest status) and a
-  CHANGELOG "Unreleased (0.7)" entry now match the code. CAPABILITY_REGISTRY still needs its
-  statuses refreshed from the audit above.
+
+- **T25 partial.** The branch VSIX installs and passes the GUI proof in real VS Code on
+  Windows (`windows-gui-test` runs 27 and 28, green; VSIX published as the `awino-vsix`
+  artifact). A sandbox mission (agentic-learning literature review, 7 approaches) ran
+  through the real sidecar with a scripted model and passed all 14 concept checks
+  (`proof/demo-agentic-learning/report.md`, video via `record_video.js`). Still open: a
+  mission against a live model with the user's key, and a per-mode walk in VS Code.
+- **T26 done** for README, CHANGELOG, ARCHITECTURE and CAPABILITY_REGISTRY. Seen in the
+  recorded run and still open: role names shown as "mode:" chips (T8), and noisy
+  "approval recorded; 1 still pending" lines.
 
 Everything else below is still open.
 
