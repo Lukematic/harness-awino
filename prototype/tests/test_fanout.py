@@ -231,10 +231,13 @@ class TestFanoutModeInheritance(unittest.TestCase):
         # excluded from the worker's parent policy — a worker's mission is
         # fixed by its parent, so it must never reach a worker even from
         # an observe-mode parent.
-        expected = ([t for t in MODES["observe"]["tools"] if t != "set_mission"]
+        # story_plan is excluded the same way: the parent owns the story.
+        expected = ([t for t in MODES["observe"]["tools"]
+                     if t not in ("set_mission", "story_plan")]
                     + list(HARNESS_TOOLS))
         self.assertEqual(seen["gate"], expected)
         self.assertNotIn("set_mission", seen["gate"])
+        self.assertNotIn("story_plan", seen["gate"])
 
     def test_forbidden_tool_refused_end_to_end(self):
         # Parent in observe (no write_file). A persistently hostile worker

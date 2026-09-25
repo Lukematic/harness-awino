@@ -914,3 +914,70 @@ class ParkedTest(StoryTestBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StoryPlanToolTest(StoryTestBase):
+    """Model-callable story_plan: plan with the user (Honda first, Bugatti
+    pitched), pass the BUILD gate, close onto the brag board."""
+
+    ARGS = {
+        "title": "Brag board in VS Code",
+        "problem": "Stories live only in the CLI.",
+        "done_criteria": "Stories view lists done stories; close records outcome",
+        "breakdown": "Ledger exists; the gap is the surface.",
+        "surveyed": "CLI `awino stories` renders it; the extension has nothing.",
+        "user_guidance": "User wants the brag board visible where they work.",
+        "proposal": ("A (Honda): sidecar command + tree view [Likely]. "
+                     "B: webview panel. Pick A: smallest working path."),
+        "steps": ("1. Sidecar stories command | returns counts + brag | "
+                  "command errors\n"
+                  "2. Tree view | done stories render | view empty"),
+        "bugatti_brief": "Animated brag wall with time-dedicated charts.",
+    }
+
+    def _loop(self):
+        from registry import Registry
+        loop, home = make_loop()
+        awd = Path(home) / ".awino"
+        Registry(awd).ensure()
+        loop.registry = Registry(awd)
+        loop.set_mission("Show the brag board", ["manual"])
+        return loop, awd
+
+    def test_plan_passes_build_gate_and_closes_to_brag_board(self):
+        from story import story_close
+        loop, awd = self._loop()
+        r = loop._resolve_tool_fn("story_plan")(**self.ARGS)
+        self.assertTrue(r.get("ok"), r)
+        self.assertEqual(r["dag_seeded"], 2)
+        st = StoryStore(awd).get(r["story_id"])
+        self.assertEqual(st["status"], "doing")
+        self.assertIn("Bugatti", st["approach"])
+        loop.approve_contract()
+        self.assertEqual(loop.approve_contract(["out.txt"])["status"], "ok")
+        story_close(awd, r["story_id"], "shipped the tree view")
+        md = (awd.parent / "STORY.md").read_text()
+        self.assertIn("Brag board in VS Code", md)
+        self.assertIn("shipped the tree view", md)
+
+    def test_uncalibrated_pitch_is_refused(self):
+        loop, _ = self._loop()
+        args = dict(self.ARGS, proposal="A is best.")
+        r = loop._resolve_tool_fn("story_plan")(**args)
+        self.assertIn("calibrate", r.get("error", ""))
+
+    def test_malformed_step_is_refused(self):
+        loop, _ = self._loop()
+        r = loop._resolve_tool_fn("story_plan")(
+            **dict(self.ARGS, steps="just do it"))
+        self.assertIn("title | success | failure", r.get("error", ""))
+
+    def test_offered_in_plan_modes_only_and_never_to_workers(self):
+        from contract import MODES
+        self.assertIn("story_plan", MODES["plan"]["tools"])
+        self.assertIn("story_plan", MODES["observe"]["tools"])
+        self.assertNotIn("story_plan", MODES["build"]["tools"])
+        loop, _ = self._loop()
+        loop.state.snapshot["worker_id"] = "w-1"
+        r = loop._resolve_tool_fn("story_plan")(**self.ARGS)
+        self.assertIn("refused", r.get("error", ""))

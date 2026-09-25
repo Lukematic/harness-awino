@@ -92,6 +92,45 @@ class TestTripleRouting(unittest.TestCase):
         self.assertEqual(chain, ["planning-grill"])
         self.assertIn("floor default", trigger)
 
+    def test_ideas_get_challenged(self):
+        idle = {"mission": None, "phase": "IDLE"}
+        cases = {
+            "my idea is to add a brag board": ("opinion", ["steel-man"]),
+            "what about a VS Code agent that owns the loop":
+                ("opinion", ["steel-man"]),
+            "is this a good idea?": ("challenge", ["steel-man", "premortem"]),
+            "challenge me on this plan":
+                ("challenge", ["steel-man", "premortem"]),
+            "should we use postgres or sqlite?":
+                ("decide", ["steel-man", "premortem"]),
+        }
+        for text, (want_intent, want_chain) in cases.items():
+            intent, mode, chain, _, _ = route_triple(idle, text, "info")
+            self.assertEqual((intent, mode, chain),
+                             (want_intent, "plan", want_chain), text)
+
+    def test_mission_asks_open_the_interview(self):
+        for text in ("lets set mission", "I want to build a todo app",
+                     "let's create a new mission"):
+            intent, mode, chain, skills, _ = route_triple(
+                {"mission": None, "phase": "IDLE"}, text, "info")
+            self.assertEqual((intent, mode, chain),
+                             ("new-task", "plan", ["planning-grill"]), text)
+            self.assertIn("mission-definition", skills)
+
+    def test_no_mission_never_routes_a_write_mode(self):
+        intent, mode, chain, _, trigger = route_triple(
+            {"mission": None, "phase": "IDLE"}, "can you implement login",
+            "info")
+        self.assertEqual((intent, mode, chain),
+                         ("new-task", "plan", ["planning-grill"]))
+        self.assertIn("define it first", trigger)
+        # With a mission the same ask still routes to build.
+        _, mode, _, _, _ = route_triple(
+            {"mission": {"id": "m-1"}, "phase": "BUILD"},
+            "can you implement login", "info")
+        self.assertEqual(mode, "build")
+
     def test_default_is_advisor_without_mission_or_floor(self):
         intent, mode, chain, skills, _ = route_triple(
             {"mission": None, "phase": "IDLE"}, "go", "info")

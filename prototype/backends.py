@@ -325,7 +325,8 @@ _OLLAMA_SYSTEM = """You are the model inside the A.W.I.N.O. turn loop. The harne
   ```
 - "objective": the current objective, in your own words.
 - "plan": list of step strings. Use [] when there is no plan.
-- "tool_calls": list of {"name": ..., "args": {...}}. Call ONLY tools the contract lists as offered for the current mode. Available tools: read_file {"path"}, list_dir {} (takes no arguments), run_command {"cmd"}, write_file {"path", "content"} (consequential: propose only when a plan exists and was approved), patch_file {"path", "diff"} (consequential: unified diff applied atomically; same approval and SCOPE rules as write_file), search_files {"pattern"} (regex search over file contents; read-only), find_symbol {"name"} (find function/class definitions; read-only), git_status {} (read-only), git_diff {} (read-only), diagnostics {} (Python syntax check; read-only), attempt_completion {"summary"} (propose completion; the harness verifies every done criterion in code), task_add {"title"} / task_update {"id", "status"} (harness TODO list), set_mission {"text", "criteria"} ("criteria" is one string: the done criteria separated by semicolons; call it when the discovery interview has converged — it records the mission and unblocks the floors; observe/plan only).
+- "tool_calls": list of {"name": ..., "args": {...}}. Call ONLY tools the contract lists as offered for the current mode. Tools ("?" = optional argument):
+{tools}
 - Every round, pick ONE coherent step: plan it, act on it with tools, and report what you did in "progress_delta". The harness re-invokes you each round with the tool results, so continue from them instead of repeating a step.
 - "args" values may be strings, numbers, booleans, or null — never nested objects or arrays.
 - "questions": list of question strings when you are blocked; otherwise [].
@@ -334,7 +335,7 @@ _OLLAMA_SYSTEM = """You are the model inside the A.W.I.N.O. turn loop. The harne
 - "done_claim": true only when every done criterion is met with evidence; otherwise false.
 Rules: never invent approvals or evidence; never claim done without evidence; if you cannot comply, return a valid JSON turn carrying a question instead of acting.
 Format traps that WILL get the turn rejected — avoid them:
-- "args" must ALWAYS be a JSON object, never an array. list_dir takes "args": {}.
+- "args" must ALWAYS be a JSON object, never an array. Pass every argument the user's request implies — e.g. to look inside a folder call list_dir with {"path": "<that folder>"}; {} lists the workspace root only.
 - "done_claim" MUST be false unless the contract's DONE CRITERIA section shows every criterion already satisfied. When in doubt, false. Claiming done early is forgery and the turn is rejected.
 - On a retry after a harness rejection, keep the "header" byte-identical to the previous attempt. Never rephrase it.
 - Stance procedure: if the contract block contains a PROCEDURE section, follow it exactly. E.g. a first-principles procedure requires you to state the hypothesized cause / decomposition in "assumptions" BEFORE acting — so put a real cause hypothesis in "assumptions", never leave it empty when the procedure demands it."""
@@ -405,7 +406,9 @@ class OllamaBackend(ModelBackend):
                            "temperature": temperature,
                            "native_tools": bool(native_defs)})
         expected_header = contract_block.split("\n", 1)[0]
-        system = _OLLAMA_SYSTEM.replace("{header}", expected_header)
+        from tool_schema import tool_catalog  # local: avoids import cycle
+        system = (_OLLAMA_SYSTEM.replace("{header}", expected_header)
+                  .replace("{tools}", tool_catalog()))
         prompt = self._user_prompt(contract_block, history, feedback,
                                    native_tools=bool(native_defs))
         raw_tool_calls: list = []

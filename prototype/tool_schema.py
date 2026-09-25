@@ -10,6 +10,8 @@ they are offered to the model like any other tool but intercepted by the
 loop instead of reaching the sandbox.
 """
 
+import re
+
 from tools import TOOL_DEFS
 
 TOOL_SCHEMAS: dict[str, dict] = {
@@ -181,7 +183,53 @@ TOOL_SCHEMAS: dict[str, dict] = {
             "required": ["text", "criteria"],
         },
     },
+    "story_plan": {
+        "description": ("Record the story plan you agreed with the user. Honda "
+                        "first: the committed, working scope is the "
+                        "recommendation; the Bugatti is pitched in brief and "
+                        "never built unasked. Writes the story spine, puts it "
+                        "on the story ledger (STORY.md, brag board on close) "
+                        "and seeds the task list. Call it after the user "
+                        "agrees to the plan."),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Story title; needed when no story is in progress."},
+                "story_id": {"type": "string", "description": "Existing story id to plan; default the story in progress."},
+                "problem": {"type": "string", "description": "The problem in one or two sentences."},
+                "done_criteria": {"type": "string", "description": "Done criteria, separated by semicolons."},
+                "breakdown": {"type": "string", "description": "First-principles breakdown of the problem."},
+                "surveyed": {"type": "string", "description": "Existing approaches surveyed and why they fall short."},
+                "user_guidance": {"type": "string", "description": "What the user asked for and decided, in their words."},
+                "proposal": {"type": "string", "description": "Options A/B/C with the Honda recommended; tag claims [Certain], [Likely] or [Guessing]."},
+                "steps": {"type": "string", "description": "Ordered steps, one per line: title | success criterion | failure criterion."},
+                "bugatti_brief": {"type": "string", "description": "The Bugatti (ambitious option) in two or three sentences."},
+            },
+            "required": ["breakdown", "surveyed", "user_guidance",
+                         "proposal", "steps", "bugatti_brief"],
+        },
+    },
 }
+
+
+def tool_catalog(names: list[str] | None = None) -> str:
+    """One-line-per-tool catalog for JSON-turn prompts, generated from
+    TOOL_SCHEMAS so the prompt can never drift from the real parameters.
+    Optional parameters carry a trailing '?'; consequential tools say so."""
+    lines = []
+    for n in names if names is not None else TOOL_SCHEMAS:
+        s = TOOL_SCHEMAS.get(n)
+        if s is None:
+            continue
+        props = s["parameters"].get("properties", {})
+        req = set(s["parameters"].get("required", []))
+        params = ", ".join(f'"{p}"' + ("" if p in req else "?")
+                           for p in props)
+        desc = re.sub(r"\s*\([^)]*\)", "", s["description"].split(". ")[0]).rstrip(".")
+        gate = (" [consequential: needs approval]"
+                if TOOL_DEFS.get(n, {}).get("consequential") else "")
+        lines.append(f"  - {n} {{{params}}}: {desc}{gate}")
+    return "\n".join(lines)
 
 
 def schemas_for(names: list[str]) -> list[dict]:

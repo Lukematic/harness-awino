@@ -40,6 +40,10 @@ TOOL_DEFS = {
     # Offered in observe/plan only via contract MODES — NOT in
     # HARNESS_TOOLS (those are offered in every mode).
     "set_mission": {"consequential": False, "args": ["text", "criteria"]},
+    # Harness-owned story planner (observe/plan only, like set_mission).
+    "story_plan": {"consequential": False,
+                   "args": ["title", "breakdown", "surveyed", "user_guidance",
+                            "proposal", "steps", "bugatti_brief"]},
 }
 
 

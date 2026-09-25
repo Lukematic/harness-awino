@@ -95,27 +95,8 @@ def _apply_sidecar_tool_profile() -> None:
     for _mode in MODES.values():
         if "search_files" not in _mode["tools"]:
             _mode["tools"].append("search_files")
-    # The model must know about search_files; the contract block already
-    # lists offered tools per mode, this keeps the turn system prompt
-    # consistent.
-    backends._OLLAMA_SYSTEM = backends._OLLAMA_SYSTEM.replace(
-        'Available tools: read_file {"path"}, list_dir {} (takes no arguments), '
-        'run_command {"cmd"}, write_file {"path", "content"} (consequential: '
-        "propose only when a plan exists and was approved), patch_file "
-        '{"path", "diff"} (consequential: unified diff applied atomically; '
-        "same approval and SCOPE rules as write_file).",
-        'Available tools: read_file {"path"}, list_dir {"path"} (relative dir, '
-        '"" for root), search_files {"pattern" (regex), "path" (relative dir, '
-        'optional), "glob" (filename glob, optional)}, run_command {"cmd"} '
-        "(consequential: needs operator approval), write_file "
-        '{"path", "content"} (consequential: needs operator approval; propose '
-        "only when a plan exists and was approved), patch_file "
-        '{"path", "diff"} (consequential: needs operator approval; unified '
-        "diff applied atomically; same approval and SCOPE rules as write_file), "
-        'set_mission {"text", "criteria" (semicolon-separated done criteria)} '
-        "(interview: call this when the mission and done criteria are crisp "
-        "\u2014 it records the mission and unblocks the floors).",
-    )
+    # The turn prompt's tool catalog is generated from tool_schema at
+    # call time (backends.tool_catalog), so no prompt patching is needed.
     _TOOL_PROFILE_APPLIED = True
 
 
@@ -131,12 +112,15 @@ class WorkspaceSandbox(Sandbox):
     """
 
     def search_files(self, pattern: str, path: str = "",
-                     glob: str = "*") -> dict:
+                     glob: str = "*", file_glob: str = "",
+                     top_k=50) -> dict:
         """Regex-search file contents under `path` (relative to workspace).
 
         Returns up to 50 hits: {file, line, text}. Binary/unreadable files
         are skipped. A bad regex is a tool error, not a crash.
         """
+        glob = file_glob or glob or "*"
+        limit = self._coerce_top_k(top_k)
         try:
             rx = re.compile(pattern)
         except re.error as e:
@@ -165,7 +149,7 @@ class WorkspaceSandbox(Sandbox):
                 if rx.search(line):
                     hits.append({"file": str(p.relative_to(self.root)),
                                  "line": i, "text": line[:200]})
-                    if len(hits) >= 50:
+                    if len(hits) >= limit:
                         return {"pattern": pattern, "hits": hits,
                                 "truncated": True}
         return {"pattern": pattern, "hits": hits, "truncated": False}
@@ -1581,9 +1565,12 @@ BUILTIN_MODES: list[dict] = [
     {"id": "planner", "label": "Planner",
      "stages": ["DEFINE", "PLAN"],
      "stance_prompt": (
-         "Design before doing. Produce a concrete, step-by-step plan with "
-         "assumptions and open questions; propose no tool calls that change "
-         "state. Prefer reading and searching to acting."),
+         "Design before doing, with the user. Produce a concrete, "
+         "step-by-step plan with assumptions and open questions; propose "
+         "no tool calls that change state. Honda first: recommend the "
+         "smallest scope that works; pitch the Bugatti in two sentences "
+         "and never build it unasked. When the user agrees, call "
+         "story_plan to record it."),
      "tool_policy": ["read_file", "list_dir", "search_files"],
      "sampling": {"temperature": 0.2}},
     {"id": "architect", "label": "Architect",

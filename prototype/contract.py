@@ -22,7 +22,7 @@ MODES = {
         "tools": ["read_file", "list_dir", "search_files", "find_symbol",
                   "git_status", "git_diff", "diagnostics",
                   # Hotfix port (0.5.3): interview-convergence tool.
-                  "set_mission"],
+                  "set_mission", "story_plan"],
         "consequential": [],
         "desc": "Read-only. Questions, teaching, and exploration with no mission.",
     },
@@ -30,7 +30,7 @@ MODES = {
         "tools": ["read_file", "list_dir", "search_files", "find_symbol",
                   "git_status", "git_diff", "diagnostics",
                   # Hotfix port (0.5.3): interview-convergence tool.
-                  "set_mission"],
+                  "set_mission", "story_plan"],
         "consequential": [],
         "desc": "Read-only planning. No edits on this floor.",
     },

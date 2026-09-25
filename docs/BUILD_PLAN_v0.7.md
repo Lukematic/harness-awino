@@ -25,6 +25,29 @@ Field screenshots show the harness failing its first real session:
 
 ---
 
+## Status
+
+Done on `claude/native-tools-auth-hotfix-bhsr45` (tests in `tests/test_tool_prompt.py`,
+`tests/test_stances.py`, `tests/test_story.py::StoryPlanToolTest`):
+
+- **T1 done.** The tool list in the turn prompt is generated from `TOOL_SCHEMAS`
+  (`tool_schema.tool_catalog`); the sidecar string patch is gone. Also fixed: the
+  sidecar `search_files` rejected the schema's `file_glob`/`top_k` (TypeError on
+  native-tool calls).
+- **Challenge routing (new, was missing):** "my idea…", "what about…", "is this a good
+  idea", "challenge me", "should we…", "X vs Y" now fire steel-man / premortem
+  instead of the generic advisor. "lets set mission" / "I want to build…" open the
+  planning-grill interview. With no mission, a build/verify/ship ask routes to the
+  interview first instead of a write-capable mode.
+- **T10 model tool done.** `story_plan` (observe/plan, workers refused) writes the
+  Honda-first spine, seeds the DAG, passes the BUILD gate, and closed stories land on
+  the brag board. Planner role prompt tells the model to use it. Still to do in T10:
+  the sidecar `stories`/`story_start`/`story_close` commands and the VS Code view.
+
+Everything else below is still open.
+
+---
+
 ## Builder rules (from the A.W.I.N.O. builder prompt — non-negotiable)
 
 1. Keep going. Don't stop on routine decisions; pick the option that advances fastest.

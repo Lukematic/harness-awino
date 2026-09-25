@@ -156,10 +156,31 @@ _INTENT_RIGOR = {
 # Canonical intent table: (intent, pattern, mode, stance chain, skills).
 # Checked in order; first match wins. Intent overrides the floor defaults.
 # ---------------------------------------------------------------------------
+_MISSION_SKILLS = ["mission-definition", "discovery",
+                   "rigor-distillation", "rigor-laws",
+                   "durable-memory"]  # recall before planning
+
 INTENT_TABLE = [
+    ("challenge",
+     re.compile(r"\bchallenge (me|this|my|it|that)\b|\bpoke holes\b|"
+                r"\bdevil'?s advocate\b|\bpush back\b|"
+                r"\btear (it|this|that) apart\b|\bwhat could go wrong\b|"
+                r"\bis (this|it|that) a good idea\b|\bam i (wrong|missing)\b|"
+                r"\bstress[- ]test\b|\bsanity[- ]check\b|\bgrill me\b"),
+     "plan", ["steel-man", "premortem"], ["decision-analysis", "domain"]),
     ("opinion",
-     re.compile(r"\bi think\b|\bwe should\b"),
+     re.compile(r"\bi think\b|\bwe should\b|\bmy idea\b|\bwhat about\b|"
+                r"\bhow about\b|\bwhat if we\b|\bi'?m thinking\b"),
      "plan", ["steel-man"], ["domain"]),
+    ("decide",
+     re.compile(r"\bshould (we|i)\b|\bwhich (one )?is better\b|"
+                r"\bpros and cons\b|\btrade-?offs?\b|\b\w+ (vs\.?|versus) \w+"),
+     "plan", ["steel-man", "premortem"], ["decision-analysis", "domain"]),
+    ("new-task",
+     re.compile(r"\b(set|define|start|create|new)( up)?( a| the| our)? "
+                r"mission\b|\bi want to (build|make|create)\b|"
+                r"\blet'?s (build|make|create)\b|\bnew project\b"),
+     "plan", ["planning-grill"], _MISSION_SKILLS),
     ("teach",
      re.compile(r"\bteach me\b|\bhow does\b|\bhow do\b|\blearn\b"),
      "observe", ["feynman"], ["explainer", "domain"]),
@@ -194,8 +215,18 @@ def route_triple(snapshot: dict, text: str,
                  "rigor-distillation", "rigor-laws",
                  "durable-memory"],  # recall before planning
                 "new objective")
+    no_mission = (not snapshot.get("mission")
+                  and snapshot.get("phase") in (None, "", "IDLE"))
     for intent, rx, mode, chain, skills in INTENT_TABLE:
         if rx.search(t):
+            if no_mission and mode in ("build", "verify", "ship"):
+                # Acting needs a mission: grill it into existence first
+                # instead of routing a write-capable mode with nothing
+                # approved to act on.
+                return ("new-task", "plan", ["planning-grill"],
+                        list(_MISSION_SKILLS),
+                        f"intent pattern: {intent} (no mission yet — "
+                        f"define it first)")
             return (intent, mode, list(chain),
                     list(skills) + _INTENT_RIGOR.get(intent, []),
                     f"intent pattern: {intent}")

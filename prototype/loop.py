@@ -1235,6 +1235,81 @@ class Loop:
                             "revision": mission["revision"]},
                 "said": f"Mission set: {mission['text'][:160]}"}
 
+    def _harness_story_plan(self, **args) -> dict:
+        """Model-callable story planner: writes the six-part spine agreed
+        with the user (Honda first, Bugatti pitched in brief) and seeds the
+        task DAG from its ordered steps.
+
+        Turn-schema args are strings: `done_criteria` is semicolon- or
+        newline-separated; `steps` is one step per line as
+        "title | success | failure", each depending on the previous one.
+        Targets `story_id`, else the story in progress, else starts a new
+        story from `title`. Workers are refused.
+        """
+        if self.state.snapshot.get("worker_id"):
+            return {"error": "story_plan refused: the parent owns the story"}
+        reg = getattr(self, "registry", None)
+        if reg is None:
+            return {"error": "story_plan needs a project registry — "
+                             "set_mission first"}
+        from story import StoryStore, doing_stories, story_start
+        awd = reg.awino_dir
+
+        def arg(key: str) -> str:
+            v = args.get(key, "")
+            return v.strip() if isinstance(v, str) else ""
+
+        steps = []
+        for i, line in enumerate(l for l in arg("steps").splitlines()
+                                 if l.strip()):
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) != 3:
+                return {"error": f"story_plan step {i + 1} must be "
+                                 f"'title | success | failure', got: "
+                                 f"{line.strip()[:120]}"}
+            steps.append({"title": re.sub(r"^\d+[.)]\s*", "", parts[0]),
+                          "success": parts[1], "failure": parts[2]})
+        criteria = [c.strip() for c in re.split(r"[;\n]+",
+                                                arg("done_criteria"))
+                    if c.strip()]
+        try:
+            store = StoryStore(awd)
+            story_id = arg("story_id")
+            if not story_id:
+                doing = doing_stories(awd)
+                if doing:
+                    story_id = doing[0]["id"]
+                elif arg("title"):
+                    story_id = story_start(awd, arg("title"),
+                                           status="doing")["id"]
+                else:
+                    return {"error": "story_plan needs 'title' when no "
+                                     "story is in progress"}
+            fields = {}
+            if arg("problem"):
+                fields["problem"] = arg("problem")
+            if criteria:
+                fields["done_criteria"] = criteria
+            if fields:
+                store.update(story_id, **fields)
+        except (KeyError, ValueError) as ex:
+            return {"error": f"story_plan refused: {ex}"}
+        res = self.plan_story(story_id, breakdown=arg("breakdown"),
+                              surveyed=arg("surveyed"),
+                              user_guidance=arg("user_guidance"),
+                              proposal=arg("proposal"), steps=steps,
+                              bugatti_brief=arg("bugatti_brief"))
+        if res.get("status") != "ok":
+            return {"error": res.get("said", "story_plan failed")}
+        story = StoryStore(awd).get(story_id)
+        gaps = [k for k in ("problem", "done_criteria") if not story.get(k)]
+        said = res["said"]
+        if gaps:
+            said += (f" Still missing before BUILD: {', '.join(gaps)} — "
+                     f"call story_plan again with them.")
+        return {"ok": True, "story_id": story_id,
+                "dag_seeded": res.get("dag_seeded", 0), "said": said}
+
     def _intercept_harness_calls(self, turn_id: str, turn_no: int,
                                  round_no: int, calls: list[dict]):
         """Split harness calls out of a validated round.
@@ -2157,6 +2232,8 @@ class Loop:
             # not a Sandbox method, never delegated — the model calls it to
             # converge the discovery interview into a recorded mission.
             return self._harness_set_mission
+        if tool_name == "story_plan":
+            return self._harness_story_plan
         if self.delegation is not None:
             fn = self.delegation.tool_fn(tool_name)
             if fn is not None:
@@ -3410,7 +3487,7 @@ class Loop:
         # tool-level refusal in _harness_set_mission).
         parent_tools = [t for t in
                         list(MODES[parent_mode]["tools"]) + list(HARNESS_TOOLS)
-                        if t != "set_mission"]
+                        if t not in ("set_mission", "story_plan")]
         self.state.record(
             "fanout_started",
             {"objective": objective,
