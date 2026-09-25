@@ -98,7 +98,7 @@ FLOORS = {
         # observability (instrument the user's system as it is built — the
         # harness's own traceability is its effect journal, a different
         # thing).
-        "skills": ["repo", "code",
+        "skills": ["repo", "code", "debug", "rpi",
                    "rigor-iteration", "rigor-proof-cycles",
                    "osmani-tdd", "osmani-security",
                    "osmani-source-driven", "osmani-observability"],
@@ -173,7 +173,7 @@ INTENT_TABLE = [
      "plan", ["triage"], ["triage", "domain"]),
     ("fix",
      re.compile(r"\bfix\b|\bbug\b|\bdebug\b|\bpatch\b|\bimplement\b|\brepair\b"),
-     "build", ["first-principles"], ["repo", "code"]),
+     "build", ["first-principles"], ["repo", "code", "debug", "rpi"]),
     ("ship",
      re.compile(r"\bship it\b|\bready to ship\b|\blet'?s ship\b|\brelease\b"),
      "ship", ["premortem"], ["verification"]),

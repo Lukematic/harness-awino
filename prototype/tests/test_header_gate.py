@@ -33,7 +33,7 @@ class TestTurnHeader(unittest.TestCase):
         self.assertEqual(phase, "DEFINE")
         self.assertEqual(mode, "build")  # fix intent overrides the floor default
         self.assertEqual(stance, "first-principles")
-        self.assertEqual(skills, "repo,code,rigor-iteration,rigor-proof-cycles")
+        self.assertEqual(skills, "repo,code,debug,rpi,rigor-iteration,rigor-proof-cycles")
         self.assertEqual(loop_no, "1")
         self.assertEqual(kn, "0")
         self.assertEqual(km, "1")

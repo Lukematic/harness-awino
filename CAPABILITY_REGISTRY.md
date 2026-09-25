@@ -36,7 +36,7 @@ model acts. Stances never widen it.
 | triage | vague agent complaint ("you're not working", "misbehaving") | plan | read-only; diagnosis, not repair | named failure mode; falsifier stated |
 | verifier | Track G — independent verification of builder work | verify | **no tool calls at all** (read-only judge) | per-criterion verdict shape (criterion / needed_evidence / accomplished / proof_link); never grades own builder work |
 
-## Skills (50) — prototype `contract.py::SKILLS` (harness-injected bodies)
+## Skills (52) — prototype `contract.py::SKILLS` (harness-injected bodies)
 
 Pinned by sha256 in `prototype/skills/manifest.json` and verified at load by
 `prototype/skills.py::SkillStore`. The model never fetches them; the router
@@ -74,6 +74,13 @@ JSONL store (`.awino/memory.jsonl`), chunked entries, content-hash dedup,
 offline keyword search. Routed on DEFINE + the new-task path (recall before
 planning); the body teaches persist-at-closure. No compression (measured
 2.7x with fidelity loss, not 30x), no daemon, no vector search.
+
+**Debug + multi-file workflows (2):** debug — reproduce→diagnose→fix→verify
+procedure with checklist gates (reproduction evidence before diagnosis,
+ROOT CAUSE statement format, verification criteria); rpi — repeatable
+multi-file implementation workflow in loop-owner form (file set named in
+SCOPE, sequenced edits, verify each file, integrate; works through the
+contract/mission machinery, never around it).
 
 ## Intent table — prototype `stances.py::INTENT_TABLE` (first match wins)
 
