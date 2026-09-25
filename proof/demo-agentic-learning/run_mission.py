@@ -71,7 +71,8 @@ ALL = list(ROWS)
 SIX = ALL[:6]
 
 evq: "queue.Queue[dict]" = queue.Queue()
-timeline: list[dict] = []
+timeline: list[dict] = [{"kind": "meta", "live": False, "provider": "scripted",
+                          "model": "hand-written turns in run_mission.py"}]
 
 
 def capture(obj):
@@ -311,7 +312,10 @@ checks = {
                                             for b in stories["brag"]),
     "Journal chain intact": ok,
 }
-lines = ["# Sandbox run: agentic-learning review mission", "",
+lines = ["# SCRIPTED sandbox run: agentic-learning review mission", "",
+         "**The model's replies were written by hand in run_mission.py** (no provider key "
+         "in the build environment). The harness, tools, gates, files and journal are real. "
+         "For a live model, use the live-mission workflow (proof/live_mission/).", "",
          f"Workspace: `{ws}`", "",
          "| Check | Result |", "|---|---|"]
 lines += [f"| {k} | {'PASS' if v else 'FAIL'} |" for k, v in checks.items()]

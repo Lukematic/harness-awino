@@ -1,6 +1,8 @@
-# Sandbox run: agentic-learning review mission
+# SCRIPTED sandbox run: agentic-learning review mission
 
-Workspace: `/tmp/agentic-learning-2aq0sceo`
+**The model's replies were written by hand in run_mission.py** (no provider key in the build environment). The harness, tools, gates, files and journal are real. For a live model, use the live-mission workflow (proof/live_mission/).
+
+Workspace: `/tmp/agentic-learning-c93zhwqd`
 
 | Check | Result |
 |---|---|

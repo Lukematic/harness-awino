@@ -1,0 +1,83 @@
+# live-mission — run the agentic-learning mission against a REAL model.
+#
+# Nothing on the model side is scripted. proof/live_mission/run_live.py plays
+# only the human (messages, contract + scope approval, Approve clicks); the
+# model you name does everything else through the same sidecar the VS Code
+# extension runs. The report records what fired and what did not — it never
+# forces a pass.
+#
+# Setup (once): Settings -> Secrets and variables -> Actions -> New secret
+#   AWINO_API_KEY      for provider "openai" (any OpenAI-compatible endpoint:
+#                      OpenRouter, OpenAI, your gateway)
+#   ANTHROPIC_API_KEY  for provider "anthropic"
+# Run: Actions -> live-mission -> Run workflow -> fill provider/endpoint/model.
+# Output: the "live-mission" artifact (report.md, the files the model wrote,
+# the journal, timeline.json, and a video of the chat UI) + the job summary.
+
+name: live-mission
+
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: "openai (any OpenAI-compatible endpoint) or anthropic"
+        required: true
+        default: openai
+        type: choice
+        options: [openai, anthropic]
+      endpoint:
+        description: "Base URL (openai provider), e.g. https://openrouter.ai/api/v1"
+        required: false
+        default: https://openrouter.ai/api/v1
+      model:
+        description: "Model id at that endpoint"
+        required: true
+
+jobs:
+  live-mission:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run the mission against the live model
+        env:
+          AWINO_API_KEY: ${{ secrets.AWINO_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          IN_PROVIDER: ${{ inputs.provider }}
+          IN_ENDPOINT: ${{ inputs.endpoint }}
+          IN_MODEL: ${{ inputs.model }}
+        run: |
+          ARGS=(--provider "$IN_PROVIDER" --model "$IN_MODEL" --out live-out)
+          if [ "$IN_PROVIDER" = "openai" ]; then ARGS+=(--endpoint "$IN_ENDPOINT"); fi
+          python proof/live_mission/run_live.py "${ARGS[@]}"
+
+      - name: Job summary
+        if: always()
+        run: cat live-out/report.md >> "$GITHUB_STEP_SUMMARY" || echo "no report" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/setup-node@v4
+        if: always()
+        with:
+          node-version: 20
+
+      - name: Record the chat UI replay
+        if: always()
+        working-directory: proof/demo-agentic-learning
+        run: |
+          [ -f ../../live-out/timeline.json ] || exit 0
+          npm i --no-save playwright@1.56.1
+          npx playwright install --with-deps chromium
+          node record_video.js ../../live-out/timeline.json ../../live-out/video
+
+      - name: Upload everything the run produced
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-mission
+          path: live-out/
+          if-no-files-found: warn

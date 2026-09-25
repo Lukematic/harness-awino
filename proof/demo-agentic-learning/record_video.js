@@ -2,23 +2,31 @@
 // real chat webview (webview/chat.html + chat.js) in Chromium and records it.
 // Captions in gold mark the human's actions; everything else is the UI
 // rendering sidecar events exactly as the extension would post them.
-const { chromium } = require("/opt/node22/lib/node_modules/playwright");
+let chromium;
+try { ({ chromium } = require("playwright")); }
+catch (e) { ({ chromium } = require(require("child_process").execSync("npm root -g").toString().trim() + "/playwright")); }
 const fs = require("fs");
 const path = require("path");
 const here = __dirname;
 const ext = path.join(here, "../../integrations/vscode/extension/webview");
-const out = path.join(here, "out");
+// Usage: node record_video.js [timeline.json] [outDir]
+const tlPath = process.argv[2] ? path.resolve(process.argv[2]) : path.join(here, "timeline.json");
+const out = process.argv[3] ? path.resolve(process.argv[3]) : path.join(here, "out");
 fs.mkdirSync(out, { recursive: true });
 const html = fs.readFileSync(path.join(ext, "chat.html"), "utf8")
   .replace("{{CSP_SOURCE}}", "file: 'unsafe-inline'")
   .replace("{{SETUP_SHARED_JS}}", "file://" + path.join(ext, "setup-shared.js"))
   .replace("{{CHAT_JS}}", "file://" + path.join(ext, "chat.js"));
 fs.writeFileSync(path.join(out, "page.html"), html);
-const tl = JSON.parse(fs.readFileSync(path.join(here, "timeline.json"), "utf8"));
+const tl = JSON.parse(fs.readFileSync(tlPath, "utf8"));
+const meta = tl.find((x) => x.kind === "meta") || { live: false };
+const badge = meta.live ? "LIVE MODEL: " + meta.provider + " · " + meta.model
+                        : "SCRIPTED MODEL — harness and UI are real, the model's replies were written by hand";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 (async () => {
-  const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium-1194/chrome-linux/chrome" });
+  const exe = process.env.PW_CHROMIUM || "/opt/pw-browsers/chromium-1194/chrome-linux/chrome";
+  const browser = await chromium.launch(fs.existsSync(exe) ? { executablePath: exe } : {});
   const ctx = await browser.newContext({ viewport: { width: 620, height: 1000 },
     recordVideo: { dir: out, size: { width: 620, height: 1000 } } });
   const page = await ctx.newPage();
@@ -36,11 +44,18 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     }
     c.textContent = t; c.style.display = t ? "block" : "none";
   }, t);
+  await page.evaluate((b) => {
+    const d = document.createElement("div");
+    d.textContent = b;
+    d.style.cssText = "position:fixed;bottom:0;left:0;right:0;z-index:10000;font:700 11px system-ui;" +
+      "text-align:center;padding:3px;color:#111A2E;background:" + (b.startsWith("LIVE") ? "#4EC9B0" : "#F14C4C");
+    document.body.appendChild(d);
+  }, badge);
   const ready = tl.find((x) => x.kind === "event" && x.ev.event === "ready").ev;
   let status = { mission: null, phase: "IDLE" };
   await post({ type: "state", connected: true, ready, status, keyMissing: false, provider: "scripted",
     model: "scripted model", showWizard: false, modes: [], activeMode: "interview" });
-  await caption("Mission: agentic learning — a 7-approach literature review");
+  await caption("Mission: agentic learning — a 7-approach literature review" + (meta.live ? " (live)" : " (scripted model)"));
   await sleep(2000);
   let shot = 0;
   for (const x of tl) {
@@ -77,6 +92,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       if (ev.event === "ready") continue;
       if (ev.event === "approval_requested" && !(ev.approvals || []).length) continue;
       await post({ type: "event", payload: ev });
+      if (ev.event === "said_delta" || ev.event === "thinking_delta") { await sleep(8); continue; }
       await sleep(ev.event === "turn_result" ? 2600 : 1200);
       if (ev.event === "turn_result") {
         shot++;
