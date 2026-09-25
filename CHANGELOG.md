@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Fan-out: per-worker model routing. A fan-out request can carry a
+  code-owned routing map (`model_routes`: name → backend) and each
+  subtask may name its backend; unknown names raise the new named error
+  `UnknownBackendError` ("fanout refused") in pre-flight, before any
+  worker spawns. Routing never weakens the atomic overlap/budget checks
+  or the fail-closed synthesis barrier. Tournament mode and
+  loop-until-done remain unimplemented (roadmap).
+
 ## 0.5.1 — beta-validated (on `main`)
 
 The truthfulness release. Three bugs that made the extension lie about its

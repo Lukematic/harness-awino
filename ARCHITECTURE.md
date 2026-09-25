@@ -80,7 +80,7 @@ Full inventory: `CAPABILITY_REGISTRY.md`.
 
 - **Mission lifecycle** (DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP) is graph topology in `loop.py` — a turn cannot skip verification because verification *is* the path. `done_claim=true` with unverified criteria never terminates the loop.
 - **Approval binding** (`approvals.py`): an approval is cryptographically bound to the canonical plan bytes, acceptance criteria, scope, constraints, exclusions, base commit, approver, and timestamp. Plan drift, base-commit drift, out-of-scope changes, or tampered records are refused; re-approval forms a valid `supersedes_digest` chain.
-- **Fan-out** (`loop.py`): parallel workers with atomic overlap/budget checks and a fail-closed synthesis barrier. Known limits: no per-worker model routing, no tournament, no loop-until-done.
+- **Fan-out** (`loop.py`): parallel workers with atomic overlap/budget checks, a fail-closed synthesis barrier, and per-worker model routing (code-owned routing map per request; unknown backend name → `UnknownBackendError` before any worker spawns). Known limits: no tournament, no loop-until-done (roadmap as of 2026-09-25: not implemented).
 - **Skill synthesis** (`synthesis.py`): learnings graduate to skills only through sandbox verification → SHA-256 pin → admit-on-pass. Injected learnings are refused; tampered skills raise at load.
 - **Discovery interview**: fires on new tasks; the planning grill enforces one-question-at-a-time and ask-XOR-advance, and rejects question-drips and plan-rushes.
 
