@@ -196,6 +196,11 @@ let extContext: vscode.ExtensionContext | null = null;
 
 let session: Session | null = null;
 let statusBar: vscode.StatusBarItem;
+// Rigor coach surface (Honda): a separate small status item for the last
+// mission's RigorScore — never touches the primary provider/connection
+// status bar above. Hidden while disconnected (truthful: no score to show).
+let rigorBar: vscode.StatusBarItem;
+let rigorChannel: vscode.OutputChannel | null = null;
 let output: vscode.OutputChannel;
 
 // Spec 1.4: cached mode list for the chat header mode selector. Refreshed
@@ -313,6 +318,8 @@ function updateStatusBar(): void {
     statusBar.tooltip = lastConnectError
       ? `Awino sidecar is not running\n\n${lastConnectError}`
       : "Awino sidecar is not running";
+    // Rigor bar stays truthful: no connection, no score.
+    rigorBar?.hide();
     return;
   }
   // Spec 3.2/3.4: settings changed since connect — persistent warning
@@ -765,8 +772,133 @@ async function refreshStatus(): Promise<void> {
     const r = (await query("status")) as Record<string, unknown>;
     session.lastStatus = { ...(session.lastStatus ?? {}), ...(r["status"] as Record<string, unknown>) };
     updateStatusBar();
+    await refreshRigorBar();
   } catch (e) {
     log(`status refresh failed: ${e}`);
+  }
+}
+
+// Rigor coach: show the last mission's RigorScore in the dedicated bar.
+// Reads the latest journaled rigor_report event — no recompute, no journal
+// write. Truthful when disconnected: the bar hides.
+async function refreshRigorBar(): Promise<void> {
+  if (!rigorBar) {
+    return;
+  }
+  if (!session?.ready) {
+    rigorBar.hide();
+    return;
+  }
+  try {
+    const r = (await query("events")) as { events?: Array<{ seq: number; type: string; data: Record<string, unknown> }> };
+    const evs = r.events ?? [];
+    const last = [...evs].reverse().find((e) => e.type === "rigor_report");
+    if (!last) {
+      rigorBar.hide();
+      return;
+    }
+    setRigorBar(last.data);
+  } catch (e) {
+    log(`rigor bar refresh failed: ${e}`);
+  }
+}
+
+// Exported for node tests (test/rigor.js).
+export function setRigorBar(data: Record<string, unknown>): void {
+  if (!rigorBar) {
+    return;
+  }
+  const score = Number(data["score"] ?? NaN);
+  const failing = (data["failing"] ?? []) as string[];
+  const mission = String(data["mission_id"] ?? "?");
+  if (!Number.isFinite(score)) {
+    rigorBar.hide();
+    return;
+  }
+  const icon = score >= 0.8 ? "$(check)" : score >= 0.5 ? "$(alert)" : "$(x)";
+  rigorBar.text = `${icon} Rigor ${score.toFixed(2)}`;
+  rigorBar.tooltip = [
+    `Awino rigor — mission ${mission}`,
+    `RigorScore: ${score.toFixed(2)} (${String(data["scored"] ?? "?")} checks scored)`,
+    failing.length ? `Failing: ${failing.join(", ")}` : "No failing checks",
+    "",
+    "Click to show the full rigor report.",
+  ].join("\n");
+  rigorBar.show();
+}
+
+function rigorOutput(): vscode.OutputChannel {
+  if (!rigorChannel) {
+    rigorChannel = vscode.window.createOutputChannel("Awino Rigor");
+  }
+  return rigorChannel;
+}
+
+// Exported for node tests (test/rigor.js): pure rendering, no vscode
+// calls beyond what the caller supplies.
+export function renderJournaledRigor(data: Record<string, unknown>): string {
+  const checks = (data["checks"] ?? {}) as Record<string, { status?: string }>;
+  const lines = [
+    `Rigor report — mission ${String(data["mission_id"] ?? "?")} (from journal)`,
+    `RigorScore: ${Number(data["score"] ?? 0).toFixed(2)} (${String(data["scored"] ?? "?")} checks scored)`,
+    "",
+  ];
+  for (const [name, c] of Object.entries(checks)) {
+    lines.push(`  [${String(c.status ?? "?")}] ${name}`);
+  }
+  const failing = (data["failing"] ?? []) as string[];
+  if (failing.length) {
+    lines.push("", `Failing checks: ${failing.join(", ")}`);
+  }
+  const overrides = Number(data["overrides"] ?? 0);
+  if (overrides > 0) {
+    lines.push(`User overrides logged (principal, not penalized): ${overrides}`);
+  }
+  return lines.join("\n");
+}
+
+async function showRigorReport(): Promise<void> {
+  // Disconnected truth: no session at all (mustSession throws) and a
+  // session that isn't ready both land on the same honest warning —
+  // never an unhandled rejection.
+  let s: Session | undefined;
+  try {
+    s = mustSession();
+  } catch {
+    s = undefined;
+  }
+  if (!s || !s.ready) {
+    vscode.window.showWarningMessage("Awino: not connected — no rigor report available.");
+    return;
+  }
+  const ch = rigorOutput();
+  ch.show(true);
+  try {
+    // Prefer the latest journaled report (no recompute). Generate + journal
+    // a fresh one only when none exists yet.
+    const r = (await query("events")) as { events?: Array<{ seq: number; type: string; data: Record<string, unknown> }> };
+    const last = [...(r.events ?? [])].reverse().find((e) => e.type === "rigor_report");
+    if (last) {
+      ch.appendLine(renderJournaledRigor(last.data));
+      setRigorBar(last.data);
+      return;
+    }
+    const gen = (await query("rigor_report", {})) as Record<string, unknown>;
+    if (!gen["ok"]) {
+      const detail = String((gen as Record<string, unknown>)["detail"] ?? (gen as Record<string, unknown>)["code"] ?? "unknown");
+      ch.appendLine(`Rigor report unavailable: ${detail}`);
+      vscode.window.showWarningMessage(`Awino: rigor report unavailable — ${detail}`);
+      return;
+    }
+    const reports = (gen["reports"] ?? []) as Array<Record<string, unknown>>;
+    for (const rep of reports) {
+      ch.appendLine(String(rep["text"] ?? ""));
+      ch.appendLine("");
+      setRigorBar({ score: rep["score"], failing: rep["failing"], mission_id: rep["mission_id"], scored: rep["scored"] });
+    }
+  } catch (e) {
+    ch.appendLine(`Rigor report failed: ${e}`);
+    vscode.window.showErrorMessage(`Awino: rigor report failed — ${String(e)}`);
   }
 }
 
@@ -1315,6 +1447,10 @@ function registerCommands(context: vscode.ExtensionContext): void {
     context.subscriptions.push(vscode.commands.registerCommand(id, (...a) => fn(...a)));
 
   reg("awino.reconnect", () => reconnect(context));
+  // Rigor coach (Honda): show the latest journaled report, or generate and
+  // journal a fresh one when none exists. Read-only display in an output
+  // channel; the only journal write is the report event itself.
+  reg("awino.showRigorReport", () => showRigorReport());
   // Spec 2.4: Reset Onboarding — clears the onboarded flag so the wizard
   // runs again on the next chat state push. Does not touch provider keys
   // (SecretStorage) or settings; it only re-opens the first-run flow.
@@ -2185,6 +2321,12 @@ export function activate(context: vscode.ExtensionContext): void {
   statusBar.command = "awino.openModels";
   context.subscriptions.push(statusBar);
   statusBar.show();
+  // Rigor coach: separate small status item (priority 90, below the
+  // provider/connection bar). Starts hidden; refreshRigorBar shows it only
+  // when a journaled rigor_report exists.
+  rigorBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 90);
+  rigorBar.command = "awino.showRigorReport";
+  context.subscriptions.push(rigorBar);
   updateStatusBar();
 
   registerCommands(context);

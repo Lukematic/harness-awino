@@ -1870,6 +1870,40 @@ class Sidecar:
         st["persona"] = self._persona_info()
         return {"ok": True, "status": st}
 
+    def _cmd_rigor_report(self, args: dict) -> dict:
+        """Rigor coach: score mission(s) from journal evidence, journal it.
+
+        Read-only except for appending the `rigor_report` event — the report
+        itself becomes evidence. Args: {mission_id?, recent?}.
+        """
+        if self.loop is None:
+            return {"status": "refused", "code": "no-loop",
+                    "detail": "connect a project first"}
+        try:
+            import rigor as _rigor
+            mission_id = args.get("mission_id")
+            recent = args.get("recent")
+            if recent is not None:
+                recent = int(recent)
+            report = _rigor.report_rigor(self.loop.state,
+                                         mission_id=mission_id,
+                                         recent=recent, record=True)
+            reports = report if isinstance(report, list) else [report]
+            return {"ok": True, "reports": [
+                {"mission_id": r["mission_id"], "score": r["score"],
+                 "scored": f"{r['n_scored']}/{r['n_checks']}",
+                 "failing": r["failing"], "unknown": r["unknown"],
+                 "overrides": r["overrides"],
+                 "checks": {c["check"]: {"status": c["status"],
+                                         "law": c["law"],
+                                         "nudge": c["nudge"]}
+                            for c in r["checks"]},
+                 "text": _rigor.render_text(r)}
+                for r in reports]}
+        except (ValueError, TypeError) as e:
+            return {"status": "refused", "code": "bad-rigor-args",
+                    "detail": str(e)[:200]}
+
     def _cmd_env_switch(self, args: dict) -> dict:
         name = args.get("environment")
         if not isinstance(name, str) or not name:
@@ -2792,6 +2826,7 @@ class Sidecar:
             "persona_assume": self._cmd_persona_assume,
             "persona_dismiss": self._cmd_persona_dismiss,
             "env_switch": self._cmd_env_switch,
+            "rigor_report": self._cmd_rigor_report,
         }
         fn = handlers.get(name)
         if fn is None:

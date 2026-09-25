@@ -13,6 +13,9 @@ Commands:
   awino stories [dir] the story ledger, plainly: open/doing/blocked/done
                       counts, blockers, last touch, and the brag board.
                       (STORY.md at the project root is the generated view.)
+  awino rigor [--mission ID | --recent N] [--repo DIR] [--json]
+                      engineering-practice audit: per-mission RigorScore from
+                      journal evidence. Read-only — never modifies code.
 
 You never have to type `awino init` by hand: when a chat session starts in
 a directory without `.awino/project.yaml`, the harness runs this same init
@@ -33,7 +36,10 @@ USAGE = """usage:
   awino init [dir]     bootstrap a project (empty or existing)
   awino status [dir]  plain-language project dashboard
   awino plan [dir]    task DAG: what's next, what's blocked
-  awino stories [dir] the story ledger: open/doing/blocked/done, blockers"""
+  awino stories [dir] the story ledger: open/doing/blocked/done, blockers
+  awino rigor [--mission ID | --recent N] [--repo DIR] [--json]
+                      engineering-practice audit: RigorScore per mission from
+                      journal evidence (read-only; never modifies code)"""
 
 
 def _plain_error(context: str, exc: BaseException) -> int:
@@ -322,6 +328,74 @@ def cmd_stories(args: list[str]) -> int:
         return _plain_error("stories", e)
 
 
+def cmd_rigor(args: list[str]) -> int:
+    """awino rigor [--mission ID | --recent N] [--repo DIR] [--json]
+
+    Read-only engineering-practice audit. Scores mission(s) from journal
+    evidence and prints a concise human report (or JSON with --json).
+    Never modifies code; never writes to the journal (use the sidecar's
+    rigor_report command for a journaled report).
+    """
+    import os
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    mission_id, recent, repo, as_json = None, None, None, False
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--mission" and i + 1 < len(args):
+            mission_id, i = args[i + 1], i + 1
+        elif a == "--recent" and i + 1 < len(args):
+            try:
+                recent = int(args[i + 1])
+            except ValueError:
+                print("awino rigor: --recent needs an integer.",
+                      file=sys.stderr)
+                return 2
+            i += 1
+        elif a == "--repo" and i + 1 < len(args):
+            repo, i = args[i + 1], i + 1
+        elif a == "--json":
+            as_json = True
+        else:
+            print(f"awino rigor: unknown argument {a!r}.", file=sys.stderr)
+            return 2
+        i += 1
+    try:
+        import rigor as _rigor
+        home = Path(os.environ.get("AWINO_HOME",
+                                   str(Path.home() / ".awino-loop")))
+        if mission_id:
+            pdir = _rigor.find_project_for_mission(home, mission_id)
+            if pdir is None:
+                print(f"awino rigor: mission {mission_id!r} not found under "
+                      f"{home}/projects.", file=sys.stderr)
+                return 1
+        else:
+            projs = sorted((home / "projects").iterdir()) if (
+                home / "projects").is_dir() else []
+            projs = [p for p in projs if (p / "events.jsonl").is_file()]
+            if not projs:
+                print(f"awino rigor: no projects with journals under "
+                      f"{home}/projects.", file=sys.stderr)
+                return 1
+            # Most recently modified journal wins.
+            pdir = max(projs,
+                       key=lambda p: (p / "events.jsonl").stat().st_mtime)
+        report = _rigor.score_project_events(pdir, mission_id=mission_id,
+                                             recent=recent, repo=repo)
+        if as_json:
+            import json as _json
+            print(_json.dumps(report, indent=1, default=str))
+        else:
+            reports = report if isinstance(report, list) else [report]
+            for r in reports:
+                print(_rigor.render_text(r))
+                print()
+        return 0
+    except Exception as e:  # noqa: BLE001
+        return _plain_error("rigor", e)
+
+
 def main() -> None:
     args = sys.argv[1:]
     if not args or args[0] in ("-h", "--help", "help"):
@@ -349,6 +423,8 @@ def main() -> None:
         raise SystemExit(cmd_plan(rest))
     if cmd == "stories":
         raise SystemExit(cmd_stories(rest))
+    if cmd == "rigor":
+        raise SystemExit(cmd_rigor(rest))
     print(f"unknown command: {cmd}\n{USAGE}", file=sys.stderr)
     raise SystemExit(2)
 

@@ -814,6 +814,11 @@ class Loop:
                 break
             self.state.record("turn_rejected",
                               {"turn_id": turn_id, "attempt": attempt, "errors": errs})
+            # Rigor: three-strike circuit breaker on repeated identical
+            # rejections. Runs before the escalation check so the final
+            # attempt carries the STOP directive, not just "fix and resubmit".
+            doom = self._check_doom_loop(
+                "turn_rejected", self._failure_signature("turn_rejected", errs))
             if attempt >= cfg["max_retries"]:
                 self.state.record("turn_escalated", {"turn_id": turn_id, "errors": errs})
                 self.state.persist_snapshot()
@@ -822,6 +827,8 @@ class Loop:
                         "errors": errs}
             feedback = (f"HARNESS REJECTION (attempt {attempt + 1}): "
                         f"{'; '.join(errs)}. Fix and resubmit a valid TurnContract.")
+            if doom:
+                feedback = self._doom_loop_feedback() + " " + feedback
 
         assert turn is not None
         # Phase B: coerce the validated dict into the immutable typed contract.
@@ -872,6 +879,85 @@ class Loop:
         return self._finalize_turn(turn_id, turn, results, routing,
                                    expected_header)
 
+    # ---- Rigor: three-strike doom-loop circuit breaker ----
+    # Agent-rigor's Error Recovery Protocol (STOP → DIAGNOSE → ISOLATE →
+    # ROLLBACK → LOG → RETRY) as a loop-level transition. Awino previously
+    # only failed forward (verify_failed → request_phase("BUILD") → patch
+    # again). This adds the explicit rollback-and-rethink path: 3 consecutive
+    # failures sharing one signature record doom_loop_detected, which makes
+    # the router inject rigor-three-strike until a turn validates. The breaker
+    # never touches the working tree itself — rollback stays the agent's act,
+    # journaled as a `rollback` event the coach later audits.
+    _DOOM_LOOP_THRESHOLD = 3
+    # Event types that carry no turn outcome: skipped, never chain-breaking.
+    # Mirrors rigor.failure_clusters' _NEUTRAL so the live detector and the
+    # coach audit the same pattern. Recovery is proven by the SUCCESS set
+    # (or a rollback), not by journaling a learning between failures.
+    _DOOM_LOOP_NEUTRAL = frozenset({
+        "tokens_charged", "egress", "harness_check", "skills_routed",
+        "stance_routed", "mode_routed", "tool_called", "progress_recorded",
+        "doom_loop_detected", "rigor_report", "learning_recorded",
+        "assumption_recorded", "questions_asked", "plan_updated",
+    })
+    # Event types proving recovery: break any failure chain.
+    _DOOM_LOOP_SUCCESS = frozenset({
+        "turn_validated", "verify_passed", "mission_done", "operator_resumed",
+    })
+
+    @staticmethod
+    def _failure_signature(source: str, parts) -> str:
+        norm = sorted({str(p).strip()[:160] for p in parts if str(p).strip()})
+        return source + ":" + "|".join(norm)
+
+    def _check_doom_loop(self, source: str, signature: str) -> bool:
+        """Count consecutive same-signature failures; trip the breaker at 3.
+
+        Walks the journal backward. Success events break the chain; failures
+        with a different signature reset it (a new approach is what we want);
+        bookkeeping events are skipped. Returns True when the breaker is (or
+        already was) active.
+        """
+        if self.state.snapshot.get("doom_loop_active"):
+            return True
+        consecutive = 0
+        for ev in reversed(self.state.events):
+            t = ev.get("type")
+            if t in self._DOOM_LOOP_SUCCESS:
+                break
+            if t in self._DOOM_LOOP_NEUTRAL:
+                continue
+            sig = None
+            if t == "turn_rejected":
+                sig = self._failure_signature(
+                    "turn_rejected", ev.get("data", {}).get("errors", []))
+            elif t == "verify_failed":
+                d = ev.get("data", {})
+                failed = [e.get("criterion") or e.get("label") or "?"
+                          for e in (d.get("verdict") or [])
+                          if e.get("accomplished") != "yes"]
+                sig = self._failure_signature(
+                    "verify_failed", failed or [d.get("reason", "?")])
+            else:
+                break  # escalation, stall, phase change…: not this loop
+            if sig == signature:
+                consecutive += 1
+            else:
+                break  # different signature: the agent already rethought
+        if consecutive >= self._DOOM_LOOP_THRESHOLD:
+            self.state.record("doom_loop_detected",
+                              {"source": source, "signature": signature,
+                               "consecutive": consecutive})
+            return True
+        return False
+
+    def _doom_loop_feedback(self) -> str:
+        return ("RIGOR CIRCUIT BREAKER — STOP. Three consecutive failures "
+                "share one signature. Do NOT patch forward. Follow the "
+                "rigor-three-strike skill now routed into your contract: "
+                "revert to the last known-good state, state your diagnosis "
+                "in one paragraph, then re-approach from clean state. "
+                "A fourth identical attempt will be escalated.")
+
     def _sensor_route(self, user_text: str, input_kind: str) -> dict:
         """Stage 2: route the (mode, stance chain, skills) triple in code.
 
@@ -892,6 +978,14 @@ class Loop:
                 skills = [*skills, lens]
             elif lens not in get_skill_store().names():
                 self.state.record("role_lens_missing", {"lens": lens})
+        # Rigor: while the doom-loop circuit breaker is active, the harness
+        # injects rigor-three-strike into every turn's routed skills — the
+        # explicit rollback-and-rethink transition. Cleared by turn_validated.
+        # Layered loading: this is the ONLY way this skill enters context.
+        if (s.get("doom_loop_active") and "rigor-three-strike" not in skills
+                and "rigor-three-strike" in get_skill_store().names()):
+            skills = [*skills, "rigor-three-strike"]
+            trigger = trigger + " + doom-loop circuit breaker"
         if chain != s["stance_chain"]:
             self.state.record("stance_routed",
                               {"stance": chain[0], "chain": chain,
@@ -996,11 +1090,31 @@ class Loop:
     # ------------------------------------------------------------------ judge
     def _judge_summary(self) -> dict:
         s = self.state.snapshot
+        evs = self.state.events
+        # Rigor (R3/R4): the judge needs verification evidence counts, not
+        # just tool-result counts, to refuse evidence-free done/verified
+        # claims. Additive keys — existing consumers unaffected.
+        verify_events = sum(1 for e in evs if e["type"] in (
+            "verify_started", "verify_verdict", "verify_passed",
+            "verify_failed"))
+        test_runs = 0
+        for e in evs:
+            if e.get("type") != "tool_called":
+                continue
+            d = e.get("data") or {}
+            if d.get("name") != "run_command":
+                continue
+            cmd = str((d.get("args") or {}).get("cmd") or "")
+            if re.search(r"\b(pytest|jest|vitest|mocha|go test|npm test|"
+                         r"tsc\b|make test|\btest\b)", cmd, re.I):
+                test_runs += 1
         return {
             "turn_count": s["turn_count"],
             "phase": s["phase"],
-            "results_this_session": sum(1 for e in self.state.events
+            "results_this_session": sum(1 for e in evs
                                         if e["type"] == "tool_result"),
+            "verify_events": verify_events,
+            "test_runs": test_runs,
             "open_questions": list(s["open_questions"]),
         }
 
@@ -1914,6 +2028,11 @@ class Loop:
             self.state.record("verify_failed",
                               {"worker_id": worker_id,
                                "reason": "no verifier verdict in worker journal"})
+            # Rigor: a verifier that never reports is itself a repeated
+            # failure mode — trip the breaker so the agent rethinks instead
+            # of blindly re-running the verifier.
+            self._check_doom_loop("verify_failed", self._failure_signature(
+                "verify_failed", ["no verifier verdict in worker journal"]))
             self.state.persist_snapshot()
             return {"status": "error",
                     "said": (f"Worker {worker_id} has no journaled verdict. "
@@ -1968,6 +2087,14 @@ class Loop:
         self.state.record("verify_failed",
                           {"worker_id": worker_id, "verdict": entries,
                            "findings_tasks": new_tasks})
+        # Rigor: repeated verification failures on the same criteria trip the
+        # doom-loop breaker — the mission routes back to BUILD, but now with
+        # rigor-three-strike in context demanding rollback-and-rethink, not
+        # another fix-forward pass.
+        failed_labels = [e.get("criterion") or e.get("label") or "?"
+                         for e in entries if e.get("accomplished") != "yes"]
+        self._check_doom_loop("verify_failed", self._failure_signature(
+            "verify_failed", failed_labels))
         self.state.persist_snapshot()
         # Failed verification routes back to BUILD with findings as tasks.
         self.request_phase("BUILD", reason="verification failed")

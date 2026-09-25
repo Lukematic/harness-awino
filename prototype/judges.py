@@ -236,8 +236,11 @@ def build_judge_panel(spec: str | None = None,
                       quorum: int | None = None) -> JudgePanel:
     """Build a panel from a spec string or AWINO_JUDGES env.
 
-    Specs: "deterministic", "ollama:<model>", "scripted:fail_all"
+    Specs: "deterministic", "rigor", "ollama:<model>", "scripted:fail_all"
     (the last is an adversarial test helper, not for production use).
+    "rigor" = DeterministicJudge + the RigorJudge extra rules (R3: done_claim
+    with zero verification evidence; R4: 'tests pass'/'verified' language
+    with no evidence). Laws 1–2 enforced at turn scope, fail-closed.
 
     Default (no spec): a single DeterministicJudge — no model, no network,
     fail-closed by construction. Set AWINO_JUDGES to get a real panel.
@@ -247,13 +250,18 @@ def build_judge_panel(spec: str | None = None,
     for part in [p.strip() for p in spec.split(",") if p.strip()]:
         if part == "deterministic":
             judges.append(DeterministicJudge())
+        elif part == "rigor":
+            # Lazy import: rigor.py must never import judges (one-way edge).
+            from rigor import rigor_extra_rules
+            judges.append(DeterministicJudge(
+                extra_rules=rigor_extra_rules()))
         elif part.startswith("ollama:"):
             judges.append(OllamaJudge(part.split(":", 1)[1]))
         elif part == "scripted:fail_all":
             judges.append(ScriptedJudge(fail_all=True))
         else:
             raise ValueError(f"unknown judge spec {part!r} "
-                             f"(use deterministic | ollama:<model> | "
+                             f"(use deterministic | rigor | ollama:<model> | "
                              f"scripted:fail_all)")
     if not judges:
         judges = [DeterministicJudge()]

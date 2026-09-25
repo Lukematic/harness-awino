@@ -116,6 +116,12 @@ def apply_event(snap: dict, ev: dict) -> None:
         snap["done"] = False
         snap["terminal"] = False
         snap["terminal_reason"] = None
+        # Rigor (three-strike): the doom-loop circuit breaker. Set by the
+        # harness when 3 consecutive failures share one signature; cleared by
+        # the next validated turn. While active the router injects the
+        # rigor-three-strike skill — an explicit rollback-and-rethink
+        # transition instead of failing forward.
+        snap["doom_loop_active"] = False
     elif t == "plan_updated":
         snap["plan"] = d["plan"]
     elif t == "questions_asked":
@@ -182,6 +188,16 @@ def apply_event(snap: dict, ev: dict) -> None:
         snap["phase"] = d["phase"]
     elif t == "turn_rejected":
         snap["retries"] += 1
+    elif t == "turn_validated":
+        # A validated turn breaks any doom loop: the agent recovered.
+        snap["doom_loop_active"] = False
+    elif t == "doom_loop_detected":
+        # Rigor circuit breaker: 3 consecutive failures, one signature.
+        # The router injects rigor-three-strike until a turn validates.
+        snap["doom_loop_active"] = True
+        snap["flags"].append(
+            f"doom loop detected ({d.get('consecutive', 3)}x "
+            f"{d.get('source', 'failures')}): {d.get('signature', '')[:80]}")
     elif t == "turn_escalated":
         snap["awaiting_operator"] = True
         snap["retries"] = 0

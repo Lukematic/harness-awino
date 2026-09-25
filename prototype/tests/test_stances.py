@@ -38,8 +38,11 @@ class TestTripleRouting(unittest.TestCase):
             snap(), "Rebuild the sync engine", "new_objective")
         self.assertEqual(intent, "new-task")
         self.assertEqual(chain, ["planning-grill"])
-        # The interview procedure must be injected on the new-task path.
-        self.assertEqual(skills, ["mission-definition", "discovery"])
+        # The interview procedure must be injected on the new-task path,
+        # plus the rigor layer: distillation (spec discipline) and the Five
+        # Laws (Layer 1 guardrails).
+        self.assertEqual(skills, ["mission-definition", "discovery",
+                                  "rigor-distillation", "rigor-laws"])
 
     def test_raw_idea_routes_planning_grill(self):
         intent, mode, chain, skills, _ = route_triple(
@@ -66,7 +69,11 @@ class TestTripleRouting(unittest.TestCase):
         self.assertEqual(intent, "fix")
         self.assertEqual(mode, "build")
         self.assertEqual(chain, ["first-principles"])
-        self.assertEqual(skills, ["repo", "code"])
+        # Rigor layer on the BUILD floor: convergent iteration + TDD proof
+        # cycles. (three-strike is injected by the circuit breaker, never
+        # floor-routed.)
+        self.assertEqual(skills, ["repo", "code",
+                                  "rigor-iteration", "rigor-proof-cycles"])
 
     def test_ship_routes_ship_mode_premortem(self):
         intent, mode, chain, skills, _ = route_triple(

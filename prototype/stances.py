@@ -50,45 +50,68 @@ FLOORS = {
     "DEFINE": {
         "autonomy": "supervised",
         "stance": ["planning-grill"],
-        "skills": ["mission-definition", "discovery"],
+        # Layered rigor loading: distillation (spec discipline) + laws (Layer 1
+        # guardrails). Interrogation stays available via explicit skill_add; the
+        # discovery grill covers routine questioning.
+        "skills": ["mission-definition", "discovery",
+                   "rigor-distillation", "rigor-laws"],
         "mode": "plan",
         "exit": "contract drafted → human approves → PLAN",
     },
     "PLAN": {
         "autonomy": "supervised",
         "stance": ["first-principles"],
-        "skills": ["decision-analysis", "domain"],
+        # Rigor: decomposition (strategic task breakdown) + scope (guardrail —
+        # declare scope before BUILD touches anything).
+        "skills": ["decision-analysis", "domain",
+                   "rigor-decomposition", "rigor-scope"],
         "mode": "plan",
         "exit": "contract approved (with SCOPE) → BUILD",
     },
     "BUILD": {
         "autonomy": "bounded",
         "stance": ["first-principles"],
-        "skills": ["repo", "code"],
+        # Rigor: iteration (Reason-Act-Observe convergent loop) + proof-cycles
+        # (TDD: red-green-refactor). three-strike is injected by the harness
+        # only when the doom-loop circuit breaker fires — never floor-routed.
+        "skills": ["repo", "code",
+                   "rigor-iteration", "rigor-proof-cycles"],
         "mode": "build",
         "exit": "diff produced → VERIFY",
     },
     "VERIFY": {
         "autonomy": "bounded",
         "stance": ["devil's-advocate"],
-        "skills": ["testing"],
+        # Rigor: pentagonal audit (correctness/readability/architecture/
+        # security/performance) extends the judge panel's evidence review.
+        "skills": ["testing", "rigor-pentagonal-audit"],
         "mode": "verify",
         "exit": "exit code 0 → REVIEW",
     },
     "REVIEW": {
         "autonomy": "bounded",
         "stance": ["premortem"],
-        "skills": ["code-review"],
+        # Rigor: entropy reduction pass before SHIP.
+        "skills": ["code-review", "rigor-entropy"],
         "mode": "verify",
         "exit": "no regressions/dead code/side effects → SHIP",
     },
     "SHIP": {
         "autonomy": "supervised",
         "stance": ["premortem"],
-        "skills": ["verification"],
+        # Rigor: checkpoint (state snapshot + known-good commit before release).
+        "skills": ["verification", "rigor-checkpoint"],
         "mode": "ship",
         "exit": "completion claimed only on evidence",
     },
+}
+
+# Layered rigor loading on the intent fast-paths: each mission-execution
+# intent carries its phase floor's rigor skills (same sets as FLOORS).
+# three-strike is never routed here — only the circuit breaker injects it.
+_INTENT_RIGOR = {
+    "fix": ["rigor-iteration", "rigor-proof-cycles"],  # BUILD floor
+    "ship": [],  # settled: the ship fast-path stays ["verification"]
 }
 
 # ---------------------------------------------------------------------------
@@ -129,16 +152,19 @@ def route_triple(snapshot: dict, text: str,
     t = (text or "").lower()
     if kind == "new_objective":
         return ("new-task", "plan", ["planning-grill"],
-                ["mission-definition", "discovery"],
+                ["mission-definition", "discovery",
+                 "rigor-distillation", "rigor-laws"],
                 "new objective")
     for intent, rx, mode, chain, skills in INTENT_TABLE:
         if rx.search(t):
-            return (intent, mode, list(chain), list(skills),
+            return (intent, mode, list(chain),
+                    list(skills) + _INTENT_RIGOR.get(intent, []),
                     f"intent pattern: {intent}")
     if (not snapshot.get("mission") and kind == "info"
             and len(t.split()) > 8):
         return ("new-task", "plan", ["planning-grill"],
-                ["mission-definition", "discovery"],
+                ["mission-definition", "discovery",
+                 "rigor-distillation", "rigor-laws"],
                 "raw idea without mission")
     floor = FLOORS.get(snapshot.get("phase") or "")
     if floor:
