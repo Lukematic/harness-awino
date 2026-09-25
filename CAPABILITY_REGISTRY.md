@@ -36,7 +36,7 @@ model acts. Stances never widen it.
 | triage | vague agent complaint ("you're not working", "misbehaving") | plan | read-only; diagnosis, not repair | named failure mode; falsifier stated |
 | verifier | Track G — independent verification of builder work | verify | **no tool calls at all** (read-only judge) | per-criterion verdict shape (criterion / needed_evidence / accomplished / proof_link); never grades own builder work |
 
-## Skills (18) — prototype `contract.py::SKILLS` (harness-injected bodies)
+## Skills (49) — prototype `contract.py::SKILLS` (harness-injected bodies)
 
 Pinned by sha256 in `prototype/skills/manifest.json` and verified at load by
 `prototype/skills.py::SkillStore`. The model never fetches them; the router
@@ -45,19 +45,29 @@ injects full bodies into the contract block.
 **Core loop skills (11):** mission-definition, discovery, decision-analysis,
 domain, repo, code, testing, code-review, verification, explainer, triage.
 
+**Osmani port (14):** osmani-adoption, osmani-constraints, osmani-failure-modes,
+osmani-tdd, osmani-security, osmani-code-review, osmani-shipping, osmani-doubt,
+osmani-api-design, osmani-source-driven, osmani-idea-refine, osmani-adrs,
+osmani-observability, osmani-cicd. Adapted from Addy Osmani's `agent-skills`
+(MIT); each carries a binding mechanism (not advice text).
+
+**Rigor coach (11):** rigor-checkpoint, rigor-decomposition, rigor-distillation,
+rigor-entropy, rigor-interrogation, rigor-iteration, rigor-laws,
+rigor-pentagonal-audit, rigor-proof-cycles, rigor-scope, rigor-three-strike.
+
 **Agent persona skills (5):** mode-ai-architect, mode-ai-researcher,
 mode-cybersecurity-engineer, mode-forward-deployed-engineer,
 mode-software-engineer.
+
+**Pinned references (5):** definition-of-done, lifecycle-sequence,
+critical-thinking, completion-summary, dora-metrics.
+
+**Harness adoption (1):** incident-response.
 
 **Bootstrap (1):** project-bootstrap — new-project scaffolding
 (loop-owner counterpart of the old `awino-bootstrap` repo skill).
 
 **Contract helper (1):** verify.
-
-> Unmerged feature branches carry more (osmani port: 14 skills + 5
-> references; harness adoption: incident-response, dora-metrics,
-> completion-summary; rigor coach: 11 rigor-* skills). Their registries
-> describe their own trees; this file describes `main`.
 
 ## Intent table — prototype `stances.py::INTENT_TABLE` (first match wins)
 
@@ -103,7 +113,7 @@ model this rebuild replaces. Mapping to the loop-owner:
 | awino-evidence | verification skill + VERIFY floor | partial |
 | awino-triage | triage stance + skill | **done (authored via template, 2026-09-18)** |
 | awino-rpi | — | gap |
-| awino-delegate | — | gap on `main` (parallel decomposition built as the fan-out primitive on `feature/fanout`, unmerged) |
+| awino-delegate | `Loop.fanout` — parallel workers, atomic overlap/budget preflight, fail-closed synthesis barrier | **done (merged)** |
 | awino-ralph | the harness loop itself | superseded |
 | awino-memory | — | gap |
 | awino-visualize | — | gap |
@@ -121,11 +131,18 @@ model this rebuild replaces. Mapping to the loop-owner:
    row above).
 2. **debug procedure** — fix intent routes first-principles (cause in
    assumptions) but there's no reproduce→diagnose→fix procedure body.
-3. **rpi / delegate** — multi-file change workflow and parallel subagent
-   decomposition. Delegate is built (fan-out primitive, `feature/fanout`)
-   but unmerged; rpi still has no loop-owner form.
+3. **rpi** — multi-file change workflow still has no loop-owner form.
+   (Delegate is done: the fan-out primitive merged — `Loop.fanout` with
+   atomic overlap/budget preflight and a fail-closed synthesis barrier.)
 4. **memory** — no durable-memory skill in the harness; currently handled
    outside the loop. (A MemPalace head-to-head evaluation is running to
    decide: adopt wholesale, cherry-pick, or pass.)
+
+## Standards (merged)
+
+- **Adapter contract** (`docs/ADAPTER_CONTRACT.md`): the provider-neutral
+  controller protocol every surface must honor; seven adapter requirements;
+  Context → Interactive → Autonomous local → Hosted conformance ladder.
+  One enforced loop in the Python sidecar; surfaces are adapters.
 
 When you fill a gap, follow `AUTHORING_TEMPLATE.md` and add the row here.
