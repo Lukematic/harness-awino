@@ -89,7 +89,7 @@ class SkillSecurityTest(unittest.TestCase):
         loop.set_mission("Fix the login bug", ["manual"])
         r = loop.run_user_turn("fix the login bug")
         self.assertEqual(r["status"], "ok")
-        self.assertEqual(loop.state.snapshot["skills"], ["repo", "code", "rigor-iteration", "rigor-proof-cycles"])
+        self.assertEqual(loop.state.snapshot["skills"], ["repo", "code", "debug", "rpi", "rigor-iteration", "rigor-proof-cycles"])
         block = compile_contract(loop.state)
         self.assertIn("## NETWORK", block)
         self.assertIn("network none", block)
@@ -114,7 +114,7 @@ class SkillSecurityTest(unittest.TestCase):
                          "https://api.example.com/v1/chat")
         self.assertEqual(data["bytes_out"], 1234)
         self.assertEqual(data["bytes_in"], 567)
-        self.assertEqual(data["skills"], ["repo", "code", "rigor-iteration", "rigor-proof-cycles"])
+        self.assertEqual(data["skills"], ["repo", "code", "debug", "rpi", "rigor-iteration", "rigor-proof-cycles"])
 
     def test_undeclared_egress_is_flagged(self):
         # repo/code declare network:none, so the egress is undeclared

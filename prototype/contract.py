@@ -363,9 +363,9 @@ SKILLS = _STORE.as_dict()
 # Phase C: mission kinds must map to at least one skill. A mission whose
 # kind has no skill in the store is refused at set_mission time.
 MISSION_KIND_SKILLS = {
-    "bugfix": ["repo", "code"],
+    "bugfix": ["repo", "code", "debug"],
     "research": ["decision-analysis", "domain"],
-    "build": ["repo", "code"],
+    "build": ["repo", "code", "rpi"],
     "general": ["domain"],
 }
 

@@ -36,7 +36,7 @@ class TestContract(unittest.TestCase):
         # backend asked for "admin"; harness routed build/first-principles from intent
         self.assertEqual(s["mode"], "build")
         self.assertEqual(s["stance_chain"], ["first-principles"])
-        self.assertEqual(s["skills"], ["repo", "code", "rigor-iteration", "rigor-proof-cycles"])
+        self.assertEqual(s["skills"], ["repo", "code", "debug", "rpi", "rigor-iteration", "rigor-proof-cycles"])
         hints = [e for e in loop.state.events if e["type"] == "turn_hint_ignored"]
         self.assertEqual(len(hints), 1)
 
@@ -54,7 +54,7 @@ class TestContract(unittest.TestCase):
         r = loop.run_user_turn("fix the login bug")
         self.assertEqual(r["status"], "ok")
         s = loop.state.snapshot
-        self.assertEqual(s["skills"], ["repo", "code", "rigor-iteration", "rigor-proof-cycles"])
+        self.assertEqual(s["skills"], ["repo", "code", "debug", "rpi", "rigor-iteration", "rigor-proof-cycles"])
         block = compile_contract(loop.state)
         self.assertIn("PROCEDURE code", block)
         self.assertIn("PROCEDURE repo", block)

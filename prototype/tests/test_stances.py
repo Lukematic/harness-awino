@@ -72,7 +72,7 @@ class TestTripleRouting(unittest.TestCase):
         # Rigor layer on the BUILD floor: convergent iteration + TDD proof
         # cycles. (three-strike is injected by the circuit breaker, never
         # floor-routed.)
-        self.assertEqual(skills, ["repo", "code",
+        self.assertEqual(skills, ["repo", "code", "debug", "rpi",
                                   "rigor-iteration", "rigor-proof-cycles"])
 
     def test_ship_routes_ship_mode_premortem(self):
