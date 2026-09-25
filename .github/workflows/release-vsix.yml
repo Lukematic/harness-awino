@@ -1,0 +1,107 @@
+# release-vsix — beta release channel for the Awino VS Code extension.
+#
+# Trigger: push a tag matching `vsix-v*` (e.g. `git tag vsix-v0.5.1 && git push origin vsix-v0.5.1`).
+# The job:
+#   1. checks out, installs Node 20, npm ci
+#   2. GUARD: the tag version must equal integrations/vscode/extension/package.json
+#      `version` — a mistagged release fails loudly instead of shipping a
+#      mislabeled artifact
+#   3. runs the SAME committed packaging path local builds use
+#      (`npm run vscode:prepublish`: tsc -> bundle-sidecar.js ->
+#      fetch-python-runtimes.js — pinned release + SHA-256, hard fail on
+#      mismatch; no duplicated URL lists)
+#   4. vsce package; asserts the VSIX actually contains the bundled sidecar
+#      and the linux runtime tree, and does NOT contain the .pbs-cache
+#      tarball cache (which would ~double the artifact)
+#   5. creates a GitHub Release marked as PRE-RELEASE and attaches the .vsix
+#
+# This is the BETA channel. One button downloads the .vsix from the release
+# page; one command installs it (`code --install-extension`). True one-click
+# install is the VS Code Marketplace — a later launch step, not this workflow.
+
+name: release-vsix
+
+on:
+  push:
+    tags:
+      - 'vsix-v*'
+
+permissions:
+  contents: write  # needed for gh release create + asset upload
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out tag
+        uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Guard — tag version matches package.json version
+        run: |
+          TAG="${GITHUB_REF_NAME}"            # e.g. vsix-v0.5.1
+          EXPECTED="${TAG#vsix-v}"
+          ACTUAL="$(node -p "require('./integrations/vscode/extension/package.json').version")"
+          if [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "::error::tag $TAG does not match package.json version $ACTUAL (expected vsix-v$ACTUAL)"
+            exit 1
+          fi
+          echo "version OK: $ACTUAL"
+
+      - name: npm ci
+        working-directory: integrations/vscode/extension
+        run: npm ci
+
+      - name: Package (compile + bundled sidecar + pinned Python runtimes)
+        working-directory: integrations/vscode/extension
+        run: npm run vscode:prepublish
+
+      - name: Node unit tests
+        working-directory: integrations/vscode/extension
+        run: npm test
+
+      - name: vsce package
+        working-directory: integrations/vscode/extension
+        run: npx --yes @vscode/vsce package
+
+      - name: Assert VSIX contents (sidecar in, runtimes in, tarball cache out)
+        working-directory: integrations/vscode/extension
+        run: |
+          python3 - <<'EOF'
+          import glob, sys, zipfile
+          matches = glob.glob('*.vsix')
+          assert len(matches) == 1, f'expected exactly one VSIX, found {matches}'
+          vsix = matches[0]
+          with zipfile.ZipFile(vsix) as z:
+              names = z.namelist()
+          def has(p): return p in names
+          assert has('extension/bundled-sidecar/awino_sidecar.py'), 'bundled sidecar missing'
+          rt = [n for n in names if n.startswith('extension/python/linux-x64/')]
+          assert len(rt) >= 100, f'linux runtime tree missing/too small ({len(rt)} entries)'
+          assert has('extension/python/linux-x64/bin/python3'), 'linux runtime binary missing'
+          cached = [n for n in names if 'pbs-cache' in n]
+          assert not cached, f'runtime tarball cache shipped in VSIX: {cached[0]}'
+          import os
+          print(f'VSIX OK: {vsix} ({os.path.getsize(vsix)} bytes), '
+                f'linux runtime entries: {len(rt)}, sidecar present, no .pbs-cache')
+          EOF
+
+      - name: Create pre-release and attach VSIX
+        working-directory: integrations/vscode/extension
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VSIX="$(ls *.vsix)"
+          VERSION="${GITHUB_REF_NAME#vsix-v}"
+          gh release create "${GITHUB_REF_NAME}" \
+            --prerelease \
+            --title "Awino VS Code extension v${VERSION} (beta)" \
+            --notes "Beta channel release — not the Marketplace. Download the .vsix below, then install with: code --install-extension <file>.vsix — see RELEASING.md." \
+            "${VSIX}"

@@ -1,11 +1,13 @@
 # Harness Awino
 
+[![Download beta VSIX](https://img.shields.io/badge/download-beta%20VSIX-blue)](https://github.com/Lukematic/harness-awino/releases)
+
 A.W.I.N.O. rebuilt as the **automatic per-turn loop owner**. Not a CLI the
 model may or may not call, but the `while` loop that owns every turn: the
 contract (objective → mission → tools → progress) is compiled from
 code-owned state, the mode × stance × skill is routed per turn, permissions
 are gated before execution, a judge panel scores every turn, approvals are
-bound to the exact plan, and completion is computed from evidence — never
+bound to the exact plan, and completion computed from evidence — never
 from claims.
 
 Two things live here:
@@ -27,14 +29,22 @@ cd integrations/vscode/extension && npm test   # extension suite (node)
 
 Tagged prereleases on the
 [releases page](https://github.com/Lukematic/harness-awino/releases) carry
-the `.vsix`. Download it, then:
+the `.vsix`. One command downloads and installs the latest beta:
 
 ```sh
-code --install-extension <downloaded-file>.vsix
+VSIX_URL=$(curl -s https://api.github.com/repos/Lukematic/harness-awino/releases | python3 -c "
+import json,sys
+for r in json.load(sys.stdin):
+    for a in r.get('assets', []):
+        if a['name'].endswith('.vsix'):
+            print(a['browser_download_url']); sys.exit()
+print('NO_VSIX_FOUND'); sys.exit(1)
+") && curl -sSL -o awino-beta.vsix "$VSIX_URL" && code --install-extension awino-beta.vsix --force
 ```
 
-or in VS Code: Extensions view → `…` → *Install from VSIX…*. No Python
-setup needed — the runtime ships inside the package (0.5.x line).
+or in VS Code: Extensions view → `…` → *Install from VSIX…* with the
+downloaded file. No Python setup needed — the runtime ships inside the
+package.
 
 ## What's in the harness
 
