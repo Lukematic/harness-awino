@@ -103,8 +103,8 @@ Conformance ladder: Context → Interactive → Autonomous-local → Hosted. See
 - What remains honestly out of scope: general PII scrubbing of arbitrary prompt/source-file content (names, emails, addresses in free text). That is an arms race, not attempted — the redactor targets secret-shaped tokens only.
 - Ollama offers zero-cloud-egress for the local path.
 - Workspace cwd is not OS-level isolation; there is no dangerous-command blacklist — approved shell commands may address external/absolute resources.
-- Full-file `write_file` remains a token-heavy operation with no patch tool.
+- `patch_file` applies a unified diff atomically (temp file + `os.replace`), fail-closed: bad hunk headers, context mismatches, ambiguous (multi-match) hunks, and fuzzy offsets are refused with named error codes. Build-mode only, consequential (approval + SCOPE gated) like `write_file`; applied patches and refusals are journaled as `patch_applied`/`patch_refused` events.
 
 ## 8. Verification
 
-`prototype/run_tests.sh` — 621 tests: routing, enforcement, judges, approvals, recovery, skills, rigor, osmani, fan-out, synthesis, adversarial proof. `proof/proof_session.py` drives a hostile model through a full mission and writes `TRANSCRIPT.md` with the event-log evidence for every blocked attack.
+`prototype/run_tests.sh` — 641 tests: routing, enforcement, judges, approvals, recovery, skills, rigor, osmani, fan-out, synthesis, adversarial proof, patch_file (20: strict apply, named refusals, atomicity, mode gating, journaling). `proof/proof_session.py` drives a hostile model through a full mission and writes `TRANSCRIPT.md` with the event-log evidence for every blocked attack.

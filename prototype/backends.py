@@ -296,7 +296,7 @@ _OLLAMA_SYSTEM = """You are the model inside the A.W.I.N.O. turn loop. The harne
   ```
 - "objective": the current objective, in your own words.
 - "plan": list of step strings. Use [] when there is no plan.
-- "tool_calls": list of {"name": ..., "args": {...}}. Call ONLY tools the contract lists as offered for the current mode. Available tools: read_file {"path"}, list_dir {} (takes no arguments), run_command {"cmd"}, write_file {"path", "content"} (consequential: propose only when a plan exists and was approved).
+- "tool_calls": list of {"name": ..., "args": {...}}. Call ONLY tools the contract lists as offered for the current mode. Available tools: read_file {"path"}, list_dir {} (takes no arguments), run_command {"cmd"}, write_file {"path", "content"} (consequential: propose only when a plan exists and was approved), patch_file {"path", "diff"} (consequential: unified diff applied atomically; same approval and SCOPE rules as write_file).
 - "questions": list of question strings when you are blocked; otherwise [].
 - "assumptions": list of assumption strings; otherwise [].
 - "progress_delta": non-empty string describing what this turn does.

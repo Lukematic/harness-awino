@@ -96,13 +96,17 @@ def _apply_sidecar_tool_profile() -> None:
     backends._OLLAMA_SYSTEM = backends._OLLAMA_SYSTEM.replace(
         'Available tools: read_file {"path"}, list_dir {} (takes no arguments), '
         'run_command {"cmd"}, write_file {"path", "content"} (consequential: '
-        "propose only when a plan exists and was approved).",
+        "propose only when a plan exists and was approved), patch_file "
+        '{"path", "diff"} (consequential: unified diff applied atomically; '
+        "same approval and SCOPE rules as write_file).",
         'Available tools: read_file {"path"}, list_dir {"path"} (relative dir, '
         '"" for root), search_files {"pattern" (regex), "path" (relative dir, '
         'optional), "glob" (filename glob, optional)}, run_command {"cmd"} '
         "(consequential: needs operator approval), write_file "
         '{"path", "content"} (consequential: needs operator approval; propose '
-        "only when a plan exists and was approved).",
+        "only when a plan exists and was approved), patch_file "
+        '{"path", "diff"} (consequential: needs operator approval; unified '
+        "diff applied atomically; same approval and SCOPE rules as write_file).",
     )
     _TOOL_PROFILE_APPLIED = True
 
@@ -2764,6 +2768,11 @@ class Sidecar:
                     a["args"].get("content", ""))
                 item["diff"] = diff
                 item["old_exists"] = old_exists
+            elif a["tool"] == "patch_file":
+                # The patch IS the diff: show it directly so the operator
+                # reviews exactly what will be applied.
+                item["diff"] = a["args"].get("diff", "")
+                item["old_exists"] = True
             approvals.append(item)
         _emit({"event": "approval_requested",
                "turn_id": result.get("turn_id"),
