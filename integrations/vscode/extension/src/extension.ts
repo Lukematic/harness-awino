@@ -560,6 +560,7 @@ async function handleChatMessage(
     const cfg = vscode.workspace.getConfiguration("awino");
     await cfg.update("provider", "echo", vscode.ConfigurationTarget.Workspace);
     await context.globalState.update("awino.onboarded", true);
+    wizardAwaitingProve = false;
     lastShowWizard = computeShowWizard(context);
     postChatState();
     return;
@@ -676,6 +677,9 @@ async function saveWizardSettings(
     await context.globalState.update("awino.onboarded", true);
   }
   vscode.window.showInformationMessage("Awino: provider saved — reconnecting sidecar…");
+  // Non-echo providers advance to the prove-it step: keep the wizard open
+  // across the reconnect (computeShowWizard honors this flag).
+  wizardAwaitingProve = provider !== "echo";
   await connect(context);
   // connect() re-pushes chat state on every path; this covers its no-folder
   // early return so the wizard always hides after Done.
@@ -720,6 +724,7 @@ async function onSidecarEvent(ev: SidecarEvent): Promise<void> {
           if (extContext) {
             await extContext.globalState.update("awino.onboarded", true);
           }
+          wizardAwaitingProve = false; // prove-it done — the wizard may hide now
           lastShowWizard = false; // onboarded → wizard never shows again
           postToChat({ type: "wizardProved" });
           postChatState();
@@ -949,6 +954,13 @@ let lastShowWizard = false;
 // before marking onboarded. While true, the next turn_result/error settles it.
 let awaitingProveIt = false;
 
+// Wizard Step 3 ("Prove it"): set after a successful wizard save for a
+// keyed provider. Keeps computeShowWizard() true so the post-save
+// postChatState() does not hide the wizard before wizardProveReady reveals
+// the prove-it step. Cleared on wizardProved, wizardDismiss, or a fresh
+// wizardSave.
+let wizardAwaitingProve = false;
+
 // Spec 3: "Reconnect to apply" — hash of sidecar-affecting settings at the
 // last successful connect. When the live config diverges, the status bar
 // shows a warning and a one-shot notification offers one-click reconnect.
@@ -1040,6 +1052,13 @@ function settingsDiffLines(): string[] {
 function computeShowWizard(context: vscode.ExtensionContext): boolean {
   if (context.globalState.get<boolean>("awino.onboarded", false)) {
     return false;
+  }
+  // After a successful wizard save the key is no longer missing, but the
+  // wizard must stay open for the prove-it step (Step 3) — it hides only
+  // once the test message proves the provider (wizardProved) or the user
+  // skips/dismisses.
+  if (wizardAwaitingProve) {
+    return true;
   }
   return lastKeyMissing?.missing ?? false;
 }
