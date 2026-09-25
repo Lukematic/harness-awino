@@ -42,7 +42,8 @@ class TestTripleRouting(unittest.TestCase):
         # plus the rigor layer: distillation (spec discipline) and the Five
         # Laws (Layer 1 guardrails).
         self.assertEqual(skills, ["mission-definition", "discovery",
-                                  "rigor-distillation", "rigor-laws"])
+                                  "rigor-distillation", "rigor-laws",
+                                  "durable-memory"])
 
     def test_raw_idea_routes_planning_grill(self):
         intent, mode, chain, skills, _ = route_triple(

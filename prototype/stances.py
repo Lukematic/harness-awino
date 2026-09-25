@@ -60,7 +60,8 @@ FLOORS = {
         # is drafted — never re-runs the interview).
         "skills": ["mission-definition", "discovery",
                    "rigor-distillation", "rigor-laws",
-                   "osmani-adoption", "osmani-idea-refine"],
+                   "osmani-adoption", "osmani-idea-refine",
+                   "durable-memory"],  # recall before planning
         "mode": "plan",
         "exit": "contract drafted → human approves → PLAN",
     },
@@ -190,7 +191,8 @@ def route_triple(snapshot: dict, text: str,
     if kind == "new_objective":
         return ("new-task", "plan", ["planning-grill"],
                 ["mission-definition", "discovery",
-                 "rigor-distillation", "rigor-laws"],
+                 "rigor-distillation", "rigor-laws",
+                 "durable-memory"],  # recall before planning
                 "new objective")
     for intent, rx, mode, chain, skills in INTENT_TABLE:
         if rx.search(t):
@@ -201,7 +203,8 @@ def route_triple(snapshot: dict, text: str,
             and len(t.split()) > 8):
         return ("new-task", "plan", ["planning-grill"],
                 ["mission-definition", "discovery",
-                 "rigor-distillation", "rigor-laws"],
+                 "rigor-distillation", "rigor-laws",
+                 "durable-memory"],  # recall before planning
                 "raw idea without mission")
     floor = FLOORS.get(snapshot.get("phase") or "")
     if floor:

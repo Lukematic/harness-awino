@@ -32,6 +32,13 @@ own state, plus the final wizard fixes — all covered by the beta battery
 
 ## Harness — integration batch (on `main`)
 
+- **Durable memory (MemPalace cherry-pick)**: `prototype/memory_store.py` —
+  local-first JSONL store at `.awino/memory.jsonl` with store/recall/search,
+  word-boundary chunking (byte-identical reassembly) and content-hash dedup;
+  the `durable-memory` skill (SHA-256 pinned, routed on DEFINE and the
+  new-task path) teaches recall-before-planning and persist-at-closure.
+  No compression (measured 2.7x with fidelity loss, not 30x), no daemon,
+  no vector search.
 - **Osmani skills (14)**: TDD, security, code review, shipping, constraints, doubt, API design, source-driven, idea refinement, ADRs, observability, CI/CD, failure modes, adoption.
 - **Rigor coach (11)**: the agent-rigor practice auditor — five laws, doom-loop breaker, layered skills.
 - **Harness-adoption standards**: completion summary, incident response, DORA metrics, deployment readiness, CI diagnosis; definition-of-done, lifecycle-sequence, critical-thinking references.

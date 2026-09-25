@@ -53,7 +53,7 @@ package.
 | Per-turn contract loop | `prototype/contract_loop.py`, `loop.py` | Compiles and validates the turn contract pre-turn and pre-execute; refuses broken contracts with named reasons |
 | Modes (5) | `prototype/contract.py::MODES` | observe, plan, build, verify, ship — permission profiles, computed before the model acts |
 | Stances (9) | `prototype/stances.py` | steel-man, feynman, planning-grill, first-principles, premortem, devil's-advocate, advisor, triage, verifier — reasoning procedures with rubrics |
-| Skills (49) | `prototype/skills/` | Injected knowledge, SHA-256 pinned, verified at load. Core loop, rigor coach, osmani port, agent personas, references |
+| Skills (50) | `prototype/skills/` | Injected knowledge, SHA-256 pinned, verified at load. Core loop, rigor coach, osmani port, agent personas, references, durable-memory |
 | Judge panel | `prototype/judges.py` | N judges vote by quorum per turn; no single gatekeeper; fail-closed |
 | Skill synthesis | `prototype/synthesis.py` | Learnings → sandbox verification → pin → admit only on pass |
 | Fan-out | `prototype/loop.py` | Parallel workers with atomic overlap/budget checks and a fail-closed synthesis barrier |
@@ -77,7 +77,7 @@ Full inventory: [`CAPABILITY_REGISTRY.md`](CAPABILITY_REGISTRY.md).
 
 ## Status
 
-`main` carries the integrated harness (49 skills, 9 stances, fan-out,
+`main` carries the integrated harness (50 skills, 9 stances, fan-out,
 judges, synthesis, adapter contract) and the 0.5.1 extension (bundled
 Python, zero setup, truthfulness fixes — the beta-validated build).
 Prerelease betas ship from tags via the release pipeline. Open gaps are
