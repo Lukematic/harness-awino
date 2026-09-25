@@ -24,6 +24,7 @@ import json
 import os
 import re
 import select
+import shutil
 import socketserver
 import subprocess
 import tempfile
@@ -46,8 +47,29 @@ def _turn(**kw):
     return t
 
 
+def _remove_tree(path):
+    """Best-effort rmtree: retries a few times for transient locks, then
+    gives up quietly so test cleanup never fails the test itself."""
+    if not path:
+        return
+    for _ in range(3):
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            time.sleep(0.2)
+    shutil.rmtree(path, ignore_errors=True)
+
+
 class SidecarClient:
     def __init__(self, env=None, ws=None, home=None):
+        # Track ownership: dirs this client created must be removed in
+        # close(); dirs passed in belong to the caller and are left alone.
+        self._own_ws = ws is None
+        self._own_home = home is None
+        self._closed = False
         self.ws = ws or tempfile.mkdtemp(prefix="awino-sidecar-test-")
         merged = dict(os.environ)
         merged.update(env or {})
@@ -114,11 +136,23 @@ class SidecarClient:
         return self.recv(timeout)
 
     def close(self):
+        if self._closed:
+            return
+        self._closed = True
         try:
-            self.send({"cmd": "bye"})
-            self.p.wait(timeout=10)
-        except Exception:
-            self.p.kill()
+            try:
+                self.send({"cmd": "bye"})
+                self.p.wait(timeout=10)
+            except Exception:
+                self.p.kill()
+        finally:
+            # Remove temp dirs this client created — on both pass and fail
+            # paths (unittest tearDown calls close() either way). Caller-
+            # supplied dirs are owned by the caller and left alone.
+            if self._own_ws:
+                _remove_tree(getattr(self, "ws", None))
+            if self._own_home:
+                _remove_tree(getattr(self, "home", None))
 
 
 class ProtocolTest(unittest.TestCase):
@@ -1001,6 +1035,16 @@ class TasksAndResumeTest(unittest.TestCase):
         # A reconnect (fresh sidecar process) must re-attach the file-backed
         # registry — otherwise tasks_list goes empty and seed_save silently
         # drops the task after every reconnect.
+        # This test intentionally reuses the workspace+home dirs across two
+        # client lifetimes, so their lifetime is scoped explicitly here and
+        # they are removed by addCleanup (the setUp client's own dirs are
+        # removed by its close()).
+        self.c.close()
+        ws = tempfile.mkdtemp(prefix="awino-sidecar-test-")
+        home = tempfile.mkdtemp(prefix="awino-home-test-")
+        self.addCleanup(shutil.rmtree, ws, True)
+        self.addCleanup(shutil.rmtree, home, True)
+        self.c = SidecarClient(ws=ws, home=home)
         self.c.hello()
         self.c.cmd("mission", {"text": "Reconnect registry test",
                                "criteria": ["manual", "manual"]})
@@ -1008,7 +1052,6 @@ class TasksAndResumeTest(unittest.TestCase):
         before = self.c.cmd("tasks_list")["result"]
         self.assertEqual(len(before["tasks"]), 7)
         # Simulate a reconnect: new sidecar process, same workspace + home.
-        ws, home = self.c.ws, self.c.home
         self.c.close()
         self.c = SidecarClient(ws=ws, home=home)
         self.c.hello()
