@@ -116,6 +116,26 @@
       {
         "command": "awino.importConnections",
         "title": "Awino: Import connections from other tools"
+      },
+      {
+        "command": "awino.startStory",
+        "title": "Awino: Start Story",
+        "icon": "$(add)"
+      },
+      {
+        "command": "awino.focusStory",
+        "title": "Awino: Work on This Story",
+        "icon": "$(play)"
+      },
+      {
+        "command": "awino.closeStory",
+        "title": "Awino: Close Story (to Brag Board)",
+        "icon": "$(check)"
+      },
+      {
+        "command": "awino.refreshStories",
+        "title": "Awino: Refresh Stories",
+        "icon": "$(refresh)"
       }
     ],
     "configuration": {
@@ -127,7 +147,7 @@
         },
         "awino.mcpServers": {
           "default": [],
-          "description": "MCP servers the sidecar spawns over stdio. Each: {name, command, args?, env?}. Their tools enter the harness registry under the same contract and approval gates. Note: env values are stored as plaintext workspace settings — never put secrets there; provider API keys belong in VS Code SecretStorage (Awino: Set Provider Key).",
+          "description": "MCP servers the sidecar spawns over stdio. Each: {name, command, args?, env?}. Their tools enter the harness registry under the same contract and approval gates. Note: env values are stored as plaintext workspace settings \u2014 never put secrets there; provider API keys belong in VS Code SecretStorage (Awino: Set Provider Key).",
           "items": {
             "properties": {
               "args": {
@@ -161,7 +181,7 @@
         },
         "awino.provider": {
           "default": "echo",
-          "description": "Model source for the harness. API keys are NOT stored here — use 'Awino: Set API Key'.",
+          "description": "Model source for the harness. API keys are NOT stored here \u2014 use 'Awino: Set API Key'.",
           "enum": [
             "echo",
             "ollama",
@@ -197,7 +217,7 @@
         },
         "awino.keyLabels": {
           "default": {},
-          "description": "Friendly labels for your API keys, e.g. {\"openai\": \"Work\"}. Labels are NOT secret — they are shown in the Models & Providers panel next to the key indicators. The keys themselves stay in VS Code SecretStorage and never appear here.",
+          "description": "Friendly labels for your API keys, e.g. {\"openai\": \"Work\"}. Labels are NOT secret \u2014 they are shown in the Models & Providers panel next to the key indicators. The keys themselves stay in VS Code SecretStorage and never appear here.",
           "type": "object",
           "properties": {
             "openai": {
@@ -217,7 +237,7 @@
         },
         "awino.script": {
           "default": null,
-          "description": "TEST ONLY: scripted candidate turns for the scripted provider (set awino.provider to \"scripted\"). Each turn goes through the identical validation/judge/approval pipeline — it only feeds candidate turns instead of calling a model. Leave empty in normal use.",
+          "description": "TEST ONLY: scripted candidate turns for the scripted provider (set awino.provider to \"scripted\"). Each turn goes through the identical validation/judge/approval pipeline \u2014 it only feeds candidate turns instead of calling a model. Leave empty in normal use.",
           "items": {
             "type": "object"
           },
@@ -246,6 +266,11 @@
           "id": "awino.modes",
           "name": "Modes",
           "visibility": "collapsed",
+          "when": "awino:connected"
+        },
+        {
+          "id": "awino.stories",
+          "name": "Stories",
           "when": "awino:connected"
         },
         {
@@ -300,7 +325,33 @@
         "contents": "No sidecar connected.\nOpen a workspace folder and the Awino sidecar will start automatically.\n[Open Folder](command:vscode.openFolder)",
         "view": "awino.chat"
       }
-    ]
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "awino.startStory",
+          "when": "view == awino.stories",
+          "group": "navigation"
+        },
+        {
+          "command": "awino.refreshStories",
+          "when": "view == awino.stories",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "awino.focusStory",
+          "when": "view == awino.stories && viewItem == awinoStory",
+          "group": "inline"
+        },
+        {
+          "command": "awino.closeStory",
+          "when": "view == awino.stories && viewItem == awinoStory",
+          "group": "inline"
+        }
+      ]
+    }
   },
   "description": "Own the loop",
   "devDependencies": {
@@ -329,7 +380,7 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
-    "test": "node ./test/chatHistory.js && node ./test/harness.js && node ./test/delegatedApply.js && node ./test/bedrock.js && node ./test/connection_importer.js && node ./test/markdown.js && node ./test/streaming.js && node ./test/python.js && node ./test/pythonRecovery.js && node ./test/tasksView.js && node ./test/providerKeys.js && node ./test/modelDiscovery.js && node ./test/modelsPanel.js && node ./test/setupShared.js && node ./test/chatSetup.js && node ./test/bundleSidecar.js && node ./test/bundledPython.js && node ./test/bundlePython.js && node ./test/connectGuard.js && node ./test/cspPlaceholders.js && node ./test/vsixContents.js && node ./test/rigor.js",
+    "test": "node ./test/chatHistory.js && node ./test/harness.js && node ./test/delegatedApply.js && node ./test/bedrock.js && node ./test/connection_importer.js && node ./test/markdown.js && node ./test/streaming.js && node ./test/python.js && node ./test/pythonRecovery.js && node ./test/tasksView.js && node ./test/storiesView.js && node ./test/providerKeys.js && node ./test/modelDiscovery.js && node ./test/modelsPanel.js && node ./test/setupShared.js && node ./test/chatSetup.js && node ./test/bundleSidecar.js && node ./test/bundledPython.js && node ./test/bundlePython.js && node ./test/connectGuard.js && node ./test/cspPlaceholders.js && node ./test/vsixContents.js && node ./test/rigor.js",
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run compile && node ./scripts/bundle-sidecar.js && node ./scripts/fetch-python-runtimes.js"
   },

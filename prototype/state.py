@@ -336,6 +336,50 @@ def apply_event(snap: dict, ev: dict) -> None:
     # Unknown / informational event types leave the snapshot untouched.
 
 
+LEGACY_HOME = Path.home() / ".awino-loop"
+
+
+def project_slug(folder: str | Path) -> str:
+    import re
+    return re.sub(r"[^a-z0-9-]+", "-", Path(folder).name.lower()).strip("-") \
+        or "project"
+
+
+def default_home(workspace: str | Path) -> Path:
+    """Where a project's session state lives: inside the project, next to
+    its registry and stories (<workspace>/.awino), so the CLI and the VS
+    Code extension share one memory. AWINO_HOME overrides (tests, CI)."""
+    env = os.environ.get("AWINO_HOME")
+    return Path(env) if env else Path(workspace) / ".awino"
+
+
+def adopt_legacy_state(home: str | Path, project_id: str) -> Path | None:
+    """One-time move of pre-0.7 state (~/.awino-loop/projects/<id>) into the
+    project home when the project has none yet. Copies, never deletes the
+    old folder. Returns the source when state was adopted."""
+    import shutil
+    home = Path(home)
+    src = LEGACY_HOME / "projects" / project_id
+    dst = home / "projects" / project_id
+    if home.resolve() == LEGACY_HOME.resolve() or not src.is_dir():
+        return None
+    if (dst / "snapshot.json").exists() or (dst / "events.jsonl").exists():
+        return None
+    shutil.copytree(src, dst, dirs_exist_ok=True)
+    return src
+
+
+def ensure_state_ignored(home: str | Path) -> None:
+    """Session journals hold tool output and file contents: keep them out of
+    the user's git history by default (stories and the registry stay
+    tracked)."""
+    gi = Path(home) / ".gitignore"
+    if Path(home).name == ".awino" and not gi.exists():
+        gi.parent.mkdir(parents=True, exist_ok=True)
+        gi.write_text("# Local session state (journals, snapshots).\n"
+                      "projects/\n")
+
+
 class ProjectState:
     """Per-project event-sourced state."""
 

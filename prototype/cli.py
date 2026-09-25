@@ -362,8 +362,10 @@ def cmd_rigor(args: list[str]) -> int:
         i += 1
     try:
         import rigor as _rigor
-        home = Path(os.environ.get("AWINO_HOME",
-                                   str(Path.home() / ".awino-loop")))
+        from state import default_home, LEGACY_HOME
+        home = default_home(Path(repo) if repo else Path.cwd())
+        if not (home / "projects").is_dir() and "AWINO_HOME" not in os.environ:
+            home = LEGACY_HOME
         if mission_id:
             pdir = _rigor.find_project_for_mission(home, mission_id)
             if pdir is None:

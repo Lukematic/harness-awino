@@ -2477,12 +2477,17 @@ class Sidecar:
             return
         if cmd.get("environment"):
             self._write_active_environment(cmd["environment"])
-        home = Path(os.environ.get("AWINO_HOME",
-                                   str(Path.home() / ".awino-loop")))
-        project = cmd.get("project") or re.sub(r"[^a-z0-9-]+", "-",
-                                               wsp.name.lower()).strip("-")
+        from state import (default_home, adopt_legacy_state,
+                           ensure_state_ignored, project_slug)
+        home = default_home(wsp)
+        project = cmd.get("project") or project_slug(wsp)
+        adopted = adopt_legacy_state(home, str(project))
+        ensure_state_ignored(home)
         loop = Loop(str(home), str(project), backend, build_judge_panel(),
                     sandbox_dir=str(wsp))
+        if adopted is not None:
+            loop.state.record("state_migrated", {"from": str(adopted)})
+            loop.state.persist_snapshot()
         # The IDE loop works on the real workspace, not a demo sandbox.
         loop.sandbox = WorkspaceSandbox(wsp)
         self.loop = loop
@@ -4032,6 +4037,10 @@ class Sidecar:
             "registry_audit": self._cmd_registry_audit,
             "mode": self._cmd_role_mode,
             "plan": self._cmd_plan,
+            "stories": self._cmd_stories,
+            "story_start": self._cmd_story_start,
+            "story_focus": self._cmd_story_focus,
+            "story_close": self._cmd_story_close,
             "verify_begin": self._cmd_verify_begin,
             "verify_turn": self._cmd_verify_turn,
             "verify_complete": self._cmd_verify_complete,
@@ -4406,6 +4415,95 @@ class Sidecar:
                              "by": [x["id"] for x in b["blocked_by"]]}
                             for b in blocked],
                 "order": order}
+
+    # ------------------------------------------------ story ledger (T10)
+    _STORY_FIELDS = ("id", "title", "type", "status", "problem",
+                     "done_criteria", "branch", "ready_to_close",
+                     "created_ts", "closed_ts", "outcome", "revisit_on",
+                     "blockers", "bugatti_brief")
+
+    def _cmd_stories(self, args: dict) -> dict:
+        """The project's story ledger: every story plus time dedicated; the
+        brag board is the done ones, newest first."""
+        from story import StoryStore, parked_due_summary, story_time_spent
+        awd = self._awino_dir()
+        store = StoryStore(awd)
+        if not store.exists:
+            return {"stories": [], "brag": [], "attached": False}
+        due = {st["id"] for st in parked_due_summary(awd)}
+        rows = []
+        for st in store.list():
+            row = {k: st.get(k) for k in self._STORY_FIELDS}
+            row["time_s"] = story_time_spent(awd, st["id"])
+            row["revisit_due"] = st["id"] in due
+            rows.append(row)
+        brag = sorted((r for r in rows if r["status"] == "done"),
+                      key=lambda r: r.get("closed_ts") or 0, reverse=True)
+        return {"stories": rows, "brag": brag, "attached": True}
+
+    def _cmd_story_start(self, args: dict) -> dict:
+        """Start a story and make it the one in progress (this session's
+        issue). Other in-progress stories go back to open."""
+        from story import story_start, doing_stories, story_update, \
+            session_end
+        title = (args.get("title") or "").strip()
+        if not title:
+            return {"status": "error", "said": "a story needs a title"}
+        kind = args.get("type") or "story"
+        awd = self._awino_dir()
+        for st in doing_stories(awd):
+            session_end(awd, st["id"], "switched to another story")
+            story_update(awd, st["id"], status="open")
+        try:
+            st = story_start(awd, title, type=kind, status="doing",
+                             problem=(args.get("problem") or "").strip())
+        except ValueError as e:
+            return {"status": "error", "said": str(e)}
+        said = f"Started {kind} '{st['title']}' on branch {st['branch']}."
+        if st.get("stale_warning"):
+            said += " " + st["stale_warning"]
+        self._say("story", said)
+        return {"status": "ok", "story": {k: st.get(k)
+                                          for k in self._STORY_FIELDS}}
+
+    def _cmd_story_focus(self, args: dict) -> dict:
+        """Resume an existing story as this session's issue."""
+        from story import StoryStore, doing_stories, story_update, \
+            session_begin, session_end
+        awd = self._awino_dir()
+        sid = args.get("id")
+        try:
+            st = StoryStore(awd).get(sid)
+        except KeyError:
+            return {"status": "error", "said": f"no story {sid!r}"}
+        if st["status"] == "done":
+            return {"status": "error", "said": "that story is closed"}
+        for other in doing_stories(awd):
+            if other["id"] != sid:
+                session_end(awd, other["id"], "switched to another story")
+                story_update(awd, other["id"], status="open")
+        story_update(awd, sid, status="doing")
+        session_begin(awd, sid, "resumed in VS Code")
+        from story import _ensure_branch
+        note = _ensure_branch(awd.parent, st["branch"])
+        self._say("story", f"Working on '{st['title']}' ({note})")
+        return {"status": "ok", "id": sid}
+
+    def _cmd_story_close(self, args: dict) -> dict:
+        """Close a story onto the brag board. Only the user calls this."""
+        from story import story_close
+        sid = args.get("id")
+        outcome = (args.get("outcome") or "").strip()
+        if not outcome:
+            return {"status": "error",
+                    "said": "closing needs an outcome for the brag board"}
+        try:
+            st = story_close(self._awino_dir(), sid, outcome)
+        except KeyError:
+            return {"status": "error", "said": f"no story {sid!r}"}
+        self._say("story", f"Closed '{st['title']}' — on the brag board. "
+                           f"{st.get('push_note', '')}".strip())
+        return {"status": "ok", "id": sid}
 
     def _cmd_verify_begin(self, args: dict) -> dict:
         """Spawn the verifier worker (Track G)."""

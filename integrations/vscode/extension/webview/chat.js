@@ -505,10 +505,37 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
   // criteria, last progress deltas, next expected action. Rendered once on
   // (re)connect and on demand via the command palette. Nothing here is
   // editable — it mirrors exactly what the harness believes.
+  var readyAnnouncedFor = null;
+
+  // Open stories at session start: which do we work on, or close?
+  function storyRows(ledger, row) {
+    var list = (ledger && ledger.stories) || [];
+    if (!list.length) return "";
+    function titles(xs) {
+      return xs.slice(0, 5).map(function (x) {
+        return esc(x.title) + (x.ready_to_close ? " (ready to close)" : "");
+      }).join("; ") + (xs.length > 5 ? " +" + (xs.length - 5) + " more" : "");
+    }
+    function by(st) { return list.filter(function (x) { return x.status === st; }); }
+    var doing = by("doing"), open = by("open"), blocked = by("blocked");
+    var due = list.filter(function (x) { return x.revisit_due; });
+    var out = "";
+    if (doing.length) out += row("Working on", titles(doing));
+    if (open.length) out += row("Open stories", titles(open));
+    if (blocked.length) out += row("Blocked", titles(blocked));
+    if (due.length) out += row("Parked idea due", titles(due));
+    if (out) out += row("Next", "Pick a story in the Stories panel, close finished ones, or say what's new.");
+    return out;
+  }
+
   function renderSessionResume(s) {
     if (!sessionResumeEl) return;
     s = s || {};
-    if (!s.mission && !(s.turns > 0)) {
+    var ledger = s.stories || null;
+    var hasStories = !!(ledger && (ledger.stories || []).some(function (x) {
+      return x.status !== "done" || x.revisit_due;
+    }));
+    if (!s.mission && !(s.turns > 0) && !hasStories) {
       sessionResumeEl.hidden = true;
       sessionResumeEl.innerHTML = "";
       return;
@@ -517,6 +544,7 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
       return '<div class="sr-row"><b>' + esc(label) + ":</b> " + html + "</div>";
     }
     var out = '<div class="sr-title">Session resume</div>';
+    out += storyRows(ledger, row);
     out += row("Mission", esc(s.mission || "(none)"));
     out += row(
       "Phase",
@@ -1086,11 +1114,18 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
           "connected · " + (b.provider || ev.provider) + " · env " + (b.environment || "(global)") +
           " · model " + (b.model || ev.model || "?"));
         setBead("link", "on", "link: connected");
-        addMsg("", "<i>Sidecar ready — project <b>" + esc(ev.project) + "</b>, provider <b>" +
-          esc(b.provider || ev.provider) + "</b>. MCP: " +
-          esc(JSON.stringify((ev.mcp || []).map(function (m) { return m.name + ":" + (m.ok ? "ok" : "error"); }))) + "</i>");
+        // Once per project: reconnects only refresh the status line above.
+        if (readyAnnouncedFor !== ev.project) {
+          readyAnnouncedFor = ev.project;
+          addMsg("", "<i>Sidecar ready — project <b>" + esc(ev.project) + "</b>, provider <b>" +
+            esc(b.provider || ev.provider) + "</b>. MCP: " +
+            esc(JSON.stringify((ev.mcp || []).map(function (m) { return m.name + ":" + (m.ok ? "ok" : "error"); }))) + "</i>");
+        }
         break;
       }
+      case "say":
+        addMsg("", "<i>" + esc(ev.message) + "</i>");
+        break;
       case "turn_start":
         renderTurnStart(ev);
         break;

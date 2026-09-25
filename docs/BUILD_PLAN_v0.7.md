@@ -53,6 +53,19 @@ Done on `claude/native-tools-auth-hotfix-bhsr45` (tests in `tests/test_tool_prom
   could not pass evidence (verifier always failed); harness tool results had no
   `tool_called`; a call paused for approval reused the next round's call id.
 
+- **T4 done.** Session state lives in `<project>/.awino/projects/<slug>/` for the sidecar and
+  `awino chat` (which also stops putting every project in one "inbox" session). Old
+  `~/.awino-loop` state is copied in once, never deleted; `.awino/.gitignore` keeps journals
+  out of git. `tests/test_project_home.py` runs the real sidecar and reads its mission from a
+  CLI loop.
+- **T10 done (VS Code).** Sidecar `stories` / `story_start` / `story_focus` / `story_close`;
+  a Stories panel (in progress, open, blocked, parked ideas, brag board with date, time
+  and outcome); commands to start, resume, and close stories; the session-start card lists
+  open stories and due parked ideas; the extension asks once to close a story the verifier
+  marked ready. Also: "Sidecar ready" shows once per project (part of T6).
+  `tests/test_sidecar_stories.py`, `test/storiesView.js`. Not yet clicked through in a live
+  VS Code window (T25).
+
 Everything else below is still open.
 
 **Build order (agreed 09-26):** T4 one memory → T10 stories + brag board in VS Code →

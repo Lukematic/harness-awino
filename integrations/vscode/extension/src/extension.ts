@@ -53,6 +53,9 @@ import {
   ContextView,
   ModesView,
   TasksView,
+  StoriesView,
+  StoryItem,
+  StoryRow,
 } from "./views";
 
 const EXT_ID = "awino-loop-owner";
@@ -365,6 +368,7 @@ let skillsView: SkillsView;
 let contextView: ContextView;
 let modesView: ModesView;
 let tasksView: TasksView;
+let storiesView: StoriesView;
 
 function refreshViews(): void {
   contractView?.refresh();
@@ -374,6 +378,8 @@ function refreshViews(): void {
   contextView?.refresh();
   modesView?.refresh();
   tasksView?.refresh();
+  storiesView?.refresh();
+  void offerStoryClose();
 }
 
 function updateStatusBar(): void {
@@ -1131,6 +1137,75 @@ async function showRigorReport(): Promise<void> {
   }
 }
 
+// ------------------------------------------------------------ stories (T10)
+async function listStories(): Promise<StoryRow[]> {
+  const r = (await query("stories")) as { stories?: StoryRow[] };
+  return r.stories ?? [];
+}
+
+async function pickStory(placeHolder: string, filter: (s: StoryRow) => boolean): Promise<StoryRow | undefined> {
+  const rows = (await listStories()).filter(filter);
+  if (!rows.length) {
+    vscode.window.showInformationMessage("Awino: no matching stories.");
+    return undefined;
+  }
+  const pick = await vscode.window.showQuickPick(
+    rows.map((s) => ({ label: s.title, description: `${s.type ?? "story"} · ${s.status}`, s })),
+    { placeHolder }
+  );
+  return pick?.s;
+}
+
+function storyFromArg(arg: unknown): StoryRow | undefined {
+  return arg instanceof StoryItem ? arg.story : undefined;
+}
+
+async function runStoryCommand(name: string, args: Record<string, unknown>): Promise<void> {
+  const r = (await query(name, args)) as Record<string, unknown>;
+  if (r["status"] === "error") {
+    vscode.window.showErrorMessage(`Awino: ${String(r["said"] ?? name + " failed")}`);
+  } else if (r["said"]) {
+    postToChat({ type: "event", payload: { event: "say", kind: "story", message: String(r["said"]) } });
+  }
+  refreshViews();
+  await postSessionResume();
+}
+
+async function closeStoryFlow(story?: StoryRow): Promise<void> {
+  const s = story ?? (await pickStory("Close which story?", (x) => x.status !== "done"));
+  if (!s) return;
+  const outcome = await vscode.window.showInputBox({
+    prompt: `Close "${s.title}" — what was accomplished? (goes on the brag board)`,
+    validateInput: (v) => (v.trim() ? undefined : "An outcome is required for the brag board"),
+  });
+  if (!outcome) return;
+  await runStoryCommand("story_close", { id: s.id, outcome: outcome.trim() });
+}
+
+// The harness never closes a story itself: when the verifier marks one
+// ready, the user is asked once per story.
+const storyCloseOffered = new Set<string>();
+async function offerStoryClose(): Promise<void> {
+  if (!session) return;
+  let rows: StoryRow[];
+  try {
+    rows = await listStories();
+  } catch {
+    return;
+  }
+  for (const s of rows) {
+    if (s.ready_to_close && s.status !== "done" && !storyCloseOffered.has(s.id)) {
+      storyCloseOffered.add(s.id);
+      const choice = await vscode.window.showInformationMessage(
+        `Awino: "${s.title}" is verified. Close it onto the brag board?`,
+        "Close story",
+        "Not yet"
+      );
+      if (choice === "Close story") await closeStoryFlow(s);
+    }
+  }
+}
+
 // Session-focus/resume: read-only reconstruction of where the session
 // stands — mission, phase, verified criteria, last progress, next action —
 // posted to the chat webview to render as a static summary block. Pure
@@ -1142,6 +1217,11 @@ async function postSessionResume(): Promise<void> {
   }
   try {
     const summary = (await query("session_resume")) as Record<string, unknown>;
+    try {
+      summary["stories"] = await query("stories");
+    } catch (e) {
+      log(`stories for session resume failed: ${e}`);
+    }
     // Chrome, not transcript: re-queried fresh on every view resolve.
     postToChat({ type: "sessionResume", summary }, false);
   } catch (e) {
@@ -1863,6 +1943,20 @@ function registerCommands(context: vscode.ExtensionContext): void {
     context.subscriptions.push(vscode.commands.registerCommand(id, (...a) => fn(...a)));
 
   reg("awino.reconnect", () => reconnect(context));
+  reg("awino.startStory", async () => {
+    const title = await vscode.window.showInputBox({ prompt: "Story title — what are we solving this session?" });
+    if (!title?.trim()) return;
+    const type = await vscode.window.showQuickPick(["story", "spike", "chore"], { placeHolder: "Type" });
+    if (!type) return;
+    const problem = await vscode.window.showInputBox({ prompt: "The problem in one sentence (optional)" });
+    await runStoryCommand("story_start", { title: title.trim(), type, problem: problem ?? "" });
+  });
+  reg("awino.focusStory", async (arg: unknown) => {
+    const s = storyFromArg(arg) ?? (await pickStory("Work on which story?", (x) => x.status !== "done"));
+    if (s) await runStoryCommand("story_focus", { id: s.id });
+  });
+  reg("awino.closeStory", async (arg: unknown) => closeStoryFlow(storyFromArg(arg)));
+  reg("awino.refreshStories", () => storiesView?.refresh());
   // Native tool application: revert the workspace to the last git
   // checkpoint taken before a delegated build-mode write batch. The
   // sidecar restores tracked files, deletes only Awino-created untracked
@@ -2867,6 +2961,7 @@ export function activate(context: vscode.ExtensionContext): void {
   contextView = new ContextView(queryFn);
   modesView = new ModesView(queryFn);
   tasksView = new TasksView(queryFn);
+  storiesView = new StoriesView(queryFn);
 
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider("awino.contract", contractView),
@@ -2876,6 +2971,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerTreeDataProvider("awino.context", contextView),
     vscode.window.registerTreeDataProvider("awino.modes", modesView),
     vscode.window.registerTreeDataProvider("awino.tasks", tasksView),
+    vscode.window.registerTreeDataProvider("awino.stories", storiesView),
     // retainContextWhenHidden: keep the webview DOM alive when the user
     // switches tabs (Explorer etc.). The host-side transcript replay on
     // the "chatReady" handshake is the recovery path if the webview is

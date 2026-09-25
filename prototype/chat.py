@@ -18,6 +18,8 @@ from pathlib import Path
 from loop import Loop
 from backends import EchoBackend, OllamaBackend
 from judges import build_judge_panel
+from state import (default_home, adopt_legacy_state, ensure_state_ignored,
+                   project_slug)
 
 
 def make_backend():
@@ -30,7 +32,8 @@ def make_backend():
     else:
         raise ValueError(f"unknown AWINO_BACKEND={which!r} (use echo|local)")
 
-HOME = Path(sys.argv[1]) if len(sys.argv) > 1 else Path.home() / ".awino-loop"
+HOME = Path(sys.argv[1]) if len(sys.argv) > 1 else default_home(Path.cwd())
+PROJECT = project_slug(Path.cwd())
 
 HELP = """\
 /project <id>            switch project (state dir switches, missions persist)
@@ -117,8 +120,10 @@ def _attach_registry(loop) -> None:
 
 
 def main() -> None:
-    project = "inbox"
+    project = PROJECT
     session_start()  # auto-init: the primary path; `awino init` is the override
+    adopt_legacy_state(HOME, project)
+    ensure_state_ignored(HOME)
     loop = Loop(HOME, project, make_backend(), build_judge_panel())
     _attach_registry(loop)
     print(f"awino chat — home={HOME} project={project}")

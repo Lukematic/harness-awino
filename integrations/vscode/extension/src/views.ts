@@ -366,3 +366,101 @@ export class TasksView extends BaseView {
     return out;
   }
 }
+
+export interface StoryRow {
+  id: string;
+  title: string;
+  type?: string;
+  status: string;
+  problem?: string;
+  outcome?: string;
+  branch?: string;
+  closed_ts?: number | null;
+  time_s?: number;
+  ready_to_close?: boolean;
+  revisit_on?: string;
+  revisit_due?: boolean;
+}
+
+/** Tree item for one story; carries its id for the context-menu commands. */
+export class StoryItem extends vscode.TreeItem {
+  constructor(readonly story: StoryRow, label: string, description?: string) {
+    super(label, vscode.TreeItemCollapsibleState.None);
+    this.description = description;
+    this.contextValue = story.status === "done" ? "awinoStoryDone" : "awinoStory";
+  }
+}
+
+export function formatDuration(seconds: number | undefined): string {
+  const s = Math.max(0, Math.round(seconds ?? 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m`;
+  return s ? "<1m" : "0m";
+}
+
+function day(ts: number | null | undefined): string {
+  if (!ts) return "";
+  return new Date(ts * 1000).toISOString().slice(0, 10);
+}
+
+/** Stories view: this project's issues by status, then the brag board. */
+export class StoriesView extends BaseView {
+  async getChildren(element?: vscode.TreeItem): Promise<vscode.TreeItem[]> {
+    if (element instanceof Group) {
+      return element.children;
+    }
+    let r: Record<string, unknown>;
+    try {
+      r = (await this.query("stories")) as Record<string, unknown>;
+    } catch (e) {
+      return [new Leaf("sidecar unavailable", esc(e))];
+    }
+    const stories = (r["stories"] ?? []) as StoryRow[];
+    if (!stories.length) {
+      return [new Leaf("(no stories yet — Start Story, or plan one in chat)")];
+    }
+    const groups: Array<[string, string]> = [
+      ["doing", "In progress"],
+      ["open", "Open"],
+      ["blocked", "Blocked"],
+      ["parked", "Parked ideas"],
+    ];
+    const out: vscode.TreeItem[] = [];
+    for (const [status, name] of groups) {
+      const rows = stories.filter((s) => s.status === status);
+      if (!rows.length) continue;
+      const g = new Group(`${name} (${rows.length})`);
+      for (const s of rows) {
+        const flags: string[] = [];
+        if (s.ready_to_close) flags.push("ready to close");
+        if (s.revisit_due) flags.push("revisit due");
+        if (status === "parked" && s.revisit_on && !s.revisit_due) flags.push(`revisit ${s.revisit_on}`);
+        flags.push(formatDuration(s.time_s));
+        const item = new StoryItem(s, `${s.ready_to_close ? "★" : "•"} ${esc(s.title)}`, flags.join(" · "));
+        item.tooltip =
+          `${s.type ?? "story"} · ${status}\n` +
+          (s.problem ? `problem: ${s.problem}\n` : "") +
+          (s.branch ? `branch: ${s.branch}\n` : "") +
+          `time dedicated: ${formatDuration(s.time_s)}\nid: ${s.id}`;
+        g.children.push(item);
+      }
+      out.push(g);
+    }
+    const brag = ((r["brag"] ?? []) as StoryRow[]);
+    const g = new Group(`Brag board (${brag.length})`);
+    for (const s of brag) {
+      const item = new StoryItem(
+        s,
+        `✓ ${esc(s.title)}`,
+        [day(s.closed_ts), formatDuration(s.time_s), esc(s.outcome ?? "")].filter(Boolean).join(" · ")
+      );
+      item.tooltip = `closed ${day(s.closed_ts)}\noutcome: ${s.outcome ?? ""}\ntime dedicated: ${formatDuration(s.time_s)}`;
+      g.children.push(item);
+    }
+    if (!brag.length) g.children.push(new Leaf("(nothing closed yet)"));
+    out.push(g);
+    return out;
+  }
+}
