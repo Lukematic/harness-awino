@@ -29,7 +29,8 @@ import modes as _modes
 from skills import SkillIntegrityError
 from synthesis import synthesize_learning as _synthesize_learning
 from stances import evaluate_chain, route_triple, FLOORS
-from tools import Sandbox, TOOL_DEFS
+from tools import (Sandbox, TOOL_DEFS, _parse_unified_diff, _apply_hunks,
+                    PatchRefusal)
 from approval_targets import resolve_shell_targets
 from backends import ScriptedJudge
 from contract_loop import (
@@ -320,6 +321,14 @@ class Loop:
         # Track B (memory registry): the sidecar attaches a Registry here on
         # mission start. None in unit tests — every use is guarded.
         self.registry = None
+        # Native tool application (VS Code extension builder): when the
+        # extension advertises apply/terminal capability, the sidecar
+        # attaches a delegation object here. None (CLI, unit tests, older
+        # extensions) preserves the historical in-process sandbox behavior
+        # exactly. The delegation interface is duck-typed:
+        #   tool_fn(name) -> callable | None   (per-call, used for run_command)
+        #   apply_batch(edits) -> [result]     (batched writes, one undo unit)
+        self.delegation = None
         # Story ledger: the wall-clock start of THIS session. The 25-turn
         # review nudge treats a story as "untouched this session" when it
         # has no session-log entry at/after this timestamp.
@@ -1195,16 +1204,23 @@ class Loop:
         return any(a["status"] == "granted" and a["idem_key"] == idem
                    and a["revision"] == rev for a in self.state.snapshot["approvals"])
 
-    def _execute_single(self, call_id: str, tool_name: str, args: dict,
-                        idem_key: str) -> dict:
-        # Sidecar streaming protocol (spec §3): tool_progress events around
-        # the execution. None when the turn is not streamed — zero overhead
-        # and zero behavior change otherwise.
+    def _stream_setup(self, call_id: str, tool_name: str, args: dict):
+        """Sidecar streaming protocol (spec §3): tool_progress events around
+        the execution. Returns (stream, t0); stream is None when the turn is
+        not streamed — zero overhead and zero behavior change otherwise."""
         stream = self._stream_for(self._turn_of_call(call_id))
         t0 = time.monotonic() if stream is not None else 0.0
         if stream is not None:
             stream.tool_progress(tool_name, "start",
                                  _tool_call_summary(tool_name, args))
+        return stream, t0
+
+    def _pre_execute(self, call_id: str, tool_name: str, args: dict,
+                     idem_key: str, stream, t0) -> tuple[bool, dict | None]:
+        """Shared preamble for tool execution: worker scope check and
+        idempotency, plus the tool_called journal entry. Returns
+        (proceed, early): when proceed is False, early is the already-
+        journaled result and the tool must NOT execute."""
         # Phase D: worker file ownership — a worker Loop (has worker_id in
         # its snapshot) may only touch files within its owned_files scope.
         scope = self.state.snapshot.get("scope")
@@ -1230,7 +1246,7 @@ class Loop:
                     stream.tool_progress(tool_name, "error",
                                          str(result["error"])[:160],
                                          ms=_ms_since(t0))
-                return {"tool": tool_name, "result": result}
+                return False, {"tool": tool_name, "result": result}
         # Idempotency: never re-execute an effect we already have a result for.
         for e in reversed(self.state.events):
             if e["type"] == "tool_result" and e["data"].get("idem_key") == idem_key:
@@ -1243,16 +1259,18 @@ class Loop:
                     stream.tool_progress(tool_name, "done",
                                          "reused cached result",
                                          ms=_ms_since(t0))
-                return {"tool": tool_name, "result": res, "reused": True}
+                return False, {"tool": tool_name, "result": res, "reused": True}
         self.state.record("tool_called",
                           {"call_id": call_id, "tool": tool_name, "args": args,
                            "idem_key": idem_key,
                            "mission_rev": self.state.snapshot["mission_revision"]})
-        fn = getattr(self.sandbox, tool_name)
-        try:
-            result = fn(**args)
-        except Exception as ex:  # noqa: BLE001 - tool errors are data
-            result = {"error": f"{type(ex).__name__}: {ex}"}
+        return True, None
+
+    def _post_execute(self, call_id: str, tool_name: str, args: dict,
+                      idem_key: str, result: dict, stream, t0) -> dict:
+        """Shared postamble for tool execution: patch_file's dedicated
+        journal entry, the tool_result entry, and the stream done event.
+        Identical journaling whether the effect ran in-process or delegated."""
         if tool_name == "patch_file":
             # Dedicated journal entry: the applied patch or the named
             # refusal, so the journal shows patch outcomes explicitly
@@ -1276,6 +1294,164 @@ class Loop:
                 "error" if _tool_failed(result) else "done",
                 _tool_result_summary(result), ms=_ms_since(t0))
         return {"tool": tool_name, "result": result}
+
+    def _resolve_tool_fn(self, tool_name: str):
+        """Native tool application: when a delegation is attached (the VS
+        Code extension advertised apply/terminal capability), the delegated
+        executor runs the effect instead of the in-process sandbox. Only
+        run_command resolves per-call here — write_file/patch_file are
+        partitioned to _execute_delegated_batch by _drain_pending (single
+        undo unit), but the delegation's per-call tool_fn remains the
+        fail-safe for any other path (e.g. _execute_calls). None (no
+        delegation) returns the historical sandbox implementation."""
+        if self.delegation is not None:
+            fn = self.delegation.tool_fn(tool_name)
+            if fn is not None:
+                return fn
+        return getattr(self.sandbox, tool_name)
+
+    def _compute_delegated_edit(self, tool_name: str, args: dict) -> dict:
+        """Compute the full new content for a delegated write WITHOUT
+        touching disk. patch_file hunks are validated in-process with the
+        same strict, atomic parser the sandbox uses, so a malformed patch
+        refuses here — the extension only ever applies bytes the loop
+        already accepted. Returns the edit payload:
+          {"call_id"... set by caller, "tool", "path", "content",
+           "old_digest": sha256-of-preimage | None, "digest": sha256(content)}
+        or {"error", "error_code"} for refusals."""
+        path = args.get("path") or ""
+        try:
+            self.sandbox._resolve(path)  # ValueError on traversal, like write_file
+        except ValueError as ex:
+            return {"error": str(ex), "error_code": "delegated_path_escape"}
+        if tool_name == "write_file":
+            content = args.get("content", "")
+            old_digest = None
+            p = self.sandbox._resolve(path)
+            if p.is_file():
+                old_digest = hashlib.sha256(p.read_bytes()).hexdigest()
+        elif tool_name == "patch_file":
+            diff = args.get("diff", "")
+            try:
+                hunks, new_file, strip_nl = _parse_unified_diff(diff)
+                p = self.sandbox._resolve(path)
+                existed = p.is_file()
+                if not existed:
+                    if not (new_file and all(not h["old_lines"] for h in hunks)):
+                        raise PatchRefusal(
+                            "PATCH_TARGET_MISSING",
+                            f"no such file: {path!r} (new-file patches must "
+                            f"come from --- /dev/null with only additions)")
+                    orig_text = ""
+                else:
+                    orig_text = p.read_text()
+                if orig_text:
+                    trailing = orig_text.endswith("\n")
+                    lines = orig_text.split("\n")
+                    if trailing:
+                        lines = lines[:-1]  # drop the phantom post-newline ""
+                else:
+                    trailing, lines = True, []
+                new_lines = _apply_hunks(lines, hunks)
+                new_trailing = False if strip_nl else trailing
+                content = "" if not new_lines else \
+                    "\n".join(new_lines) + ("\n" if new_trailing else "")
+                old_digest = hashlib.sha256(orig_text.encode()).hexdigest() \
+                    if existed else None
+            except PatchRefusal as r:
+                return {"error": str(r), "error_code": r.code}
+        else:
+            return {"error": f"not a delegated write tool: {tool_name}",
+                    "error_code": "delegated_edit_invalid"}
+        digest = hashlib.sha256(content.encode()).hexdigest()
+        return {"tool": tool_name, "path": path, "content": content,
+                "old_digest": old_digest, "digest": digest}
+
+    def _execute_delegated_batch(self, calls: list[dict]) -> list[dict]:
+        """NATIVE-APPLY (extension builder): batch every granted file write
+        of one drain into a single delegated round-trip, so the extension
+        can apply them in ONE WorkspaceEdit (one undo unit). Scope,
+        idempotency, and journaling are identical to _execute_single —
+        only the effect backend changes (extension instead of in-process
+        sandbox). Returns results in the same order as `calls`. The
+        recursive-loop builder owns control flow; this method only changes
+        WHERE the bytes land."""
+        out: dict[int, dict] = {}
+        pending: list[tuple[int, dict, dict, object, float]] = []  # (i, pc, edit, stream, t0)
+        for i, pc in enumerate(calls):
+            call_id, tool_name, args, idem_key = (
+                pc["call_id"], pc["tool"], pc["args"], pc["idem_key"])
+            stream, t0 = self._stream_setup(call_id, tool_name, args)
+            proceed, early = self._pre_execute(call_id, tool_name, args,
+                                               idem_key, stream, t0)
+            if not proceed:
+                out[i] = early
+                continue
+            edit = self._compute_delegated_edit(tool_name, args)
+            edit["call_id"] = call_id
+            edit["idem_key"] = idem_key
+            if edit.get("error"):
+                out[i] = self._post_execute(
+                    call_id, tool_name, args, idem_key,
+                    {"error": edit["error"],
+                     "error_code": edit.get("error_code",
+                                            "delegated_edit_invalid")},
+                    stream, t0)
+                continue
+            pending.append((i, pc, edit, stream, t0))
+        if pending:
+            try:
+                batch_results = self.delegation.apply_batch(
+                    [edit for _, _, edit, _, _ in pending])
+            except Exception as ex:  # noqa: BLE001 - delegation failure is data
+                batch_results = [
+                    {"call_id": pc["call_id"], "ok": False,
+                     "error": f"delegation failed: {type(ex).__name__}: {ex}"}
+                    for _, pc, _, _, _ in pending]
+            by_call = {r.get("call_id"): r for r in batch_results
+                       if isinstance(r, dict)}
+            for i, pc, edit, stream, t0 in pending:
+                call_id, tool_name, args, idem_key = (
+                    pc["call_id"], pc["tool"], pc["args"], pc["idem_key"])
+                br = by_call.get(call_id)
+                if not isinstance(br, dict) or not br.get("ok"):
+                    err = (br or {}).get("error",
+                                         "extension returned no result")
+                    result: dict = {"error": str(err),
+                                    "error_code": "delegated_apply_failed"}
+                else:
+                    result = br.get("result") or {}
+                    # Integrity: the extension echoes the sha256 of what it
+                    # wrote; it must match the content the loop computed.
+                    if result.get("digest") != edit["digest"]:
+                        result = {
+                            "error": "digest mismatch: the extension wrote "
+                                     "different bytes than the loop computed",
+                            "error_code": "delegated_digest_mismatch"}
+                    else:
+                        # The sandbox did not write these bytes — record them
+                        # in the tamper manifest so verify_manifest stays
+                        # honest about delegated writes.
+                        self.sandbox.note_external_write(args.get("path", ""),
+                                                         result["digest"])
+                out[i] = self._post_execute(call_id, tool_name, args,
+                                            idem_key, result, stream, t0)
+        return [out[i] for i in range(len(calls))]
+
+    def _execute_single(self, call_id: str, tool_name: str, args: dict,
+                        idem_key: str) -> dict:
+        stream, t0 = self._stream_setup(call_id, tool_name, args)
+        proceed, early = self._pre_execute(call_id, tool_name, args, idem_key,
+                                           stream, t0)
+        if not proceed:
+            return early
+        fn = self._resolve_tool_fn(tool_name)
+        try:
+            result = fn(**args)
+        except Exception as ex:  # noqa: BLE001 - tool errors are data
+            result = {"error": f"{type(ex).__name__}: {ex}"}
+        return self._post_execute(call_id, tool_name, args, idem_key, result,
+                                  stream, t0)
 
     def _execute_calls(self, turn_id: str, calls: list[dict], offset: int = 0) -> list[dict]:
         results = []
@@ -1376,6 +1552,17 @@ class Loop:
             # above is unchanged.
             _s.harness_check("approval_gate", "pass",
                              f"approval {ap['id']} granted")
+        # NATIVE-APPLY (extension builder): drain only when the approval
+        # round is complete (no pending approvals left), so all granted
+        # writes of the turn batch into ONE delegated request (one
+        # WorkspaceEdit, one undo unit). Draining eagerly would split the
+        # change set across multiple undo units.
+        remaining = self._pending_approvals()
+        if remaining:
+            self.state.persist_snapshot()
+            return {"status": "awaiting_approval",
+                    "said": f"Approval {ap['id']} recorded; "
+                            f"{len(remaining)} still pending."}
         return self._drain_pending()
 
     def deny(self, approval_id: str | None = None) -> dict:
@@ -1392,14 +1579,51 @@ class Loop:
             # above is unchanged.
             _s.harness_check("approval_gate", "fail",
                              f"approval {ap['id']} denied")
-        return self._drain_pending(denied=[ap["id"]])
+        # NATIVE-APPLY (extension builder): like approve(), drain only when
+        # the round is complete so granted writes batch atomically.
+        remaining = self._pending_approvals()
+        if remaining:
+            self.state.persist_snapshot()
+            return {"status": "awaiting_approval",
+                    "said": f"Approval {ap['id']} denied; "
+                            f"{len(remaining)} still pending."}
+        # The round's denied IDs (for the results note) are those with
+        # pending calls — earlier rounds' denials are already journaled.
+        s = self.state.snapshot
+        denied_ids = [a["id"] for a in s["approvals"]
+                      if a["status"] == "denied"
+                      and any(pc.get("approval_id") == a["id"]
+                              for pc in s["pending_calls"])]
+        return self._drain_pending(denied=denied_ids)
 
     def _drain_pending(self, denied: list[str] | None = None) -> dict:
         s = self.state.snapshot
         results: list[dict] = []
+        granted = []
         for pc in list(s["pending_calls"]):
             ap = next((a for a in s["approvals"] if a["id"] == pc["approval_id"]), None)
             if ap and ap["status"] == "granted":
+                granted.append(pc)
+        # NATIVE-APPLY (extension builder): when a delegation is attached,
+        # every granted file write of this drain goes through ONE delegated
+        # batch (one extension round-trip, one WorkspaceEdit, one undo
+        # unit) instead of per-call sandbox writes. Results splice back into
+        # pending_calls order so journaling order is unchanged. The tail
+        # below (approvals_cleared, finalize) is untouched — the
+        # recursive-loop builder owns it.
+        if self.delegation is not None:
+            writes = [pc for pc in granted
+                      if pc["tool"] in ("write_file", "patch_file")]
+            batch_out = self._execute_delegated_batch(writes) if writes else []
+            by_call = {pc["call_id"]: r for pc, r in zip(writes, batch_out)}
+            for pc in granted:
+                if pc["tool"] in ("write_file", "patch_file"):
+                    results.append(by_call[pc["call_id"]])
+                else:
+                    results.append(self._execute_single(pc["call_id"], pc["tool"],
+                                                        pc["args"], pc["idem_key"]))
+        else:
+            for pc in granted:
                 results.append(self._execute_single(pc["call_id"], pc["tool"],
                                                     pc["args"], pc["idem_key"]))
         s = self.state.snapshot

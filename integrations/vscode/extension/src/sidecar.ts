@@ -44,6 +44,14 @@ export interface StartOptions {
   /** AWINO_HOME override (used by tests to isolate state) */
   home?: string;
   /**
+   * Native tool application capability advertisement. The extension
+   * passes { delegated_apply: true, terminal_stream: true } so the
+   * sidecar delegates file writes (WorkspaceEdit) and shell commands
+   * (integrated terminal) to the extension. Omitted by tests that
+   * exercise the in-process sandbox path.
+   */
+  capabilities?: Record<string, unknown>;
+  /**
    * AWS profile name for provider "bedrock" (SigV4 mode). Forwarded to the
    * sidecar as `aws_profile` in hello; the Python side resolves it from
    * the user's AWS credential chain (env / ~/.aws / SSO cache).
@@ -186,6 +194,14 @@ export class SidecarClient extends EventEmitter {
         workspace: opts.workspace,
         provider: opts.provider ?? "echo",
       };
+      // Native tool application: the caller advertises delegated apply /
+      // terminal capability here; the sidecar attaches its delegation
+      // adapter only when it sees delegated_apply. The extension passes
+      // { delegated_apply: true, terminal_stream: true }; tests that
+      // exercise the in-process sandbox path omit it.
+      if (opts.capabilities) {
+        hello["capabilities"] = opts.capabilities;
+      }
       if (opts.model) {
         hello["model"] = opts.model;
       }
