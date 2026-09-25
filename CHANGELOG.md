@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.1 — native-tools auth hotfix (2026-09-25)
+
+- Fix: tool-using turns returned HTTP 401 on keyed OpenAI-compatible
+  endpoints. `OpenAICompatibleBackend` inherited the Ollama
+  `_chat_tools()`, which sent only `Content-Type` (no `Authorization`),
+  posted to `host + /v1/chat/completions` instead of the resolved
+  `chat_url` (an endpoint ending in `/v1` became `/v1/v1/...`), read an
+  unset `temperature`, and let `HTTPError` escape unmapped. Bedrock SigV4
+  inherited the same unsigned request. The native-tools path now uses
+  `_signed_headers()` + `chat_url`, identical to the ordinary chat path.
+- Regression tests (`tests/test_native_tools_auth.py`) drive
+  `generate(tools=...)` against a local server and assert the Bearer /
+  SigV4 header on the wire, the URL, and that a 401 surfaces as
+  `endpoint HTTP 401` with no key material in the turn.
+
 ## 0.6.0 — build loop (2026-09-25)
 
 Pre-release (beta channel). The autonomous coding-agent release:

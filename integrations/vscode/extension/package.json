@@ -179,7 +179,10 @@
         "awino.bedrockAuthMode": {
           "default": "api-key",
           "description": "How the Bedrock provider authenticates: \"api-key\" uses the Bedrock API key from SecretStorage (Bearer); \"aws-profile\" signs every request with AWS SigV4 from the named awino.bedrockAwsProfile via the standard AWS credential chain (env, ~/.aws/credentials, ~/.aws/config incl. source_profile, SSO cache). No key is needed or sent in aws-profile mode.",
-          "enum": ["api-key", "aws-profile"],
+          "enum": [
+            "api-key",
+            "aws-profile"
+          ],
           "type": "string"
         },
         "awino.bedrockAwsProfile": {
@@ -330,5 +333,5 @@
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run compile && node ./scripts/bundle-sidecar.js && node ./scripts/fetch-python-runtimes.js"
   },
-  "version": "0.6.0"
+  "version": "0.6.1"
 }

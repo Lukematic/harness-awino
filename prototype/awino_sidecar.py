@@ -863,10 +863,49 @@ class OpenAICompatibleBackend(OllamaBackend):
                         else os.environ.get("AWINO_API_KEY"))
         self.timeout = timeout
         self.num_predict = num_predict
+        # Read by the inherited native-tools path when no per-call
+        # temperature is given; matches the 0.2 used by _chat/_chat_stream.
+        self.temperature = 0.2
         self.calls: list[dict] = []
         # Track C: consumed by Loop._record_egress -> journaled as an
         # `egress` event (destination, bytes). None when no HTTP happened.
         self.last_egress: dict | None = None
+
+    def _chat_tools(self, prompt: str, system: str, native_defs: list,
+                    temperature: float | None = None,
+                    cancel=None) -> tuple[str, list]:
+        """Native-tools chat over the configured chat_url, authenticated
+        exactly like _chat/_chat_stream (_signed_headers: Bearer key, or
+        SigV4 for Bedrock). v0.6.0 inherited OllamaBackend._chat_tools,
+        which posted to host + /v1/chat/completions with no Authorization
+        header -> HTTP 401 on any keyed endpoint."""
+        body = json.dumps({
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+            "stream": False,
+            "temperature": self.temperature if temperature is None
+                           else temperature,
+            "max_tokens": self.num_predict,
+            "tools": native_defs,
+            "tool_choice": "auto",
+        }).encode()
+        headers = self._signed_headers(body)
+        req = urllib.request.Request(self.chat_url, data=body,
+                                     headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                raw = resp.read()
+                payload = json.loads(raw.decode())
+        except urllib.error.HTTPError as e:
+            # Same contract as _chat: status only, never key material.
+            raise RuntimeError(f"endpoint HTTP {e.code}")
+        self.last_egress = {"destination": self.chat_url,
+                            "bytes_out": len(body), "bytes_in": len(raw)}
+        message = payload["choices"][0]["message"]
+        return message.get("content") or "", message.get("tool_calls") or []
 
     def _signed_headers(self, body: bytes) -> dict:
         """Auth headers for one request. Subclasses override: the Bedrock
