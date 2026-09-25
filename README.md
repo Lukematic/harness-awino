@@ -1,5 +1,25 @@
 # Harness Awino
 
+[![Download beta VSIX](https://img.shields.io/badge/download-beta%20VSIX-blue)](https://github.com/Lukematic/harness-awino/releases)
+
+**Try the VS Code extension (beta):** one button downloads the `.vsix` from
+[Releases](https://github.com/Lukematic/harness-awino/releases) (pre-release),
+one command installs it:
+
+```sh
+VSIX_URL=$(curl -s https://api.github.com/repos/Lukematic/harness-awino/releases | python3 -c "
+import json,sys
+for r in json.load(sys.stdin):
+    for a in r.get('assets', []):
+        if a['name'].endswith('.vsix'):
+            print(a['browser_download_url']); sys.exit()
+print('NO_VSIX_FOUND'); sys.exit(1)
+") && curl -sSL -o awino-beta.vsix "$VSIX_URL" && code --install-extension awino-beta.vsix --force
+```
+
+(Beta channel only — the Marketplace one-click install is a later launch step.
+See `integrations/vscode/extension/RELEASING.md` for the release process.)
+
 A.W.I.N.O. rebuilt as the **automatic per-turn loop owner** — not a CLI the
 model may or may not call, but the `while` loop that owns every turn:
 contract compiled from code-owned state, mode × stance × skill routed per

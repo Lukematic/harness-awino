@@ -262,7 +262,7 @@
     "compile": "tsc -p ./",
     "test": "node ./test/harness.js && node ./test/bedrock.js && node ./test/connection_importer.js",
     "watch": "tsc -watch -p ./",
-    "vscode:prepublish": "npm run compile && node ./scripts/bundle-sidecar.js"
+    "vscode:prepublish": "npm run compile && node ./scripts/bundle-sidecar.js && node ./scripts/fetch-python-runtimes.js"
   },
   "version": "0.3.0"
 }
