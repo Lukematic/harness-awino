@@ -60,11 +60,22 @@
     });
 
     const b = binding || {};
-    status.innerHTML =
-      "<b>Current binding</b><br>" +
-      "provider: <b>" + esc(b.provider || "?") + "</b> · model: <b>" + esc(b.model || "?") + "</b><br>" +
-      "environment: <b>" + esc(b.environment || "(global settings)") + "</b> · source: " + esc(b.source || "?") + "<br>" +
-      "key: <b>" + esc(b.key || "not-required") + "</b> <span class='note'>(status only — material lives in secret storage)</span>";
+    const hasBinding = !!(binding && binding.provider);
+    // Spec 4.4: when not connected, the card header becomes "No active
+    // connection" and the body shows configured (not yet applied) values.
+    // This fixes the stale-text residual: a crash while the panel is open
+    // now re-renders to the disconnected state instead of keeping the
+    // last live binding.
+    status.innerHTML = hasBinding
+      ? "<b>Current binding</b><br>" +
+        "provider: <b>" + esc(b.provider || "?") + "</b> · model: <b>" + esc(b.model || "?") + "</b><br>" +
+        "environment: <b>" + esc(b.environment || "(global settings)") + "</b> · source: " + esc(b.source || "?") + "<br>" +
+        "key: <b>" + esc(b.key || "not-required") + "</b> <span class='note'>(status only — material lives in secret storage)</span>"
+      : "<b>No active connection</b><br>" +
+        "<span class='note'>Configured values (not yet applied):</span><br>" +
+        "provider: <b>" + esc(cfg.provider || "echo") + "</b> · model: <b>" + esc(cfg.model || "(default)") + "</b> " +
+        "<span class='note'>(configured, not active)</span><br>" +
+        "<button id=\"reconnectApply\" class=\"btn\">Reconnect to apply</button>";
 
     const envSel = $("env");
     envSel.innerHTML = "";
@@ -75,6 +86,15 @@
       if (e === b.environment) o.selected = true;
       envSel.appendChild(o);
     });
+
+    // Wire the "Reconnect to apply" button shown in the disconnected state.
+    var raBtn = $("reconnectApply");
+    if (raBtn) {
+      raBtn.addEventListener("click", function () {
+        vscode.postMessage({ type: "reconnect" });
+        status.innerHTML = "<i>reconnecting…</i>";
+      });
+    }
   }
 
   function esc(s) {

@@ -2052,6 +2052,11 @@ function openModelsPanel(context: vscode.ExtensionContext): void {
   });
   panel.webview.onDidReceiveMessage(async (m: { type: string; [k: string]: unknown }) => {
     switch (m.type) {
+      case "reconnect": {
+        // Models panel "Reconnect to apply" button (disconnected state).
+        await vscode.commands.executeCommand("awino.reconnect");
+        break;
+      }
       case "init": {
         const cfg = readConfig();
         const folder = vscode.workspace.workspaceFolders?.[0];

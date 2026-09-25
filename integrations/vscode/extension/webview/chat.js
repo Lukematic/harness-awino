@@ -1125,7 +1125,9 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
 
   function send() {
     const text = input.value.trim();
-    if (!text || turnInFlight) return;
+    // Never send while disconnected — the input is disabled, but guard here
+    // too in case of a race between the disable and a keypress.
+    if (!text || turnInFlight || !chatConnected) return;
     addMsg("user", '<div class="said">' + esc(text) + "</div>");
     input.value = "";
     turnInFlight = true;
@@ -1298,6 +1300,13 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     } else if (m.type === "bindingChanged") {
       // Spec 4.3: single publish path — binding updates arrive here.
       // Re-render the pill/dot from the authoritative binding.
+      // Residual fix: a null binding means disconnected (fatal crash path
+      // sends bindingChanged before/without a state message) — update the
+      // connection state so the input disables immediately instead of
+      // staying enabled while the header says "not connected".
+      if (!m.binding) {
+        setConnected(false);
+      }
       setProviderPill({
         connected: chatConnected,
         ready: { binding: m.binding || {} },
