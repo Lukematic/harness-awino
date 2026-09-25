@@ -47,7 +47,9 @@ what it skips and why.
   change ships without passing the automated quality gates (lint, types,
   tests, build, audit); `rigor-checkpoint` binary commit gate
   (`verification`); final gate: `definition-of-done` — the task is done only
-  when its acceptance criteria AND the standing DoD both hold.
+  when its acceptance criteria AND the standing DoD both hold; mission-close:
+  `completion-summary` — the structured close-out (what changed, what was
+  confirmed, risks, next step).
 
 ## Track 2: Bugfix
 
@@ -64,7 +66,8 @@ exist; the bug is a defect against them, not a new objective.
 - REVIEW: `osmani-code-review` — the fix AND the regression test are
   reviewed together; a bugfix without a regression test is incomplete.
 - SHIP: `osmani-shipping`; `osmani-cicd` gates (the same automated checks as
-  every other change — no "trivial fix" bypass); `definition-of-done` gate.
+  every other change — no "trivial fix" bypass); `definition-of-done` gate;
+  mission-close: `completion-summary`.
 
 ## Track 3: Refactor (behavior-preserving)
 
@@ -81,7 +84,8 @@ behavior.
   (count the concepts a reader must hold); `osmani-adrs` for structural
   decisions (the seam contract you chose and the alternatives you rejected);
   `rigor-scope` touch audit.
-- SHIP: `definition-of-done` gate; `osmani-cicd` gates; `rigor-checkpoint`.
+- SHIP: `definition-of-done` gate; `osmani-cicd` gates; `rigor-checkpoint`;
+  mission-close: `completion-summary`.
 
 ## Map vs territory
 
@@ -116,7 +120,7 @@ manifest so dangling references fail loudly.
 
 ## Referenced skills (machine-checked: every name must exist in manifest.json)
 
-`discovery` `mission-definition` `osmani-idea-refine` `osmani-constraints` `osmani-adoption` `rigor-laws` `rigor-distillation` `rigor-decomposition` `rigor-scope` `decision-analysis` `osmani-api-design` `osmani-doubt` `domain` `code` `repo` `osmani-tdd` `rigor-proof-cycles` `osmani-security` `osmani-source-driven` `osmani-observability` `rigor-iteration` `testing` `rigor-pentagonal-audit` `rigor-interrogation` `code-review` `rigor-entropy` `osmani-code-review` `osmani-adrs` `osmani-failure-modes` `verification` `rigor-checkpoint` `osmani-shipping` `osmani-cicd` `definition-of-done` `triage`
+`discovery` `mission-definition` `osmani-idea-refine` `osmani-constraints` `osmani-adoption` `rigor-laws` `rigor-distillation` `rigor-decomposition` `rigor-scope` `decision-analysis` `osmani-api-design` `osmani-doubt` `domain` `code` `repo` `osmani-tdd` `rigor-proof-cycles` `osmani-security` `osmani-source-driven` `osmani-observability` `rigor-iteration` `testing` `rigor-pentagonal-audit` `rigor-interrogation` `code-review` `rigor-entropy` `osmani-code-review` `osmani-adrs` `osmani-failure-modes` `verification` `rigor-checkpoint` `osmani-shipping` `osmani-cicd` `definition-of-done` `triage` `completion-summary` `incident-response` `dora-metrics`
 
 ---
 Source: agent-skills (MIT, Addy Osmani)
@@ -134,3 +138,9 @@ cross-examines non-trivial decisions in any phase; `osmani-shipping` +
 `osmani-cicd` + `definition-of-done` close every track. The map-vs-
 territory rule makes disagreements between this document and the per-skill
 Routing declarations a defect, not a judgment call.
+Harness-skills adoption (Apache-2.0, Harness): `completion-summary` is the
+mission-close for every track — no mission is closed without the structured
+close-out. `incident-response` is not in any track: incidents PREEMPT the
+mission rather than riding inside a phase (injected via skill_add when
+declared). `dora-metrics` is consulted at the REVIEW retrospective —
+delivery performance is judged on the record, not on impressions.

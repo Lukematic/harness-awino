@@ -83,7 +83,7 @@ class TestRigorSkills(unittest.TestCase):
     def test_pins_load(self):
         st = SkillStore.default()
         names = st.names()
-        self.assertEqual(len(names), 46)  # 29 + 14 osmani-* + definition-of-done + lifecycle-sequence + critical-thinking
+        self.assertEqual(len(names), 49)  # 29 + 14 osmani-* + definition-of-done + lifecycle-sequence + critical-thinking + completion-summary + incident-response + dora-metrics
         for n in ("rigor-laws", "rigor-distillation", "rigor-interrogation",
                   "rigor-decomposition", "rigor-iteration",
                   "rigor-checkpoint", "rigor-proof-cycles",
