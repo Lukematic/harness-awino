@@ -5,20 +5,22 @@
  * The extension host (extension.ts) wires these helpers to SecretStorage,
  * quick-picks, and the sidecar spawn.
  *
- * Wire protocol note (honest, read before "fixing"): Bedrock exposes an
- * OpenAI-compatible endpoint
+ * Wire protocol note: Bedrock exposes an OpenAI-compatible endpoint
  *   https://bedrock-runtime.{region}.amazonaws.com/openai/v1
- * which speaks the OpenAI chat-completions protocol and accepts a Bedrock
- * API key as `Authorization: Bearer <key>`. The Python sidecar's
- * OpenAICompatibleBackend already implements exactly that, so the extension
- * maps the user-facing provider "bedrock" to the sidecar provider "openai"
- * with the derived endpoint and the Bedrock key. The UI keeps the "bedrock"
- * label (see session.displayProvider in extension.ts).
+ * which speaks the OpenAI chat-completions protocol. Two auth modes:
  *
- * What is NOT here: AWS SSO / shared-config profiles. Those need SigV4
- * request signing inside the sidecar (prototype/), which this change
- * deliberately does not touch. SSO is documented as future work, never
- * half-wired.
+ * - "api-key" (default): the sidecar's OpenAICompatibleBackend sends the
+ *   Bedrock API key as `Authorization: Bearer <key>`.
+ * - "aws-profile": the extension maps the user-facing provider "bedrock"
+ *   to the sidecar provider "bedrock", which signs every request with
+ *   AWS SigV4 (stdlib-only, in prototype/awino_sidecar.py) from the
+ *   user's AWS credential chain — env vars, ~/.aws/credentials,
+ *   ~/.aws/config (incl. source_profile chaining), and the SSO token
+ *   cache. No API key is needed, and none is ever sent: profile auth
+ *   never silently falls back to a key.
+ *
+ * The UI keeps the "bedrock" label (see session.displayProvider in
+ * extension.ts) whichever mode is active.
  */
 
 // ------------------------------------------------------------------ regions
@@ -255,21 +257,33 @@ export function parseBedrockModelRef(raw: string): ParsedModelRef {
 
 // ---------------------------------------------------------- connection args
 
+/** Where the connection's identity comes from. */
+export type BedrockAuthMode = "api-key" | "aws-profile";
+
 export interface BedrockConnectInput {
+  /** "api-key" (default) or "aws-profile" (SigV4 from the AWS chain). */
+  authMode?: BedrockAuthMode;
   /** User override from awino.endpoint; empty = derive from region. */
   endpoint?: string;
   /** From awino.bedrockRegion. */
   region?: string;
-  /** Bedrock API key from SecretStorage (never logged). */
+  /** Bedrock API key from SecretStorage (never logged). Only for api-key mode. */
   apiKey?: string;
+  /** AWS profile name (from awino.bedrockAwsProfile / ~/.aws/config).
+   *  Only for aws-profile mode. */
+  awsProfile?: string;
 }
 
 export interface BedrockConnectArgs {
-  /** What the sidecar is told (it only speaks openai/anthropic/ollama/echo). */
-  sidecarProvider: "openai";
+  /** What the sidecar is told. "openai" speaks the OpenAI protocol with a
+   *  Bearer key; "bedrock" speaks it too but signs SigV4 from an AWS profile. */
+  sidecarProvider: "openai" | "bedrock";
   endpoint: string;
-  /** Env var the key is passed under; the OpenAI-compatible backend reads it. */
-  keyEnvVar: "AWINO_API_KEY";
+  /** Env var the key is passed under; the OpenAI-compatible backend reads it.
+   *  Absent for aws-profile mode: no key is ever handed to the sidecar. */
+  keyEnvVar?: "AWINO_API_KEY";
+  /** Passed to the sidecar as aws_profile (hello kwarg). Absent for api-key. */
+  awsProfile?: string;
 }
 
 /**
@@ -279,6 +293,7 @@ export interface BedrockConnectArgs {
 export function resolveBedrockConnection(
   input: BedrockConnectInput
 ): { ok: true; args: BedrockConnectArgs } | { ok: false; error: string } {
+  const authMode: BedrockAuthMode = input.authMode ?? "api-key";
   const override = (input.endpoint ?? "").trim();
   let endpoint = override;
   if (!endpoint) {
@@ -298,6 +313,22 @@ export function resolveBedrockConnection(
     }
     endpoint = derived.endpoint;
   }
+  if (authMode === "aws-profile") {
+    const profile = (input.awsProfile ?? "").trim();
+    if (!profile) {
+      return {
+        ok: false,
+        error:
+          `AWS profile auth is selected but no profile name is set. ` +
+          `It means the sidecar doesn't know which ~/.aws profile to sign with. ` +
+          `Set awino.bedrockAwsProfile, or run "Awino: Set Up AWS Bedrock" and choose a profile.`,
+      };
+    }
+    return {
+      ok: true,
+      args: { sidecarProvider: "bedrock", endpoint, awsProfile: profile },
+    };
+  }
   if (!input.apiKey) {
     return {
       ok: false,
@@ -314,7 +345,9 @@ export function resolveBedrockConnection(
 export function validateBedrockSetup(input: {
   region: string;
   modelRef: string;
+  authMode: BedrockAuthMode;
   keyPresent: boolean;
+  awsProfile?: string;
 }): string[] {
   const errors: string[] = [];
   const ep = bedrockEndpointForRegion(input.region);
@@ -325,7 +358,15 @@ export function validateBedrockSetup(input: {
   if (parsed.kind === "invalid") {
     errors.push(parsed.error as string);
   }
-  if (!input.keyPresent) {
+  if (input.authMode === "aws-profile") {
+    if (!(input.awsProfile ?? "").trim()) {
+      errors.push(
+        `No AWS profile was chosen. ` +
+          `It means the harness doesn't know which profile to sign with. ` +
+          `Pick one from your ~/.aws/config (run "aws sso login --profile <name>" first if it uses SSO).`
+      );
+    }
+  } else if (!input.keyPresent) {
     errors.push(
       `No Bedrock API key was provided. ` +
         `It means the harness can't authenticate to Bedrock. ` +
@@ -333,6 +374,31 @@ export function validateBedrockSetup(input: {
     );
   }
   return errors;
+}
+
+/**
+ * Parse ~/.aws/config text into the [profile X] names it declares.
+ * Used to offer the user their real profiles. The default profile (plain
+ * "[default]" section) is included too.
+ */
+export function parseAwsProfileNames(configText: string): string[] {
+  const names: string[] = [];
+  for (const line of configText.split(/\r?\n/)) {
+    const m = /^\s*\[(profile\s+)?([^\]]+)\]\s*$/.exec(line);
+    if (!m) {
+      continue;
+    }
+    const name = m[2].trim();
+    // [sso-session NAME] blocks are SSO session definitions, not profiles
+    // (they pair with `sso_session = NAME` inside a [profile ...] block).
+    if (/^sso-session\s+/i.test(name)) {
+      continue;
+    }
+    if (name && !names.includes(name)) {
+      names.push(name);
+    }
+  }
+  return names;
 }
 
 // ------------------------------------------------------- wire contract test
@@ -345,7 +411,9 @@ export interface ChatRequestShape {
 
 /**
  * The exact HTTP shape the sidecar's OpenAI-compatible backend sends for
- * Bedrock (chat-completions + Bearer key). Unit tests pin this contract
+ * Bedrock chat-completions. In "api-key" mode auth is a bearer token; in
+ * "aws-profile" mode auth is AWS SigV4 (the probe only covers the key-mode
+ * shape; the Python side owns SigV4 signing). Unit tests pin this contract
  * with a mocked fetch; the Python side is the implementation.
  */
 export function bedrockChatRequestShape(

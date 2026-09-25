@@ -58,6 +58,9 @@
       if (r === cfg.bedrockRegion) o.selected = true;
       regionSel.appendChild(o);
     });
+    $("bedrockAuthMode").value = cfg.bedrockAuthMode === "aws-profile" ? "aws-profile" : "api-key";
+    $("bedrockAwsProfile").value = cfg.bedrockAwsProfile || "";
+    updateBedrockAuthRows();
 
     const b = binding || {};
     const hasBinding = !!(binding && binding.provider);
@@ -161,6 +164,20 @@
       el.textContent = "Context/pricing unknown for this model \u2014 check the provider docs.";
     }
   }
+
+  // Bedrock auth rows: the auth-mode select only shows for bedrock; the
+  // AWS profile row only in aws-profile mode; the API-key row only in
+  // api-key mode (a key can't authenticate a SigV4 connection).
+  function updateBedrockAuthRows() {
+    var isBedrock = $("provider").value === "bedrock";
+    var profileMode = isBedrock && $("bedrockAuthMode").value === "aws-profile";
+    $("bedrockAuthRow").hidden = !isBedrock;
+    $("bedrockProfileRow").hidden = !profileMode;
+    var keyRow = $("bedrockKey").closest(".row");
+    if (keyRow) keyRow.style.display = !isBedrock || profileMode ? "none" : "";
+  }
+  $("provider").addEventListener("change", updateBedrockAuthRows);
+  $("bedrockAuthMode").addEventListener("change", updateBedrockAuthRows);
 
   // (b) "Get {Provider} API Key" buttons — straight to key creation, per the
   // Roo/Cline pattern. The extension host allowlists the destination.
@@ -276,6 +293,8 @@
       endpoint: $("endpoint").value.trim(),
       model: currentModelValue(),
       bedrockRegion: $("bedrockRegion").value,
+      bedrockAuthMode: $("bedrockAuthMode").value,
+      bedrockAwsProfile: $("bedrockAwsProfile").value.trim(),
       timeout: Number($("timeout").value) || 180,
       openaiKey: $("openaiKey").value,
       anthropicKey: $("anthropicKey").value,
@@ -295,6 +314,8 @@
     vscode.postMessage({ type: "save",
       provider: $("provider").value, endpoint: $("endpoint").value.trim(),
       model: currentModelValue(), timeout: Number($("timeout").value) || 180,
+      bedrockAuthMode: $("bedrockAuthMode").value,
+      bedrockAwsProfile: $("bedrockAwsProfile").value.trim(),
       clearKeys: true });
   });
 

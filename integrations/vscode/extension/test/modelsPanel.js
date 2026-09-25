@@ -24,6 +24,7 @@ Object.defineProperty(StubEl.prototype, "textContent", {
 StubEl.prototype.addEventListener = function (t, fn) { (this.listeners[t] = this.listeners[t] || []).push(fn); };
 StubEl.prototype.fire = function (t, e) { (this.listeners[t] || []).forEach(function (fn) { fn(e || {}); }); };
 StubEl.prototype.focus = function () {};
+StubEl.prototype.closest = function () { const e = new StubEl("div"); e.style = {}; return e; };
 
 // Select double with REAL select semantics: assigning a value with no
 // matching <option> leaves the select blank (value "") — the 0.3.0 bug
@@ -63,7 +64,9 @@ function boot() {
   delete require.cache[require.resolve("../webview/setup-shared.js")];
   require("../webview/setup-shared.js");
   ids = {};
-  ["endpoint", "bedrockRegion", "model", "modelSelect", "timeout",
+  ["endpoint", "bedrockRegion", "bedrockAuthMode", "bedrockAwsProfile",
+   "bedrockAuthRow", "bedrockProfileRow",
+   "model", "modelSelect", "timeout",
    "openaiKey", "anthropicKey", "bedrockKey",
    "openaiKeyLabel", "anthropicKeyLabel", "bedrockKeyLabel",
    "openaiKeyState", "anthropicKeyState", "bedrockKeyState",
@@ -76,6 +79,9 @@ function boot() {
     if (id === "modelSelect" || id === "fetchRow") e.hidden = true; // as shipped in models.html
     ids[id] = e;
   });
+  // bedrock auth mode is a real select: only the two shipped options stick
+  ids["bedrockAuthMode"] = new SelectStub(["api-key", "aws-profile"]);
+  ids["bedrockAuthMode"].id = "bedrockAuthMode";
   // provider is a real select: value only sticks when an option matches
   ids["provider"] = new SelectStub(["echo", "ollama", "openai", "anthropic", "bedrock"]);
   ids["provider"].id = "provider";
@@ -279,6 +285,29 @@ ok(ids["provider"].children[0].textContent.indexOf("(current)") >= 0, "legacy op
 dispatch({ type: "saveFailed", error: "keyring timeout" });
 ok(ids["status"].textContent.indexOf("keyring timeout") >= 0,
   "panel shows the secret-storage error instead of hanging");
+
+// 15. Bedrock auth rows: mode select only for bedrock; profile row only in
+// aws-profile mode; save carries both new fields
+const bedrockCfg = stateMsg({ config: { provider: "bedrock", endpoint: "", model: "", timeout: 180,
+  bedrockRegion: "us-east-1", bedrockAuthMode: "aws-profile", bedrockAwsProfile: "sso" } });
+dispatch(bedrockCfg);
+ok(ids["bedrockAuthRow"].hidden === false, "bedrock auth row shown for bedrock provider");
+ok(ids["bedrockProfileRow"].hidden === false, "profile row shown in aws-profile mode");
+ok(ids["bedrockAuthMode"].value === "aws-profile", "auth mode restored from config");
+ok(ids["bedrockAwsProfile"].value === "sso", "profile name restored from config");
+ids["save"].fire("click", {});
+const sv2 = lastPosted("save");
+ok(sv2 && sv2.bedrockAuthMode === "aws-profile" && sv2.bedrockAwsProfile === "sso",
+  "save posts bedrockAuthMode + bedrockAwsProfile");
+
+// flip to api-key mode: profile row hides again
+ids["bedrockAuthMode"].value = "api-key";
+ids["bedrockAuthMode"].fire("change", {});
+ok(ids["bedrockProfileRow"].hidden === true, "profile row hidden in api-key mode");
+
+// non-bedrock provider: auth rows hidden entirely
+dispatch(stateMsg());
+ok(ids["bedrockAuthRow"].hidden === true, "bedrock auth row hidden for non-bedrock provider");
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

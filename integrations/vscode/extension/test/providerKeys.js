@@ -41,7 +41,8 @@ t("scripted still needs no key when keys are stored", () => {
   assert.strictEqual(keyMissingForProvider("scripted", ALL), false);
 });
 
-// bedrock needs the Bedrock key and nothing else satisfies it
+// bedrock needs the Bedrock key and nothing else satisfies it —
+// UNLESS profile (SigV4) auth is selected, which needs no key at all
 t("bedrock missing when no bedrock key stored", () => {
   assert.strictEqual(keyMissingForProvider("bedrock", NONE), true);
 });
@@ -49,6 +50,13 @@ t("bedrock satisfied only by the bedrock key", () => {
   assert.strictEqual(keyMissingForProvider("bedrock", BEDROCK), false);
   assert.strictEqual(keyMissingForProvider("bedrock", OPENAI), true);
   assert.strictEqual(keyMissingForProvider("bedrock", ANTHROPIC), true);
+});
+t("bedrock profile auth never reports a missing key", () => {
+  assert.strictEqual(keyMissingForProvider("bedrock", NONE, { bedrockProfileAuth: true }), false);
+  assert.strictEqual(keyMissingForProvider("bedrock", ALL, { bedrockProfileAuth: true }), false);
+});
+t("profile-auth opt does not leak to other providers", () => {
+  assert.strictEqual(keyMissingForProvider("openai", NONE, { bedrockProfileAuth: true }), true);
 });
 
 // anthropic needs the Anthropic key and nothing else satisfies it

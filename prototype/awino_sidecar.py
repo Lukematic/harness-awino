@@ -21,7 +21,10 @@ from __future__ import annotations
 import collections
 import datetime
 import difflib
+import email.utils
 import fnmatch
+import hashlib
+import hmac
 import json
 import os
 import queue
@@ -31,6 +34,7 @@ import sys
 import threading
 import traceback
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -164,6 +168,671 @@ class WorkspaceSandbox(Sandbox):
 
 
 # ---------------------------------------------------------------------------
+# AWS SigV4 (stdlib-only) + AWS credential chain for the Bedrock provider.
+#
+# The Bedrock provider speaks the same OpenAI-compatible chat-completions
+# protocol as OpenAICompatibleBackend, but authenticates with AWS Signature
+# Version 4 derived from the user's AWS credential chain instead of a
+# Bearer API key. No boto3/botocore: signing is implemented here with hmac,
+# hashlib, email.utils and urllib only, and is cross-validated against
+# botocore's SigV4Auth in tests/test_aws_sigv4.py (botocore lives in a
+# scratch venv for that test ONLY — it is never imported here and never a
+# dependency).
+#
+# Fail-closed contract:
+# - resolve_aws_credentials() raises AWSAuthError (a NAMED error: stable
+#   code + human message + the one next action) whenever a credential
+#   source is present-but-unusable, and when no source yields credentials
+#   at all. It never silently falls back and never returns half a
+#   credential.
+# - BedrockSigV4Backend resolves credentials EAGERLY in __init__: a hello
+#   with provider "bedrock" and no usable credentials fails at connect
+#   time, before the session exists.
+# - _signed_headers() raises rather than returning unsigned headers, so
+#   an unsigned Bedrock request can never be constructed, let alone sent.
+# ---------------------------------------------------------------------------
+
+_SIGV4_ALGORITHM = "AWS4-HMAC-SHA256"
+_SIGV4_EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
+# Mirrors botocore.auth.SIGNED_HEADERS_BLACKLIST exactly.
+_SIGV4_SIGNED_HEADERS_BLACKLIST = frozenset({
+    "connection", "expect", "keep-alive", "proxy-authenticate",
+    "proxy-authorization", "te", "trailer", "transfer-encoding",
+    "upgrade", "user-agent", "x-amzn-trace-id",
+})
+# SigV4 service name for the bedrock-runtime host (what botocore uses for
+# bedrock-runtime endpoints; the OpenAI-compatible path is just a path on
+# that host).
+_BEDROCK_SIGV4_SERVICE = "bedrock"
+
+
+class AWSAuthError(Exception):
+    """Fail-closed AWS credential / signing error.
+
+    `code` is the stable machine-readable name (e.g. "AWS_SSO_TOKEN_EXPIRED");
+    str(exc) is the human message plus the one next action. Raised instead
+    of silently falling back; raised instead of sending an unsigned request.
+    """
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def _iter_sigv4_headers(headers) -> list:
+    """Normalize a headers mapping or iterable of pairs to a list of
+    (name, value) string tuples."""
+    if hasattr(headers, "items"):
+        items = list(headers.items())
+    else:
+        items = list(headers)
+    return [(str(k), str(v)) for k, v in items]
+
+
+def _sigv4_host_from_url(url: str) -> str:
+    """Mirror botocore.auth._host_from_url: lowercase host, default port
+    stripped, userinfo excluded."""
+    parts = urllib.parse.urlsplit(url)
+    host = (parts.hostname or "").lower()
+    default_ports = {"http": 80, "https": 443}
+    port = parts.port
+    if port and port != default_ports.get(parts.scheme):
+        host = f"{host}:{port}"
+    return host
+
+
+def _sigv4_remove_dot_segments(path: str) -> str:
+    """Mirror botocore.utils.remove_dot_segments: RFC 3986 section 5.2.4
+    plus AWS's consecutive-slash collapse."""
+    if not path:
+        return ""
+    out: list[str] = []
+    for seg in path.split("/"):
+        if seg and seg != ".":
+            if seg == "..":
+                if out:
+                    out.pop()
+            else:
+                out.append(seg)
+    first = "/" if path[0] == "/" else ""
+    last = "/" if path[-1] == "/" and out else ""
+    return first + "/".join(out) + last
+
+
+def _sigv4_canonical_uri(path: str) -> str:
+    """Mirror botocore: quote(normalize_url_path(path), safe='/~')."""
+    normalized = _sigv4_remove_dot_segments(path) or "/"
+    return urllib.parse.quote(normalized, safe="/~")
+
+
+def _sigv4_canonical_query_string(url: str) -> str:
+    """Mirror botocore's URL-based canonical query string: split the raw
+    (already-encoded) query on '&', sort the raw key/value pairs, rejoin."""
+    query = urllib.parse.urlsplit(url).query
+    if not query:
+        return ""
+    pairs = []
+    for part in query.split("&"):
+        k, _, v = part.partition("=")
+        pairs.append((k, v))
+    return "&".join(f"{k}={v}" for k, v in sorted(pairs))
+
+
+def _sigv4_canonical_headers(headers) -> tuple:
+    """Return (canonical block, signed-headers list).
+
+    Mirrors botocore.auth.SigV4Auth.canonical_headers/signed_headers:
+    lowercase names, trim + collapse interior whitespace in values
+    (' '.join(value.split())), blacklist skipped, repeated names
+    comma-joined, names sorted.
+    """
+    grouped: dict[str, list[str]] = {}
+    for name, value in _iter_sigv4_headers(headers):
+        lname = name.lower()
+        if lname in _SIGV4_SIGNED_HEADERS_BLACKLIST:
+            continue
+        grouped.setdefault(lname, []).append(" ".join(value.split()))
+    names = sorted(grouped)
+    block = "\n".join(f"{n}:{','.join(grouped[n])}" for n in names)
+    return block, ";".join(names)
+
+
+def _sigv4_signing_key(secret_key: str, date_stamp: str,
+                       region: str, service: str) -> bytes:
+    """Mirror botocore's SigV4Auth.signature key derivation."""
+    k_date = hmac.new(("AWS4" + secret_key).encode("utf-8"),
+                      date_stamp.encode("utf-8"), hashlib.sha256).digest()
+    k_region = hmac.new(k_date, region.encode("utf-8"),
+                        hashlib.sha256).digest()
+    k_service = hmac.new(k_region, service.encode("utf-8"),
+                         hashlib.sha256).digest()
+    return hmac.new(k_service, b"aws4_request", hashlib.sha256).digest()
+
+
+def sigv4_canonical_request(method: str, url: str, headers,
+                            body: bytes | str | None) -> str:
+    """Build the SigV4 canonical request for the given header set.
+
+    `headers` must be the EXACT header set being signed (date/token headers
+    already normalized, Authorization already removed). Mirrors
+    botocore.auth.SigV4Auth.canonical_request byte-for-byte for the same
+    inputs (asserted in tests/test_aws_sigv4.py). `body` may be bytes, str,
+    or None (unsigned/empty payload hashes to the empty-string SHA256).
+    """
+    if isinstance(body, str):
+        body = body.encode("utf-8")
+    signed = _iter_sigv4_headers(headers)
+    if not any(n.lower() == "host" for n, _ in signed):
+        # botocore's headers_to_sign adds host from the URL when absent and
+        # relies on the HTTP client to send it; same here.
+        signed.append(("host", _sigv4_host_from_url(url)))
+    canon_headers, signed_headers = _sigv4_canonical_headers(signed)
+    payload_hash = (hashlib.sha256(body).hexdigest() if body
+                    else _SIGV4_EMPTY_SHA256)
+    return "\n".join([
+        method.upper(),
+        _sigv4_canonical_uri(urllib.parse.urlsplit(url).path),
+        _sigv4_canonical_query_string(url),
+        canon_headers + "\n",
+        signed_headers,
+        payload_hash,
+    ])
+
+
+def sigv4_sign(method: str, url: str, headers, body: bytes | str | None, *,
+               access_key: str, secret_key: str, session_token: str | None = None,
+               service: str, region: str, timestamp: str | None = None) -> dict:
+    """Sign an HTTP request with AWS Signature Version 4.
+
+    Returns a NEW dict of headers to send: the input headers plus X-Amz-Date
+    (or a Date header when one was already present — mirroring botocore's
+    _modify_request_before_signing), X-Amz-Security-Token when a session
+    token is given, and the Authorization header. The input mapping is
+    never mutated. `timestamp` is "%Y%m%dT%H%M%SZ" (defaults to now, UTC);
+    tests pin it for exact cross-validation against botocore.
+    """
+    ts = timestamp or datetime.datetime.now(
+        datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    if isinstance(body, str):
+        body = body.encode("utf-8")
+    original = _iter_sigv4_headers(headers)
+    had_date = any(k.lower() == "date" for k, _ in original)
+    # Strip auth/date/token headers; they are re-added canonically below.
+    kept = [(k, v) for k, v in original
+            if k.lower() not in ("authorization", "x-amz-date",
+                                 "x-amz-security-token", "date")]
+    if had_date:
+        # Mirror botocore: a pre-existing Date header is rewritten to the
+        # signing timestamp (RFC 2822) and X-Amz-Date is NOT set.
+        dt = datetime.datetime.strptime(ts, "%Y%m%dT%H%M%SZ").replace(
+            tzinfo=datetime.timezone.utc)
+        kept.append(("Date", email.utils.formatdate(dt.timestamp(),
+                                                    usegmt=True)))
+    else:
+        kept.append(("X-Amz-Date", ts))
+    if session_token:
+        kept.append(("X-Amz-Security-Token", session_token))
+    canon = sigv4_canonical_request(method, url, kept, body)
+    date_stamp = ts[:8]
+    scope = f"{date_stamp}/{region}/{service}/aws4_request"
+    string_to_sign = "\n".join([
+        _SIGV4_ALGORITHM, ts, scope,
+        hashlib.sha256(canon.encode("utf-8")).hexdigest(),
+    ])
+    signing_key = _sigv4_signing_key(secret_key, date_stamp, region, service)
+    signature = hmac.new(signing_key, string_to_sign.encode("utf-8"),
+                         hashlib.sha256).hexdigest()
+    _, signed_headers = _sigv4_canonical_headers(
+        kept + [("host", _sigv4_host_from_url(url))])
+    out = {k: v for k, v in kept}
+    out["Authorization"] = (
+        f"{_SIGV4_ALGORITHM} Credential={access_key}/{scope}, "
+        f"SignedHeaders={signed_headers}, Signature={signature}")
+    return out
+
+
+# ------------------------------------------------- AWS credential chain
+
+class AWSCredentials:
+    """Resolved AWS credentials. `source` names the provenance
+    ("environment variables", "~/.aws/credentials [work]", ...) — it never
+    carries secret material."""
+
+    def __init__(self, access_key: str, secret_key: str,
+                 session_token: str | None = None,
+                 region: str | None = None, source: str = ""):
+        self.access_key = access_key
+        self.secret_key = secret_key
+        self.session_token = session_token
+        self.region = region
+        self.source = source
+
+
+def _aws_home() -> Path:
+    """Home directory for ~/.aws lookups. Honors the HOME env var so tests
+    can point it at a temp dir (and so a relocated HOME just works)."""
+    home = os.environ.get("HOME")
+    if home:
+        return Path(home)
+    return Path.home()
+
+
+def _aws_region_from_env() -> str | None:
+    return (os.environ.get("AWS_REGION")
+            or os.environ.get("AWS_DEFAULT_REGION") or None)
+
+
+def _parse_aws_ini(text: str) -> dict:
+    """Minimal INI parser for ~/.aws/credentials and ~/.aws/config.
+
+    Understands [section] headers, key = value pairs, and '#' / ';'
+    full-line comments. Malformed lines are ignored here — fail-closed
+    happens at the credential-resolution layer, not in the parser.
+    """
+    sections: dict[str, dict[str, str]] = {}
+    current: str | None = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith(";"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            current = line[1:-1].strip()
+            sections.setdefault(current, {})
+            continue
+        if current is None:
+            continue
+        if "=" in line:
+            k, _, v = line.partition("=")
+        elif ":" in line:
+            k, _, v = line.partition(":")
+        else:
+            continue
+        sections[current][k.strip()] = v.strip()
+    return sections
+
+
+def _read_aws_ini_file(path: Path) -> dict:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return {}
+    except OSError as e:
+        raise AWSAuthError(
+            "AWS_CONFIG_UNREADABLE",
+            f"Cannot read {path}: {e}. It means the AWS config is present "
+            f"but unreadable — fix the file permissions and reconnect.")
+    return _parse_aws_ini(text)
+
+
+def _profile_region(config_sections: dict, name: str) -> str | None:
+    key = "default" if name == "default" else f"profile {name}"
+    section = config_sections.get(key)
+    if section:
+        region = (section.get("region") or "").strip()
+        if region:
+            return region
+    return _aws_region_from_env()
+
+
+def _sso_cache_path(home: Path, start_url: str) -> Path:
+    digest = hashlib.sha1(start_url.encode("utf-8")).hexdigest()
+    return home / ".aws" / "sso" / "cache" / (digest + ".json")
+
+
+def _parse_sso_expires_at(raw) -> datetime.datetime | None:
+    """Parse the SSO cache expiresAt. AWS CLI writes e.g.
+    "2026-09-25T15:04:05UTC"; accept ISO-8601 variants too. None when
+    unparseable (fail-closed at the caller)."""
+    if not raw or not isinstance(raw, str):
+        return None
+    s = raw.strip()
+    try:
+        if s.endswith("UTC"):
+            return datetime.datetime.strptime(
+                s[:-3], "%Y-%m-%dT%H:%M:%S").replace(
+                    tzinfo=datetime.timezone.utc)
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        return dt
+    except ValueError:
+        return None
+
+
+def _sso_get_role_credentials(access_token: str, account_id: str,
+                              role_name: str, sso_region: str,
+                              profile_name: str) -> tuple:
+    """Exchange a cached SSO access token for temporary IAM credentials via
+    the SSO portal (GetRoleCredentials). Stdlib HTTPS only."""
+    qs = urllib.parse.urlencode(
+        {"account_id": account_id, "role_name": role_name})
+    url = (f"https://portal.sso.{sso_region}.amazonaws.com"
+           f"/federation/credentials?{qs}")
+    req = urllib.request.Request(
+        url, headers={"x-amz-sso_bearer_token": access_token})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            payload = json.loads(resp.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        raise AWSAuthError(
+            "AWS_SSO_ROLE_CREDENTIALS_FAILED",
+            f"SSO GetRoleCredentials for profile {profile_name!r} failed "
+            f"(HTTP {e.code}). It usually means the cached SSO token was "
+            f"revoked. Run `aws sso login --profile {profile_name}` and "
+            f"reconnect.")
+    except OSError as e:
+        raise AWSAuthError(
+            "AWS_SSO_ROLE_CREDENTIALS_FAILED",
+            f"Could not reach the AWS SSO portal for profile "
+            f"{profile_name!r}: {e}. Check the network path to AWS, then "
+            f"reconnect.")
+    try:
+        creds = payload["roleCredentials"]
+        return (creds["accessKeyId"], creds["secretAccessKey"],
+                creds.get("sessionToken"))
+    except (KeyError, TypeError):
+        raise AWSAuthError(
+            "AWS_SSO_ROLE_CREDENTIALS_FAILED",
+            f"The SSO portal answered for profile {profile_name!r} but the "
+            f"response had no roleCredentials. Run "
+            f"`aws sso login --profile {profile_name}` and reconnect.")
+
+
+def _resolve_aws_sso(home: Path, cfg: dict, name: str) -> AWSCredentials:
+    """Step (d): use the cached SSO token for an sso_start_url profile.
+    Expired/missing cache fails closed with a named error telling the user
+    to re-login — never falls through to another source."""
+    start_url = cfg["sso_start_url"]
+    cache_path = _sso_cache_path(home, start_url)
+    relogin = (f"Run `aws sso login --profile {name}` and reconnect. The "
+               f"sidecar will not fall back to another credential source.")
+    try:
+        raw = cache_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise AWSAuthError(
+            "AWS_SSO_TOKEN_MISSING",
+            f"No cached AWS SSO token for profile {name!r} (looked for "
+            f"{cache_path}). It means the SSO session was never started or "
+            f"the cache was cleared. " + relogin)
+    except OSError as e:
+        raise AWSAuthError(
+            "AWS_SSO_TOKEN_INVALID",
+            f"Cannot read the SSO token cache at {cache_path}: {e}. " + relogin)
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        raise AWSAuthError(
+            "AWS_SSO_TOKEN_INVALID",
+            f"The SSO token cache at {cache_path} is not valid JSON. "
+            + relogin)
+    token = data.get("accessToken")
+    expires_at = _parse_sso_expires_at(data.get("expiresAt"))
+    if not token:
+        raise AWSAuthError(
+            "AWS_SSO_TOKEN_INVALID",
+            f"The SSO token cache at {cache_path} has no accessToken. "
+            + relogin)
+    if expires_at is None:
+        raise AWSAuthError(
+            "AWS_SSO_TOKEN_INVALID",
+            f"The SSO token cache at {cache_path} has no parseable "
+            f"expiresAt. " + relogin)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    if expires_at <= now:
+        raise AWSAuthError(
+            "AWS_SSO_TOKEN_EXPIRED",
+            f"The cached AWS SSO token for profile {name!r} expired at "
+            f"{data.get('expiresAt')}. " + relogin)
+    account_id = (cfg.get("sso_account_id") or "").strip()
+    role_name = (cfg.get("sso_role_name") or "").strip()
+    if not account_id or not role_name:
+        missing = ("sso_account_id" if not account_id else "sso_role_name")
+        raise AWSAuthError(
+            "AWS_SSO_CONFIG_INCOMPLETE",
+            f"~/.aws/config profile {name!r} has sso_start_url but is "
+            f"missing {missing}. Add it under [profile {name}] and "
+            f"reconnect.")
+    sso_region = ((cfg.get("sso_region") or "").strip()
+                  or _aws_region_from_env() or "us-east-1")
+    ak, sk, tok = _sso_get_role_credentials(
+        token, account_id, role_name, sso_region, name)
+    return AWSCredentials(
+        ak, sk, tok,
+        region=((cfg.get("region") or "").strip()
+                or _aws_region_from_env()),
+        source=f"AWS SSO profile {name!r}")
+
+
+def _sts_assume_role(base: AWSCredentials, role_arn: str, region: str,
+                     profile_name: str) -> AWSCredentials:
+    """AssumeRole via STS (stdlib HTTPS, SigV4-signed with the base
+    credentials) for config profiles with role_arn + source_profile."""
+    endpoint = f"https://sts.{region}.amazonaws.com/"
+    body = urllib.parse.urlencode({
+        "Action": "AssumeRole",
+        "Version": "2011-06-15",
+        "RoleArn": role_arn,
+        "RoleSessionName": f"awino-{profile_name}"[:64],
+    }).encode("utf-8")
+    headers = sigv4_sign(
+        "POST", endpoint,
+        {"Content-Type": "application/x-www-form-urlencoded"}, body,
+        access_key=base.access_key, secret_key=base.secret_key,
+        session_token=base.session_token, service="sts", region=region)
+    req = urllib.request.Request(endpoint, data=body, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        raise AWSAuthError(
+            "AWS_ROLE_ASSUME_FAILED",
+            f"STS AssumeRole for profile {profile_name!r} failed "
+            f"(HTTP {e.code}). It means the source credentials lack "
+            f"sts:AssumeRole permission for {role_arn}, or the role does "
+            f"not trust this identity. Fix the IAM trust and reconnect.")
+    except OSError as e:
+        raise AWSAuthError(
+            "AWS_ROLE_ASSUME_FAILED",
+            f"Could not reach STS for profile {profile_name!r}: {e}. Check "
+            f"the network path to AWS, then reconnect.")
+    # STS answers in XML (namespace-qualified); pull the Credentials block
+    # by local element name so the namespace never matters.
+    try:
+        import xml.etree.ElementTree as _et
+        root = _et.fromstring(raw)
+        creds_el = None
+        for el in root.iter():
+            if el.tag.rpartition("}")[2] == "Credentials":
+                creds_el = el
+                break
+        if creds_el is None:
+            raise ValueError("no Credentials element")
+        vals = {}
+        for el in creds_el:
+            vals[el.tag.rpartition("}")[2]] = (el.text or "").strip()
+        return AWSCredentials(
+            vals["AccessKeyId"], vals["SecretAccessKey"],
+            vals.get("SessionToken") or None, region,
+            source=f"STS AssumeRole {role_arn} (profile {profile_name!r})")
+    except (ValueError, KeyError, _et.ParseError):
+        raise AWSAuthError(
+            "AWS_ROLE_ASSUME_FAILED",
+            f"STS answered for profile {profile_name!r} but the response "
+            f"carried no credentials. Check the role configuration and "
+            f"reconnect.")
+
+
+def _resolve_aws_profile(home: Path, name: str, seen: tuple,
+                         creds_sections: dict,
+                         config_sections: dict) -> AWSCredentials:
+    """Steps (b)->(c)->(d) for one profile name. `seen` guards
+    source_profile cycles."""
+    if name in seen:
+        cycle = " -> ".join(seen + (name,))
+        raise AWSAuthError(
+            "AWS_PROFILE_CYCLE",
+            f"AWS profile {name!r} loops back on itself through "
+            f"source_profile ({cycle}). Break the cycle in ~/.aws/config "
+            f"and reconnect.")
+    seen = seen + (name,)
+    # (b) shared-credentials file, profile-aware.
+    section = creds_sections.get(name)
+    if section is not None:
+        ak = (section.get("aws_access_key_id") or "").strip()
+        sk = (section.get("aws_secret_access_key") or "").strip()
+        if ak and sk:
+            tok = (section.get("aws_session_token") or "").strip() or None
+            return AWSCredentials(
+                ak, sk, tok, _profile_region(config_sections, name),
+                source=f"~/.aws/credentials [{name}]")
+        missing = ("aws_access_key_id" if not ak
+                   else "aws_secret_access_key")
+        raise AWSAuthError(
+            "AWS_CREDENTIALS_INCOMPLETE",
+            f"~/.aws/credentials has a [{name}] section but it is missing "
+            f"{missing}. Complete the section or remove it, then reconnect.")
+    # (c) config file: region + source_profile chaining.
+    cfg_key = "default" if name == "default" else f"profile {name}"
+    cfg = config_sections.get(cfg_key)
+    if cfg is None:
+        raise AWSAuthError(
+            "AWS_PROFILE_NOT_FOUND",
+            f"AWS profile {name!r} was not found in ~/.aws/credentials or "
+            f"~/.aws/config. It means there is nothing to sign Bedrock "
+            f"requests with. Create the profile (`aws configure --profile "
+            f"{name}` or `aws sso login --profile {name}`), or pick a "
+            f"profile that exists.")
+    ak = (cfg.get("aws_access_key_id") or "").strip()
+    sk = (cfg.get("aws_secret_access_key") or "").strip()
+    if ak or sk:
+        if not (ak and sk):
+            missing = ("aws_access_key_id" if not ak
+                       else "aws_secret_access_key")
+            raise AWSAuthError(
+                "AWS_CREDENTIALS_INCOMPLETE",
+                f"~/.aws/config [{cfg_key}] is missing {missing}. Complete "
+                f"the section or remove the half-written keys, then "
+                f"reconnect.")
+        tok = (cfg.get("aws_session_token") or "").strip() or None
+        return AWSCredentials(
+            ak, sk, tok, _profile_region(config_sections, name),
+            source=f"~/.aws/config [{cfg_key}]")
+    if (cfg.get("sso_start_url") or "").strip():
+        return _resolve_aws_sso(home, cfg, name)
+    role_arn = (cfg.get("role_arn") or "").strip()
+    if role_arn:
+        source_profile = (cfg.get("source_profile") or "").strip()
+        credential_source = (cfg.get("credential_source") or "").strip().lower()
+        if source_profile:
+            base = _resolve_aws_profile(home, source_profile, seen,
+                                        creds_sections, config_sections)
+        elif credential_source == "environment":
+            env_ak = os.environ.get("AWS_ACCESS_KEY_ID")
+            env_sk = os.environ.get("AWS_SECRET_ACCESS_KEY")
+            if not (env_ak and env_sk):
+                raise AWSAuthError(
+                    "AWS_CREDENTIALS_INCOMPLETE",
+                    f"AWS profile {name!r} uses credential_source = "
+                    f"Environment, but AWS_ACCESS_KEY_ID / "
+                    f"AWS_SECRET_ACCESS_KEY are not both set. Set them and "
+                    f"reconnect.")
+            base = AWSCredentials(
+                env_ak, env_sk,
+                os.environ.get("AWS_SESSION_TOKEN") or None,
+                _aws_region_from_env(), source="environment variables")
+        else:
+            raise AWSAuthError(
+                "AWS_ROLE_ASSUME_NO_SOURCE",
+                f"AWS profile {name!r} sets role_arn but no source_profile "
+                f"(or credential_source). Add `source_profile = <name>` "
+                f"under [{cfg_key}] in ~/.aws/config and reconnect.")
+        region = ((cfg.get("region") or "").strip() or base.region
+                  or _aws_region_from_env() or "us-east-1")
+        return _sts_assume_role(base, role_arn, region, name)
+    raise AWSAuthError(
+        "AWS_CREDENTIALS_NOT_FOUND",
+        f"AWS profile {name!r} exists in ~/.aws/config but provides no "
+        f"credentials (no aws_access_key_id, no sso_start_url, no "
+        f"role_arn/source_profile). Add credentials to the profile and "
+        f"reconnect.")
+
+
+def resolve_aws_credentials(profile: str | None = None) -> AWSCredentials:
+    """Resolve AWS credentials through the chain, fail-closed:
+
+      (a) AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (+ AWS_SESSION_TOKEN)
+      (b) ~/.aws/credentials, profile-aware
+      (c) ~/.aws/config (profile region + source_profile chaining)
+      (d) ~/.aws/sso/cache (valid cached SSO token -> GetRoleCredentials)
+
+    Returns AWSCredentials, or raises AWSAuthError with a NAMED code at
+    each failure — never silently falls back, never returns half a
+    credential. Honors the HOME env var for ~/.aws lookups.
+    """
+    home = _aws_home()
+    # (a) environment variables win over everything (AWS CLI behavior).
+    ak = os.environ.get("AWS_ACCESS_KEY_ID")
+    sk = os.environ.get("AWS_SECRET_ACCESS_KEY")
+    if ak or sk:
+        if not (ak and sk):
+            missing = ("AWS_SECRET_ACCESS_KEY" if ak
+                       else "AWS_ACCESS_KEY_ID")
+            raise AWSAuthError(
+                "AWS_CREDENTIALS_INCOMPLETE",
+                f"{missing} is not set while its pair is. It means the "
+                f"environment holds half a credential — AWS would reject "
+                f"every request. Set both AWS_ACCESS_KEY_ID and "
+                f"AWS_SECRET_ACCESS_KEY (plus AWS_SESSION_TOKEN for "
+                f"temporary credentials), or unset both to fall through to "
+                f"~/.aws/credentials.")
+        return AWSCredentials(
+            ak, sk, os.environ.get("AWS_SESSION_TOKEN") or None,
+            _aws_region_from_env(), source="environment variables")
+    name = ((profile or "").strip()
+            or os.environ.get("AWS_PROFILE")
+            or os.environ.get("AWS_DEFAULT_PROFILE")
+            or "default")
+    creds_sections = _read_aws_ini_file(home / ".aws" / "credentials")
+    config_sections = _read_aws_ini_file(home / ".aws" / "config")
+    if not creds_sections and not config_sections:
+        raise AWSAuthError(
+            "AWS_CREDENTIALS_NOT_FOUND",
+            f"No AWS credentials found: no AWS_ACCESS_KEY_ID / "
+            f"AWS_SECRET_ACCESS_KEY in the environment, and no "
+            f"~/.aws/credentials or ~/.aws/config under {home}. It means "
+            f"there is nothing to sign Bedrock requests with. Log in "
+            f"(`aws sso login --profile {name}` or `aws configure`), then "
+            f"reconnect.")
+    return _resolve_aws_profile(home, name, (), creds_sections,
+                                config_sections)
+
+
+def _bedrock_signing_region(endpoint: str | None,
+                            creds: AWSCredentials) -> str:
+    """Region for the SigV4 credential scope. The endpoint host is
+    authoritative (the signature must match where the request goes);
+    the profile/env region is the fallback."""
+    if endpoint:
+        m = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.amazonaws\.com",
+                      endpoint)
+        if m:
+            return m.group(1)
+    if creds.region:
+        return creds.region
+    env_region = _aws_region_from_env()
+    if env_region:
+        return env_region
+    raise AWSAuthError(
+        "AWS_REGION_NOT_RESOLVED",
+        "No AWS region for SigV4 signing: the endpoint URL carries no "
+        "bedrock-runtime region, the AWS profile sets no region, and "
+        "AWS_REGION / AWS_DEFAULT_REGION are unset. Set `region` for the "
+        "profile in ~/.aws/config, or set AWS_REGION, and reconnect.")
+
+
+# ---------------------------------------------------------------------------
 # Backends
 # ---------------------------------------------------------------------------
 class OpenAICompatibleBackend(OllamaBackend):
@@ -195,6 +864,14 @@ class OpenAICompatibleBackend(OllamaBackend):
         # `egress` event (destination, bytes). None when no HTTP happened.
         self.last_egress: dict | None = None
 
+    def _signed_headers(self, body: bytes) -> dict:
+        """Auth headers for one request. Subclasses override: the Bedrock
+        SigV4 backend signs here instead of sending a Bearer key."""
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = "Bearer " + self.api_key
+        return headers
+
     def _chat(self, prompt: str, system: str) -> str:
         body = json.dumps({
             "model": self.model,
@@ -206,9 +883,7 @@ class OpenAICompatibleBackend(OllamaBackend):
             "temperature": 0.2,
             "max_tokens": self.num_predict,
         }).encode()
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = "Bearer " + self.api_key
+        headers = self._signed_headers(body)
         req = urllib.request.Request(self.chat_url, data=body,
                                      headers=headers)
         try:
@@ -241,9 +916,7 @@ class OpenAICompatibleBackend(OllamaBackend):
             "temperature": 0.2,
             "max_tokens": self.num_predict,
         }).encode()
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = "Bearer " + self.api_key
+        headers = self._signed_headers(body)
         req = urllib.request.Request(self.chat_url, data=body,
                                      headers=headers)
         # urlopen raising here (HTTP 401/403/429/5xx, unreachable) propagates
@@ -275,6 +948,55 @@ class OpenAICompatibleBackend(OllamaBackend):
             # Track C: report the network I/O so the loop can journal it.
             self.last_egress = {"destination": self.chat_url,
                                 "bytes_out": len(body), "bytes_in": raw_in}
+
+
+class BedrockSigV4Backend(OpenAICompatibleBackend):
+    """Bedrock through the OpenAI-compatible chat-completions endpoint,
+    authenticated with AWS SigV4 from the user's AWS credential chain
+    (env vars -> ~/.aws/credentials -> ~/.aws/config -> SSO token cache)
+    instead of a Bearer API key.
+
+    Fail-closed: credentials resolve EAGERLY in __init__ — a hello with
+    provider "bedrock" and no usable credentials raises AWSAuthError
+    (named) at connect time, before the session exists. _signed_headers
+    raises rather than returning unsigned headers, so an unsigned Bedrock
+    request can never be constructed, let alone sent. AWINO_API_KEY is
+    deliberately ignored here: profile auth never silently falls back to
+    a key.
+    """
+
+    def __init__(self, model=None, endpoint=None, timeout=180,
+                 num_predict=1024, aws_profile=None):
+        self.aws_profile = (aws_profile.strip() if isinstance(aws_profile, str)
+                            and aws_profile.strip() else None)
+        # Eager: connect fails here when the chain yields nothing usable.
+        self.aws_credentials = resolve_aws_credentials(
+            profile=self.aws_profile)
+        self.aws_region = _bedrock_signing_region(endpoint,
+                                                  self.aws_credentials)
+        super().__init__(model=model, endpoint=endpoint, timeout=timeout,
+                         num_predict=num_predict, api_key=None)
+        # Belt and braces: even with AWINO_API_KEY in the environment,
+        # profile auth never sends a Bearer token.
+        self.api_key = None
+
+    def _signed_headers(self, body: bytes) -> dict:
+        creds = self.aws_credentials
+        if (creds is None or not creds.access_key
+                or not creds.secret_key):
+            # Defense in depth: the constructor already raises. This path
+            # must never produce an unsigned request.
+            raise AWSAuthError(
+                "AWS_CREDENTIALS_NOT_FOUND",
+                "Refusing to sign a Bedrock request with no AWS "
+                "credentials: no unsigned request will be sent. Reconnect "
+                "after fixing the AWS credential chain.")
+        return sigv4_sign(
+            "POST", self.chat_url, {"Content-Type": "application/json"},
+            body, access_key=creds.access_key,
+            secret_key=creds.secret_key,
+            session_token=creds.session_token,
+            service=_BEDROCK_SIGV4_SERVICE, region=self.aws_region)
 
 
 class AnthropicBackend(OllamaBackend):
@@ -667,8 +1389,9 @@ _KEY_ID_RX = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 _ENV_NAME_RX = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 _MODE_ID_RX = re.compile(r"[a-z0-9][a-z0-9_-]{1,40}")
 _KNOWN_STAGES = ("DEFINE", "PLAN", "BUILD", "VERIFY", "REVIEW", "SHIP")
-_KNOWN_PROVIDERS = ("echo", "ollama", "openai", "anthropic", "scripted")
-_BINDING_FIELDS = ("provider", "model", "endpoint", "key_id")
+_KNOWN_PROVIDERS = ("echo", "ollama", "openai", "anthropic", "scripted",
+                    "bedrock")
+_BINDING_FIELDS = ("provider", "model", "endpoint", "key_id", "aws_profile")
 # Per-environment settings that are NOT provider bindings (never affect keys).
 _ENV_SETTING_FIELDS = ("context_window",)
 
@@ -1328,7 +2051,7 @@ class Sidecar:
         # provider/model hello explicitly carried (i.e. the user's VS Code
         # settings) must not be silent — name the file that won.
         if binding.get("source") == "project-file":
-            for _field in ("provider", "model"):
+            for _field in ("provider", "model", "aws_profile"):
                 _asked = cmd.get(_field)
                 _used = binding.get(_field)
                 if (isinstance(_asked, str) and _asked.strip() and _used
@@ -1341,6 +2064,13 @@ class Sidecar:
                                       f"'{_asked}' → using '{_used}'"})
         try:
             backend, key_status = self._apply_binding(binding, env_cmd)
+        except AWSAuthError as e:
+            # The Bedrock credential chain failed closed. The code travels
+            # on the wire: it is the stable name the extension and the user
+            # can act on. Never let it escape as a crash.
+            self.workspace = None
+            _err(f"{e.code}: {e}")
+            return
         except ValueError as e:
             self.workspace = None
             _err(str(e))
@@ -1479,9 +2209,19 @@ class Sidecar:
         binding = {"provider": str(cmd.get("provider") or "echo").lower(),
                    "model": cmd.get("model") or None,
                    "endpoint": cmd.get("endpoint") or None,
-                   "key_id": None, "environment": None, "source": "global-settings"}
+                   "key_id": None, "aws_profile": None,
+                   "environment": None, "source": "global-settings"}
         if binding["provider"] not in _KNOWN_PROVIDERS:
             return {"error": f"unknown provider {binding['provider']!r}"}
+        aws_profile = cmd.get("aws_profile")
+        if aws_profile is not None:
+            if (not isinstance(aws_profile, str)
+                    or not aws_profile.strip()):
+                return {"error": 'aws_profile must be a non-empty string'}
+            binding["aws_profile"] = aws_profile.strip()
+        if binding["provider"] != "bedrock" and binding["aws_profile"]:
+            return {"error": 'aws_profile is only valid with provider '
+                             '"bedrock"'}
         parsed = self._read_providers_file()
         if parsed is not None and "error" in parsed:
             return {"error": parsed["error"]}
@@ -1534,6 +2274,11 @@ class Sidecar:
         if (key_status == "not-required"
                 and getattr(backend, "api_key", None)):
             key_status = "configured"
+        if binding["provider"] == "bedrock":
+            # Bedrock authenticates with SigV4 from the AWS credential
+            # chain, not a stored key: say which profile was used.
+            prof = getattr(backend, "aws_profile", None) or "default"
+            key_status = f"sigv4-profile:{prof}"
         return _ModeAwareBackend(backend, self), key_status
 
     def _make_backend(self, provider: str, cmd: dict, api_key=None):
@@ -1551,6 +2296,13 @@ class Sidecar:
         if provider == "anthropic":
             return AnthropicBackend(model=model, endpoint=endpoint,
                                     timeout=timeout, api_key=api_key)
+        if provider == "bedrock":
+            # SigV4-signed Bedrock (AWS profile / SSO chain). Credentials
+            # resolve eagerly inside the constructor: failure raises
+            # AWSAuthError and the hello fails closed.
+            return BedrockSigV4Backend(model=model, endpoint=endpoint,
+                                       timeout=timeout,
+                                       aws_profile=cmd.get("aws_profile"))
         if provider == "scripted":
             # TEST-ONLY provider: candidate turns are fed through the
             # identical validation/judge/approval pipeline. It is a mock
@@ -1562,7 +2314,7 @@ class Sidecar:
             return ScriptedBackend(script)
         raise ValueError(
             f"unknown provider {provider!r} "
-            "(use echo|ollama|openai|anthropic|scripted)")
+            "(use echo|ollama|openai|anthropic|scripted|bedrock)")
 
     # ------------------------------------------------------- modes as data
     def _read_active_environment(self) -> str | None:

@@ -43,6 +43,12 @@ export interface StartOptions {
   script?: unknown[];
   /** AWINO_HOME override (used by tests to isolate state) */
   home?: string;
+  /**
+   * AWS profile name for provider "bedrock" (SigV4 mode). Forwarded to the
+   * sidecar as `aws_profile` in hello; the Python side resolves it from
+   * the user's AWS credential chain (env / ~/.aws / SSO cache).
+   */
+  awsProfile?: string;
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -200,6 +206,9 @@ export class SidecarClient extends EventEmitter {
       }
       if (opts.script) {
         hello["script"] = opts.script;
+      }
+      if (opts.awsProfile) {
+        hello["aws_profile"] = opts.awsProfile;
       }
       this.send(hello);
     });

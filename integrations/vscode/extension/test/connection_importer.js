@@ -262,9 +262,9 @@ test("applicable vs informational split", () => {
   const f = parseClaudeSettings(CLAUDE_FIXTURE, "s");
   const app = applicableFindings(f);
   const info = informationalFindings(f);
-  assert(app.every((x) => ["region", "endpoint", "model"].includes(x.kind)));
-  assert(info.every((x) => ["awsProfile", "credentialRef"].includes(x.kind)));
-  assert(info.some((x) => x.kind === "awsProfile"), "profile is informational (SSO unsupported)");
+  assert(app.every((x) => ["region", "endpoint", "model", "awsProfile"].includes(x.kind)));
+  assert(info.every((x) => ["credentialRef"].includes(x.kind)));
+  assert(app.some((x) => x.kind === "awsProfile"), "profile is applicable (SigV4 supported)");
 });
 
 test("buildConfigWrites maps findings to awino.* writes", () => {
@@ -278,6 +278,16 @@ test("buildConfigWrites maps findings to awino.* writes", () => {
   assert.strictEqual(map["bedrockRegion"], "us-west-2");
   assert.strictEqual(map["model"], "arn:aws:bedrock:x");
   assert.strictEqual(map["endpoint"], "https://p.example/v1");
+});
+
+test("buildConfigWrites turns an AWS profile into real SigV4 auth writes", () => {
+  const writes = buildConfigWrites([
+    { source: "s", provider: "bedrock", kind: "awsProfile", value: "lukes-sso", note: "" },
+  ]);
+  const map = Object.fromEntries(writes.map((w) => [w.key, w.value]));
+  assert.strictEqual(map["provider"], "bedrock");
+  assert.strictEqual(map["bedrockAuthMode"], "aws-profile");
+  assert.strictEqual(map["bedrockAwsProfile"], "lukes-sso");
 });
 
 test("buildConfigWrites is pure: no writes happen without the caller applying them", () => {

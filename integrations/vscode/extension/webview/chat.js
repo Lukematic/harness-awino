@@ -276,6 +276,12 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
   const wKey = document.getElementById("w-key");
   const wKeylabel = document.getElementById("w-keylabel");
   const wGetKey = document.getElementById("w-getkey");
+  const wKeyRow = document.getElementById("w-keyrow");
+  const wGetKeyRow = document.getElementById("w-getkeyrow");
+  const wBedrockAuthRow = document.getElementById("w-bedrockauthrow");
+  const wBedrockAuth = document.getElementById("w-bedrockauth");
+  const wBedrockProfileRow = document.getElementById("w-bedrockprofilerow");
+  const wBedrockProfile = document.getElementById("w-bedrockprofile");
   const wModel = document.getElementById("w-model");
   const wModelSelect = document.getElementById("w-modelselect");
   const wIntel = document.getElementById("w-intel");
@@ -628,6 +634,13 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
       wGetKey.textContent = "Get " + (p && p.keyName ? p.keyName : "API") + " API Key";
       wGetKey.hidden = !needs || !(p && p.keyUrl);
     }
+    // Bedrock auth mode: profile/SSO needs no key — hide the key inputs and
+    // show the profile input instead.
+    var bedrockProfileAuth = pid === "bedrock" && wBedrockAuth && wBedrockAuth.value === "aws-profile";
+    if (wBedrockAuthRow) wBedrockAuthRow.hidden = (pid !== "bedrock");
+    if (wBedrockProfileRow) wBedrockProfileRow.hidden = !bedrockProfileAuth;
+    if (wKeyRow) wKeyRow.hidden = !!bedrockProfileAuth;
+    if (wGetKeyRow) wGetKeyRow.hidden = !!bedrockProfileAuth;
     if (wFetchRow) wFetchRow.hidden = !(sm ? sm.fetchableProvider(pid) : (pid === "openai" || pid === "ollama"));
     if (wRegionRow) wRegionRow.hidden = (pid !== "bedrock");
     // Spec 2.1: truthful one-line blurb (echo is a demo, never "AI").
@@ -685,6 +698,8 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     }
     if (wKey) wKey.value = "";
     if (wKeylabel) wKeylabel.value = "";
+    if (wBedrockAuth) wBedrockAuth.value = "api-key";
+    if (wBedrockProfile) wBedrockProfile.value = "";
     if (wModel) { wModel.value = ""; showWizardModelInput(); }
     if (wEndpoint) wEndpoint.value = "";
     if (wFetchNote) wFetchNote.textContent = "";
@@ -1225,6 +1240,7 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
 
   // ---------- wizard events ----------
   if (wProvider) wProvider.addEventListener("change", updateWizardForProvider);
+  if (wBedrockAuth) wBedrockAuth.addEventListener("change", updateWizardForProvider);
   if (wDocs) wDocs.addEventListener("click", function (e) {
     if (e && e.preventDefault) e.preventDefault();
     if (wizDocsUrl) vscode.postMessage({ type: "openExternal", url: wizDocsUrl });
@@ -1267,6 +1283,18 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     var provider = wProvider.value;
     var needs = sm ? sm.needsKey(provider)
       : (provider === "openai" || provider === "openai-compatible" || provider === "anthropic" || provider === "bedrock");
+    var bedrockProfileAuth = provider === "bedrock" && wBedrockAuth && wBedrockAuth.value === "aws-profile";
+    if (bedrockProfileAuth) {
+      // SigV4 from the AWS chain: no key required, and the extension must
+      // not demand one.
+      needs = false;
+      var profName = wBedrockProfile ? wBedrockProfile.value.trim() : "";
+      if (!profName) {
+        setWizardError("Enter the AWS profile name (from ~/.aws/config) \u2014 or pick the API key option above.");
+        if (wBedrockProfile) wBedrockProfile.focus();
+        return;
+      }
+    }
     if (needs && wKey && !wKey.value) {
       // Roo-style fail-closed inline validation: no silent no-op.
       setWizardError("Enter an API key for this provider \u2014 or choose echo or ollama for the keyless path.");
@@ -1283,6 +1311,8 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
       key: wKey ? wKey.value : "",
       keyLabel: wKeylabel ? wKeylabel.value.trim() : "",
       bedrockRegion: wRegion ? wRegion.value : "",
+      bedrockAuthMode: bedrockProfileAuth ? "aws-profile" : "api-key",
+      bedrockAwsProfile: bedrockProfileAuth ? wBedrockProfile.value.trim() : "",
     });
   });
   if (wSkip) wSkip.addEventListener("click", function () {
