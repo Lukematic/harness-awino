@@ -258,6 +258,14 @@ class FanoutFailed(Exception):
         self.details = details
 
 
+class UnknownBackendError(ValueError):
+    """Named fail-closed error for fan-out model routing: a subtask named a
+    backend that is not in the request's code-owned routing map
+    (``model_routes``). Raised in fan-out pre-flight, before any worker
+    spawns. A ValueError subclass so it reads like the other fan-out
+    refusals ("fanout refused: ...")."""
+
+
 def _owned_overlap(a: list, b: list) -> str | None:
     """Return a representative overlapping owned-file entry, or None.
 
@@ -1991,17 +1999,33 @@ class Loop:
     # up front), shared budget pool (checked atomically up front), threads
     # for parallel execution, and a fail-closed barrier: any worker
     # failure fails the whole fan-out, with explicit per-worker status.
+    # Per-worker model routing is code-owned: the request carries a
+    # routing map (model_routes: name -> backend) and each subtask may
+    # name its backend; unknown names refuse in pre-flight (fail-closed).
+    # Not yet implemented: tournament mode, loop-until-done (roadmap).
     def fanout(self, objective: str, subtasks: list,
                run_worker=None, backend_factory=None,
-               synthesize=None) -> dict:
+               synthesize=None, model_routes: dict | None = None) -> dict:
         """Spawn one worker per subtask, run them in parallel, and merge
         their structured results at a barrier.
 
         subtasks: list of {"objective": str, "owned_files": [str],
-        "budget_share": {"max_turns": int, ...}}.
+        "budget_share": {"max_turns": int, ...}, "backend": str (optional)}.
+
+        Per-worker model routing (code-owned): pass model_routes, a
+        mapping of backend name -> backend instance, and name a backend
+        per subtask via the optional "backend" key (e.g. one worker on a
+        fast/cheap model for drafting, another on a strong model for
+        verification). Routing is resolved in pre-flight, before any
+        worker spawns: an unknown backend name raises UnknownBackendError
+        ("fanout refused") and no worker spawns. A subtask with no
+        "backend" key falls back to backend_factory, then to the
+        parent's backend.
 
         Pre-flight is atomic and runs BEFORE any worker spawns:
         - owned_files must be pairwise disjoint (overlap -> ValueError)
+        - every named backend must exist in model_routes (unknown ->
+          UnknownBackendError). The pool counter is untouched on refusal.
         - total budget shares must fit the shared pool (shortfall ->
           RuntimeError). The pool counter is untouched on refusal.
         There are no partial fan-outs.
@@ -2016,7 +2040,9 @@ class Loop:
 
         backend_factory(subtask, index) -> backend optionally gives each
         worker its own backend (recommended under threads; the default
-        shares the parent's backend).
+        shares the parent's backend). backend_factory applies only to
+        subtasks that do NOT name a backend in model_routes — routing
+        wins where both are given.
 
         synthesize(workers) -> merged optionally customizes the merge;
         the default maps worker_id -> result.
@@ -2053,6 +2079,29 @@ class Loop:
                         f"fanout refused: subtask {i} and subtask {j} "
                         f"overlap on {overlap!r}; owned_files must be "
                         f"disjoint. No worker spawned.")
+        # ---- routing resolution (atomic; before any worker spawns) ----
+        # Code-owned model routing: resolve every subtask's named backend
+        # against the request's routing map here. An unknown name refuses
+        # the whole fan-out (fail-closed), exactly like overlap/budget.
+        routed_backends: list = []
+        for i, st in enumerate(subtasks):
+            name = st.get("backend")
+            if name is None:
+                routed_backends.append(None)
+                continue
+            if (not isinstance(name, str) or model_routes is None
+                    or name not in model_routes):
+                known = sorted(model_routes) if model_routes else []
+                self.state.record(
+                    "fanout_refused",
+                    {"reason": "unknown backend",
+                     "subtask": i, "backend": name, "known": known})
+                self.state.persist_snapshot()
+                raise UnknownBackendError(
+                    f"fanout refused: subtask {i} routes to unknown "
+                    f"backend {name!r}; known backends: {known}. "
+                    f"No worker spawned.")
+            routed_backends.append(model_routes[name])
         s = self.state.snapshot
         allocated = s.get("worker_budget_allocated", 0)
         limit = self.config.get("max_turns", 50)
@@ -2077,8 +2126,11 @@ class Loop:
              "parent_mode": parent_mode,
              "subtasks": [{"objective": st["objective"],
                            "owned_files": list(st["owned_files"]),
-                           "budget_share": dict(st["budget_share"])}
-                          for st in subtasks]})
+                           "budget_share": dict(st["budget_share"]),
+                           "backend": (st.get("backend")
+                                       if routed_backends[idx] is not None
+                                       else None)}
+                          for idx, st in enumerate(subtasks)]})
         workers = []
         for idx, st in enumerate(subtasks):
             spawn = self.spawn_worker(
@@ -2090,7 +2142,12 @@ class Loop:
             # clamps offered tools to the parent's policy from here on.
             wloop.state.snapshot["mode"] = parent_mode
             wloop.state.snapshot["parent_mode_tools"] = parent_tools
-            if backend_factory is not None:
+            # code-owned model routing: the request's routing map won in
+            # pre-flight; backend_factory applies only to unrouted
+            # subtasks; otherwise the worker shares the parent's backend.
+            if routed_backends[idx] is not None:
+                wloop.backend = routed_backends[idx]
+            elif backend_factory is not None:
                 wloop.backend = backend_factory(st, idx)
             workers.append({"spawn": spawn, "subtask": st})
         self.state.persist_snapshot()
