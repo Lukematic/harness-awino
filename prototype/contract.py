@@ -20,13 +20,17 @@ MODES = {
     "observe": {
         # v0.6: read-only project-context tools in every mode.
         "tools": ["read_file", "list_dir", "search_files", "find_symbol",
-                  "git_status", "git_diff", "diagnostics"],
+                  "git_status", "git_diff", "diagnostics",
+                  # Hotfix port (0.5.3): interview-convergence tool.
+                  "set_mission"],
         "consequential": [],
         "desc": "Read-only. Questions, teaching, and exploration with no mission.",
     },
     "plan": {
         "tools": ["read_file", "list_dir", "search_files", "find_symbol",
-                  "git_status", "git_diff", "diagnostics"],
+                  "git_status", "git_diff", "diagnostics",
+                  # Hotfix port (0.5.3): interview-convergence tool.
+                  "set_mission"],
         "consequential": [],
         "desc": "Read-only planning. No edits on this floor.",
     },

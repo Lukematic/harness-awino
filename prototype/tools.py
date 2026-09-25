@@ -34,6 +34,12 @@ TOOL_DEFS = {
     "task_add": {"consequential": False, "args": ["title"], "harness": True},
     "task_update": {"consequential": False, "args": ["id", "status"],
                     "harness": True},
+    # Hotfix port (0.5.3): harness-owned interview-convergence tool.
+    # Non-consequential; resolved by Loop._resolve_tool_fn to
+    # _harness_set_mission (never reaches the sandbox or delegation).
+    # Offered in observe/plan only via contract MODES — NOT in
+    # HARNESS_TOOLS (those are offered in every mode).
+    "set_mission": {"consequential": False, "args": ["text", "criteria"]},
 }
 
 

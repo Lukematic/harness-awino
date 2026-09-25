@@ -1157,6 +1157,40 @@ class Loop:
         return {"completed": True, "evidence": {}, "summary": summary[:500],
                 "via": "attempt_completion"}
 
+    def _harness_set_mission(self, **args) -> dict:
+        """Model-callable mission setter (interview convergence; 0.5.3 hotfix port).
+
+        Turn-schema args are {str: str}, so `criteria` arrives as one
+        string; it is split on newlines/semicolons into the criteria list.
+        Tool errors are data, never exceptions: the model sees the error
+        result and can repair or report it. A worker's mission is fixed by
+        its parent, so workers are refused.
+        """
+        if self.state.snapshot.get("worker_id"):
+            return {"error": "set_mission refused: a worker's mission is "
+                             "fixed by its parent"}
+        text = args.get("text", "")
+        raw_criteria = args.get("criteria", "")
+        if not isinstance(text, str) or not text.strip():
+            return {"error": "set_mission needs a non-empty 'text'"}
+        if not isinstance(raw_criteria, str):
+            return {"error": "set_mission 'criteria' must be a string "
+                             "(semicolon- or newline-separated)"}
+        criteria = [c.strip() for c in re.split(r"[;\n]+", raw_criteria)
+                    if c.strip()]
+        if not criteria:
+            return {"error": "set_mission needs at least one done criterion "
+                             "in 'criteria'"}
+        try:
+            mission = self.set_mission(text.strip(), criteria)
+        except Exception as ex:  # noqa: BLE001 - e.g. SkillIntegrityError
+            return {"error": f"{type(ex).__name__}: {ex}"}
+        return {"ok": True,
+                "mission": {"id": mission["id"], "text": mission["text"],
+                            "kind": mission["kind"],
+                            "revision": mission["revision"]},
+                "said": f"Mission set: {mission['text'][:160]}"}
+
     def _intercept_harness_calls(self, turn_id: str, turn_no: int,
                                  round_no: int, calls: list[dict]):
         """Split harness calls out of a validated round.
@@ -2048,6 +2082,11 @@ class Loop:
         undo unit), but the delegation's per-call tool_fn remains the
         fail-safe for any other path (e.g. _execute_calls). None (no
         delegation) returns the historical sandbox implementation."""
+        if tool_name == "set_mission":
+            # Harness-owned interview-convergence tool (0.5.3 hotfix port):
+            # not a Sandbox method, never delegated — the model calls it to
+            # converge the discovery interview into a recorded mission.
+            return self._harness_set_mission
         if self.delegation is not None:
             fn = self.delegation.tool_fn(tool_name)
             if fn is not None:
@@ -3259,8 +3298,13 @@ class Loop:
         # ---- spawn (spawn_worker enforces the per-spawn budget again) ----
         parent_mode = s.get("mode", "observe")
         # v0.6: the authoritative offered set includes the harness tools
-        # in every mode.
-        parent_tools = list(MODES[parent_mode]["tools"]) + list(HARNESS_TOOLS)
+        # in every mode. set_mission is excluded: a worker's mission is
+        # fixed by its parent, so the interview-convergence tool must never
+        # reach a worker (0.5.3 hotfix port; belt-and-braces with the
+        # tool-level refusal in _harness_set_mission).
+        parent_tools = [t for t in
+                        list(MODES[parent_mode]["tools"]) + list(HARNESS_TOOLS)
+                        if t != "set_mission"]
         self.state.record(
             "fanout_started",
             {"objective": objective,

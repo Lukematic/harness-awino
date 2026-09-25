@@ -227,8 +227,14 @@ class TestFanoutModeInheritance(unittest.TestCase):
         loop.fanout("obj", _subtasks(("t1", "a/"),), run_worker=escalate)
         # v0.6: the authoritative offered set adds the harness tools to
         # every mode's base list; the gate stays clamped to observe.
-        self.assertEqual(seen["gate"],
-                         MODES["observe"]["tools"] + list(HARNESS_TOOLS))
+        # 0.5.3 hotfix port: set_mission is interview-only and explicitly
+        # excluded from the worker's parent policy — a worker's mission is
+        # fixed by its parent, so it must never reach a worker even from
+        # an observe-mode parent.
+        expected = ([t for t in MODES["observe"]["tools"] if t != "set_mission"]
+                    + list(HARNESS_TOOLS))
+        self.assertEqual(seen["gate"], expected)
+        self.assertNotIn("set_mission", seen["gate"])
 
     def test_forbidden_tool_refused_end_to_end(self):
         # Parent in observe (no write_file). A persistently hostile worker

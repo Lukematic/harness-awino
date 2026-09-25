@@ -161,6 +161,26 @@ TOOL_SCHEMAS: dict[str, dict] = {
             "required": ["id", "status"],
         },
     },
+    # 0.5.3 hotfix port: interview-convergence tool. NOT a HARNESS_TOOL
+    # (those are offered in every mode); the contract offers it in
+    # observe/plan only.
+    "set_mission": {
+        "description": ("Record the mission and its done criteria — call this "
+                        "when the discovery interview has converged (objective "
+                        "and done criteria are crisp). A worker's mission is "
+                        "fixed by its parent; workers are refused."),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string",
+                         "description": "The mission objective, in your own words."},
+                "criteria": {"type": "string",
+                             "description": ("One string: the done criteria "
+                                             "separated by semicolons or newlines.")},
+            },
+            "required": ["text", "criteria"],
+        },
+    },
 }
 
 

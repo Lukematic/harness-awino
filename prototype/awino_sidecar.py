@@ -111,7 +111,10 @@ def _apply_sidecar_tool_profile() -> None:
         '{"path", "content"} (consequential: needs operator approval; propose '
         "only when a plan exists and was approved), patch_file "
         '{"path", "diff"} (consequential: needs operator approval; unified '
-        "diff applied atomically; same approval and SCOPE rules as write_file).",
+        "diff applied atomically; same approval and SCOPE rules as write_file), "
+        'set_mission {"text", "criteria" (semicolon-separated done criteria)} '
+        "(interview: call this when the mission and done criteria are crisp "
+        "\u2014 it records the mission and unblocks the floors).",
     )
     _TOOL_PROFILE_APPLIED = True
 
@@ -1531,7 +1534,10 @@ BUILTIN_MODES: list[dict] = [
      "stance_prompt": (
          "Ask, don't act. Run the discovery interview: one question at a "
          "time, challenge vague answers, never let a plan start before the "
-         "mission and done criteria are crisp."),
+         "mission and done criteria are crisp. When the user's answers make "
+         "the objective and done criteria crisp, call set_mission with the "
+         "mission text and criteria \u2014 that is how a mission gets set. Do "
+         "not keep asking once it is crisp."),
      "tool_policy": None, "sampling": {"temperature": 0.3}},
     {"id": "planner", "label": "Planner",
      "stages": ["DEFINE", "PLAN"],

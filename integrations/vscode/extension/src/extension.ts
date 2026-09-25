@@ -23,6 +23,7 @@ import { offerPythonRecovery, pickPythonPathWriteLevel } from "./pythonRecovery"
 import { ConnectGuard } from "./connectGuard";
 import { keyMissingForProvider } from "./providerKeys";
 import { discoverModels } from "./modelDiscovery";
+import { ChatHistory } from "./chatHistory";
 import {
   BEDROCK_REGIONS,
   BedrockAuthMode,
@@ -248,6 +249,14 @@ interface Session {
 let chatPanel: vscode.WebviewView | null = null;
 let modelsPanel: vscode.WebviewPanel | null = null;
 
+// Transcript persistence: the chat webview keeps its transcript in DOM/JS
+// memory only, and VS Code may dispose a hidden sidebar WebviewView (e.g.
+// the user switches to the Explorer tab). Every transcript message posted to
+// the chat is mirrored here so the "chatReady" handshake can replay it when
+// the view (re)loads. Chrome messages (state, binding, session-resume) skip
+// persistence — the view re-sends them fresh on every handshake.
+const chatHistory = new ChatHistory();
+
 // Module-level extension context for event handlers (e.g. the prove-it
 // flow in onSidecarEvent) that don't receive it as a parameter.
 let extContext: vscode.ExtensionContext | null = null;
@@ -448,14 +457,17 @@ function publishBinding(): void {
     ? { ...binding, provider: session?.displayProvider ?? binding["provider"] }
     : null;
   updateStatusBar(); // reads session.ready.binding + settingsDirty directly
-  postToChat({ type: "bindingChanged", binding: display, settingsDirty: stale });
+  postToChat({ type: "bindingChanged", binding: display, settingsDirty: stale }, false);
   postToModelsPanel({ type: "bindingChanged", binding: display, settingsDirty: stale });
   refreshViews(); // tree views re-render from the live session
 }
 
 // ------------------------------------------------------------------ chat webview
 
-function postToChat(msg: unknown): void {
+function postToChat(msg: unknown, persist = true): void {
+  if (persist) {
+    chatHistory.push(msg);
+  }
   chatPanel?.webview.postMessage(msg);
 }
 
@@ -494,6 +506,7 @@ async function openExternal(url: unknown): Promise<void> {
 // as connectError.
 function postChatState(extra: Record<string, unknown> = {}): void {
   const binding = (session?.ready?.["binding"] ?? {}) as Record<string, unknown>;
+  // Chrome, not transcript: the view re-sends fresh state on every resolve.
   postToChat({
     type: "state",
     connected: !!session?.ready,
@@ -508,7 +521,7 @@ function postChatState(extra: Record<string, unknown> = {}): void {
     activeMode: cachedActiveMode,
     settingsDirty: settingsDirty,
     ...extra,
-  });
+  }, false);
 }
 
 // Model discovery shared by the Models & Providers panel ("fetchModels")
@@ -529,6 +542,78 @@ async function runModelDiscovery(
   } catch (e) {
     return { ok: false, models: [], error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+interface ModelPickItem extends vscode.QuickPickItem {
+  pickKind: "model" | "manual" | "panel";
+  modelId?: string;
+}
+
+// Header model picker: the chat-header provider pill switches models
+// without a Settings trip. Uses the same endpoint discovery as the Models
+// panel; when discovery fails the panel still offers the current model,
+// manual entry, and a shortcut to Models & Providers. Writing awino.model
+// marks settings dirty and the Spec 3.1 flow offers the reconnect.
+async function pickModelFromHeader(context: vscode.ExtensionContext): Promise<void> {
+  const cfg = vscode.workspace.getConfiguration("awino");
+  const provider = String(cfg.get<string>("provider", "") || "");
+  const endpoint = String(cfg.get<string>("endpoint", "") || "");
+  const current = String(cfg.get<string>("model", "") || "");
+  if (!provider || provider.toLowerCase() === "echo") {
+    // No real provider — the Models panel is the right destination.
+    await vscode.commands.executeCommand("awino.openModels");
+    return;
+  }
+  const keyName =
+    provider === "anthropic" ? KEY_ANTHROPIC : provider === "bedrock" ? KEY_BEDROCK : KEY_OPENAI;
+  const key = (await context.secrets.get(keyName)) ?? undefined;
+  const found = await runModelDiscovery(context, provider, endpoint, key);
+  const items: ModelPickItem[] = [];
+  const seen = new Set<string>();
+  const pushModel = (id: string) => {
+    const trimmed = id.trim();
+    if (!trimmed || seen.has(trimmed)) return;
+    seen.add(trimmed);
+    items.push({
+      pickKind: "model",
+      modelId: trimmed,
+      label: (trimmed === current ? "$(check) " : "") + trimmed,
+      description: trimmed === current ? "current" : undefined,
+    });
+  };
+  if (current) pushModel(current);
+  if (found.ok) found.models.forEach(pushModel);
+  items.push({ pickKind: "manual", label: "$(pencil) Enter model ID manually…", alwaysShow: true });
+  items.push({ pickKind: "panel", label: "$(gear) Open Models & Providers…", alwaysShow: true });
+  const placeholder = found.ok
+    ? `Model for ${provider} — ${found.models.length} found${current ? `, current: ${current}` : ""}`
+    : `Model for ${provider}${found.error ? ` — discovery: ${found.error}` : ""}`;
+  const picked = await vscode.window.showQuickPick(items, {
+    title: "Awino model",
+    placeHolder: placeholder,
+    ignoreFocusOut: true,
+  });
+  if (!picked) return;
+  if (picked.pickKind === "panel") {
+    await vscode.commands.executeCommand("awino.openModels");
+    return;
+  }
+  let next: string | undefined;
+  if (picked.pickKind === "manual") {
+    next = await vscode.window.showInputBox({
+      title: "Awino model",
+      prompt: `Model ID for provider "${provider}"`,
+      value: current,
+      ignoreFocusOut: true,
+    });
+    if (!next) return;
+    next = next.trim();
+    if (!next) return;
+  } else {
+    next = picked.modelId;
+  }
+  if (!next || next === current) return;
+  await cfg.update("model", next, vscode.ConfigurationTarget.Workspace);
 }
 
 class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -555,12 +640,9 @@ class ChatViewProvider implements vscode.WebviewViewProvider {
     view.onDidDispose(() => {
       chatPanel = null;
     });
-    // initial state push (connect() re-pushes with fresh key/wizard state)
-    postChatState();
-    // reopening the view while connected: re-render the resume block too
-    if (session?.ready) {
-      void postSessionResume();
-    }
+    // Transcript/state delivery happens on the webview's "chatReady"
+    // handshake (see handleChatMessage): the view's scripts must be loaded
+    // before postMessage can be received, so nothing is pushed here.
   }
 }
 
@@ -573,10 +655,32 @@ async function handleChatMessage(
   context: vscode.ExtensionContext,
   m: { type: string; [k: string]: unknown }
 ): Promise<void> {
+  // "chatReady": the webview's scripts are loaded and its message listener
+  // is live. (Re)deliver everything the view needs: the retained transcript
+  // first (tab switches must not wipe the session view), then fresh chrome
+  // (header pill, resume block) rendered from current host state.
+  if (m.type === "chatReady") {
+    chatPanel?.webview.postMessage({ type: "beginReplay" });
+    chatHistory.replay((msg) => chatPanel?.webview.postMessage(msg));
+    chatPanel?.webview.postMessage({ type: "endReplay" });
+    postChatState();
+    if (session?.ready) {
+      await postSessionResume();
+    }
+    return;
+  }
   // "models" opens the Models & Providers panel and needs no session — it is
   // the escape hatch when there is no model connected (e.g. missing API key).
   if (m.type === "models") {
     await vscode.commands.executeCommand("awino.openModels");
+    return;
+  }
+  // "pickModel" is the chat-header model picker: switch models directly
+  // from the provider pill, without opening Settings or the Models panel.
+  // Changing awino.model marks settings dirty; the existing Spec 3.1 flow
+  // then offers the reconnect.
+  if (m.type === "pickModel") {
+    await pickModelFromHeader(context);
     return;
   }
   // "openExternal" opens allowlisted provider pages (key creation, docs) and
@@ -1038,7 +1142,8 @@ async function postSessionResume(): Promise<void> {
   }
   try {
     const summary = (await query("session_resume")) as Record<string, unknown>;
-    postToChat({ type: "sessionResume", summary });
+    // Chrome, not transcript: re-queried fresh on every view resolve.
+    postToChat({ type: "sessionResume", summary }, false);
   } catch (e) {
     log(`session resume failed: ${e}`);
   }
@@ -2771,7 +2876,12 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerTreeDataProvider("awino.context", contextView),
     vscode.window.registerTreeDataProvider("awino.modes", modesView),
     vscode.window.registerTreeDataProvider("awino.tasks", tasksView),
-    vscode.window.registerWebviewViewProvider("awino.chat", new ChatViewProvider(context))
+    // retainContextWhenHidden: keep the webview DOM alive when the user
+    // switches tabs (Explorer etc.). The host-side transcript replay on
+    // the "chatReady" handshake is the recovery path if the webview is
+    // still ever recreated.
+    vscode.window.registerWebviewViewProvider("awino.chat", new ChatViewProvider(context),
+      { webviewOptions: { retainContextWhenHidden: true } })
   );
 
   statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
