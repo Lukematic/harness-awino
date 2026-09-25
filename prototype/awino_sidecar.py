@@ -1128,7 +1128,9 @@ def _emit(obj: dict) -> None:
 
 
 def _err(message: str) -> None:
-    _emit({"event": "error", "message": message})
+    # Protocol/stream errors are non-fatal: the process is alive, only the
+    # command failed. A dead process is reported by the client (fatal: true).
+    _emit({"event": "error", "message": message, "fatal": False})
 
 
 _DIFF_MAX_LINES = 200
@@ -1259,6 +1261,26 @@ class Sidecar:
             _err(f"workspace is not a directory: {ws!r}")
             return
         self.workspace = wsp  # set early: binding resolution reads .awino/
+        # 0.5.0 migration: that release auto-generated a template
+        # providers.yaml on first hello. A template-identical file would now
+        # silently override the user's VS Code provider settings — move it
+        # aside so the settings apply. A user-edited file is never touched
+        # (byte-identity check against the 0.5.0 template).
+        _pyaml = wsp / ".awino" / "providers.yaml"
+        if _pyaml.is_file():
+            try:
+                if _pyaml.read_bytes() == _PROVIDERS_YAML_TEMPLATE.encode("utf-8"):
+                    _bak = _pyaml.with_name("providers.yaml.autogen-bak")
+                    _pyaml.rename(_bak)
+                    print("hello: renamed auto-generated providers.yaml -> "
+                          f"{_bak.name}", file=sys.stderr)
+                    _emit({"event": "warning",
+                           "message": "removed auto-generated providers.yaml "
+                                      "from 0.5.0 — your VS Code provider "
+                                      "settings now apply"})
+            except OSError as e:  # noqa: BLE001 - never break hello
+                print(f"hello: providers.yaml migration check failed: "
+                      f"{type(e).__name__}: {e}", file=sys.stderr)
         # Persisted environment choice (explicit user action) applies when
         # hello does not name one.
         env_cmd = dict(cmd)
@@ -1271,6 +1293,21 @@ class Sidecar:
             self.workspace = None
             _err(f"provider binding failed: {binding['error']}")
             return
+        # Override visibility: a project-file binding that contradicts the
+        # provider/model hello explicitly carried (i.e. the user's VS Code
+        # settings) must not be silent — name the file that won.
+        if binding.get("source") == "project-file":
+            for _field in ("provider", "model"):
+                _asked = cmd.get(_field)
+                _used = binding.get(_field)
+                if (isinstance(_asked, str) and _asked.strip() and _used
+                        and str(_asked).strip().lower()
+                        != str(_used).strip().lower()):
+                    _emit({"event": "warning",
+                           "message": f"`.awino/providers.yaml` (environment "
+                                      f"'{binding.get('environment')}') "
+                                      f"overrode VS Code setting {_field} "
+                                      f"'{_asked}' → using '{_used}'"})
         try:
             backend, key_status = self._apply_binding(binding, env_cmd)
         except ValueError as e:
@@ -1295,16 +1332,8 @@ class Sidecar:
         # every reconnect. Never breaks hello: an attach failure is recorded
         # (not swallowed) so tasks_list can report it instead of showing a
         # misleadingly empty panel.
-        self._registry_attach_error: str | None = None
-        try:
-            from registry import Registry
-            _awd = wsp / ".awino"
-            if _awd.is_dir():
-                _reg = Registry(_awd)
-                _reg.ensure()
-                self.loop.registry = _reg
-        except Exception as e:  # noqa: BLE001 - never break hello
-            self._registry_attach_error = f"{type(e).__name__}: {e}"
+        self._registry_attach_error = None
+        self._ensure_registry()
         self.provider = binding["provider"]
         self.model_desc = getattr(backend, "model", self.provider)
         self._binding = dict(binding)
@@ -2080,10 +2109,12 @@ class Sidecar:
         # providers.yaml: per-environment provider bindings (YAML is the
         # explicit plain-text exception to the JSON/Markdown FAIR rule —
         # provider configs are conventionally YAML).
+        # NOTE: Do NOT auto-generate this file. VS Code settings are the
+        # source of truth unless the user created .awino/providers.yaml,
+        # which takes precedence by design (project-local override).
         pyaml = base / "providers.yaml"
-        if not pyaml.is_file():
-            pyaml.write_text(_PROVIDERS_YAML_TEMPLATE)
-            actions.append("wrote .awino/providers.yaml (template)")
+        if pyaml.is_file():
+            actions.append("found .awino/providers.yaml (user-configured)")
         for d in self._HOUSEKEEPING_DIRS:
             p = base / d
             if not p.is_dir():
@@ -2415,6 +2446,28 @@ class Sidecar:
     # ------------------------------------------------- contract augmentation
     def _awino_dir(self) -> Path:
         return self.workspace / ".awino"
+
+    def _ensure_registry(self):
+        """Attach the file-backed registry when not already attached.
+
+        Returns the registry, or None when attachment failed (the failure is
+        recorded in self._registry_attach_error, never swallowed). Never
+        raises.
+        """
+        reg = getattr(self.loop, "registry", None)
+        if reg is not None:
+            return reg
+        try:
+            from registry import Registry
+            awd = self._awino_dir()
+            awd.mkdir(parents=True, exist_ok=True)
+            reg = Registry(awd)
+            reg.ensure()
+            self.loop.registry = reg
+            return reg
+        except Exception as e:  # noqa: BLE001 - never break callers
+            self._registry_attach_error = f"{type(e).__name__}: {e}"
+            return None
 
     def sidecar_sections(self) -> str:
         """Operator-owned sections appended to every compiled contract."""
@@ -2994,24 +3047,28 @@ class Sidecar:
         # in the registry tracker so progress on it is tracked. The caller
         # is told whether registration succeeded; a silent failure here
         # used to read as a clean save.
-        reg = getattr(self.loop, "registry", None)
+        reg = self._ensure_registry()
         task_registered = False
+        registry_error: str | None = None
         if reg is not None:
             try:
                 reg.add_task(f"execute seed '{name}' ({p.name})",
                              source=f"seed:{slug}", state="open")
                 task_registered = True
             except Exception as e:  # noqa: BLE001 — log, don't silently fail
+                registry_error = f"{type(e).__name__}: {e}"
                 import sys
-                print(f"seed_save: add_task failed: {type(e).__name__}: {e}",
+                print(f"seed_save: add_task failed: {registry_error}",
                       file=sys.stderr)
         else:
+            registry_error = (getattr(self, "_registry_attach_error", None)
+                              or "no registry attached (loop.registry is None)")
             import sys
-            print("seed_save: no registry attached (loop.registry is None)",
-                  file=sys.stderr)
+            print(f"seed_save: {registry_error}", file=sys.stderr)
         self.loop.state.persist_snapshot()
         return {"status": "ok", "seed": p.name, "overwrote": existed,
-                "task_registered": task_registered}
+                "task_registered": task_registered,
+                "registry_error": registry_error}
 
     def _cmd_bootstrap(self, args: dict) -> dict:
         """Re-run the project startup checklist on demand (Track A)."""

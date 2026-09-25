@@ -110,7 +110,9 @@ export class SidecarClient extends EventEmitter {
         // otherwise reads as a mysterious "not connected".
         const detail = e instanceof Error ? e.message : String(e);
         const msg = `sidecar spawn failed: ${detail} (interpreter "${opts.python}")`;
-        this.emit("event", { event: "error", message: msg });
+        // Fatal: the process never started — the UI must drop the session,
+        // never sit falsely "connected".
+        this.emit("event", { event: "error", fatal: true, message: msg });
         reject(new Error(msg));
       });
       proc.on("exit", (code, signal) => {
@@ -122,6 +124,9 @@ export class SidecarClient extends EventEmitter {
         const when = this.readySeen ? "exited" : "exited immediately";
         const ev = {
           event: "error",
+          // Fatal: the process died — the UI must drop the session, never
+          // sit falsely "connected".
+          fatal: true,
           message:
             `sidecar ${when} (code=${code}, signal=${signal}, interpreter "${opts.python}")` +
             (tail ? `: ${tail}` : ""),

@@ -281,7 +281,16 @@ function updateStatusBar(): void {
   const env = String(binding["environment"] ?? "(global)");
   const modeId = String(mode["id"] ?? "?");
   const persona = session.lastStatus?.["persona"] as Record<string, unknown> | null;
-  statusBar.text = `$(hubot) ${provider} · ${env} · ${modeId}${persona ? ` · ${persona["skill"]}` : ""}`;
+  // Binding-source trust: when the active binding did NOT come from the
+  // global VS Code settings, say so in the visible text — a project-file or
+  // named-environment override must be visible at a glance, not discoverable
+  // only in the tooltip.
+  const bindingSource = String(binding["source"] ?? "global-settings");
+  const sourceLabel =
+    bindingSource === "project-file" ? " (project file)"
+    : bindingSource === "named-environment" ? " (named env)"
+    : "";
+  statusBar.text = `$(hubot) ${provider} · ${env}${sourceLabel} · ${modeId}${persona ? ` · ${persona["skill"]}` : ""}`;
   statusBar.tooltip = [
     `provider: ${provider}`,
     `model: ${String(binding["model"] ?? session.ready["model"] ?? "?")}`,
@@ -562,7 +571,33 @@ async function onSidecarEvent(ev: SidecarEvent): Promise<void> {
       break;
     case "error":
       log(`sidecar error: ${String(ev.message)}`);
-      postToChat({ type: "event", payload: ev });
+      if (ev.fatal === true) {
+        // Fatal: the sidecar process is dead (spawn failure or unexpected
+        // exit). It must not leave the UI falsely "connected": reject the
+        // pending queries (same as disconnect()), clear the session, and
+        // push the disconnected state to the status bar, chat, and views.
+        waiters.forEach((w) => {
+          clearTimeout(w.timer);
+          w.reject(new Error("disconnected"));
+        });
+        waiters = [];
+        session = null;
+        updateStatusBar();
+        refreshViews();
+        postChatState();
+        postToChat({ type: "event", payload: ev });
+        void vscode.window
+          .showErrorMessage(`Awino: sidecar error — ${String(ev.message)}.`, "Reconnect")
+          .then((choice) => {
+            if (choice === "Reconnect") {
+              void vscode.commands.executeCommand("awino.reconnect");
+            }
+          });
+      } else {
+        // Non-fatal: protocol or stream errors — the process is alive, only
+        // the command failed. Surface it in the chat, keep the session.
+        postToChat({ type: "event", payload: ev });
+      }
       break;
     case "bye":
       break;
@@ -813,7 +848,13 @@ async function doConnectInner(
   log(`sidecar interpreter: ${interp.python} (source: ${interp.source})`);
   const client = new SidecarClient();
   client.on("log", (s: string) => output.append(s.replace(/\n$/, "")));
-  client.on("event", (ev: SidecarEvent) => void onSidecarEvent(ev));
+  // Bind the handler to this client's identity: a stale old-process exit
+  // event arriving after a newer session connected must not clobber it.
+  client.on("event", (ev: SidecarEvent) => {
+    if (session?.client === client) {
+      void onSidecarEvent(ev);
+    }
+  });
   session = {
     client,
     alwaysAllow: new Set(),
@@ -1007,11 +1048,19 @@ function registerCommands(context: vscode.ExtensionContext): void {
       return;
     }
     // The seed file is written even when registry task registration fails —
-    // say so instead of reporting a clean save.
+    // say so instead of reporting a clean save, with the sidecar's reason
+    // (registry_error) in the notification and the Output channel.
+    const registryError =
+      r["task_registered"] === false ? String(r["registry_error"] ?? "") : "";
     const trackingNote =
-      r["task_registered"] === false ? " (task tracking failed — see log)" : "";
+      r["task_registered"] === false
+        ? ` (task tracking failed${registryError ? `: ${registryError}` : ""})`
+        : "";
     if (r["task_registered"] === false) {
-      log("seed_save: seed file written but registry task registration failed");
+      log(
+        `seed_save: seed file written but registry task registration failed` +
+          (registryError ? `: ${registryError}` : "")
+      );
     }
     vscode.window.showInformationMessage(`Awino: seed saved as ${name}${trackingNote}`);
     refreshViews(); // the Tasks panel mirrors the seed-registered task

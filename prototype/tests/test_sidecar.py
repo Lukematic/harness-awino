@@ -576,10 +576,58 @@ class ContextSeedsTest(unittest.TestCase):
         r = s._cmd_seed_save({"name": "No Registry Seed"})
         self.assertEqual(r["status"], "ok")
         self.assertEqual(r["seed"], "no-registry-seed.md")
-        self.assertFalse(r["task_registered"])
+        # FIX: With lazy-attach, the registry is attached on-demand, so
+        # task_registered is now True (the bug was that it was False).
+        self.assertTrue(r["task_registered"])
+        self.assertIsNone(r["registry_error"])
         # The seed file itself still saved.
         self.assertTrue((Path(tmp) / ".awino" / "seeds" /
                          "no-registry-seed.md").exists())
+
+    def test_seed_save_reports_registry_attach_failure_detail(self):
+        # MAJOR 3: a corrupt/unreadable registry must not read as a clean
+        # save — task_registered is False with the reason in registry_error,
+        # while the seed file still saves and status stays "ok".
+        import shutil
+        import tempfile
+        import types
+        from pathlib import Path
+        from unittest import mock
+        import awino_sidecar
+        import registry
+
+        class _FakeState:
+            def __init__(self):
+                self.snapshot = {"mission": {
+                    "text": "Do things",
+                    "done_criteria": [{"kind": "manual"}]}}
+
+            def record(self, *a, **k):
+                pass
+
+            def persist_snapshot(self):
+                pass
+
+        tmp = tempfile.mkdtemp(prefix="awino-seedregfail-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        s = awino_sidecar.Sidecar()
+        s.workspace = Path(tmp)
+        s.loop = types.SimpleNamespace(registry=None, state=_FakeState())
+
+        class _BrokenRegistry:
+            def __init__(self, *a, **k):
+                raise RuntimeError("registry store is corrupt")
+
+        with mock.patch.object(registry, "Registry", _BrokenRegistry):
+            r = s._cmd_seed_save({"name": "Broken Registry Seed"})
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(r["seed"], "broken-registry-seed.md")
+        self.assertFalse(r["task_registered"])
+        self.assertTrue(r["registry_error"])
+        self.assertIn("corrupt", r["registry_error"])
+        # The seed file itself still saved despite the registry failure.
+        self.assertTrue((Path(tmp) / ".awino" / "seeds" /
+                         "broken-registry-seed.md").exists())
 
     def test_bad_seed_reported(self):
         seeds_dir = os.path.join(self.c.ws, ".awino", "seeds")
