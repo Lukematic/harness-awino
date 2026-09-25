@@ -1374,6 +1374,10 @@ async function invokeModeFlow(presetModeId?: string): Promise<void> {
     vscode.window.showInformationMessage(`Awino: mode invoked — ${modeId} (${scope})`);
   }
   refreshViews();
+  // The status bar shows the active mode from session.lastStatus — refresh
+  // it now so the invoked mode appears immediately instead of lagging
+  // until the next turn completion triggers a status refresh.
+  await refreshStatus();
   // The header dropdown needs the new active mode.
   void refreshModesCache();
 }
