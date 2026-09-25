@@ -112,7 +112,10 @@ class TestHostileAttacks(unittest.TestCase):
         flags = [e for e in loop.state.events if e["type"] == "drift_flagged"]
         self.assertEqual(len(flags), 1)
         self.assertTrue(any("shifted" in q for q in loop.state.snapshot["open_questions"]))
-        self.assertEqual(r["status"], "ok")  # flagged, not blocked (heuristic)
+        # v0.6: the hostile objective shift is BLOCKED (escalated to the
+        # operator), not let through — the flag is the detection, the
+        # escalation is the protection.
+        self.assertEqual(r["status"], "escalated")
 
 
 if __name__ == "__main__":

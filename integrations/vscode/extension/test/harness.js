@@ -157,9 +157,21 @@ async function main() {
   console.log("ok 3a - approval_requested with diff, file not yet written");
 
   // approve -> file on disk, journal records it
+  // v0.6: the recursive loop continues to the next round after the
+  // write_file; if that round also needs approval (run_command), approve
+  // it too before expecting the turn to complete.
   p = client.waitFor((e) => e.event === "turn_result", 60000);
+  const papNext = client.waitFor((e) => e.event === "approval_requested", 60000);
   client.approve(item.id, "approve");
   tr = await p;
+  if (tr.result.status === "awaiting_approval") {
+    // v0.6 multi-round: the next round's tool needs approval as well.
+    const ap2 = await papNext;
+    const item2 = ap2.approvals[0];
+    p = client.waitFor((e) => e.event === "turn_result", 60000);
+    client.approve(item2.id, "approve");
+    tr = await p;
+  }
   assert.strictEqual(tr.result.status, "ok", "resumed turn ok");
   // write_file uses Python text mode: on Windows the \n becomes \r\n on
   // disk, so normalize before comparing.

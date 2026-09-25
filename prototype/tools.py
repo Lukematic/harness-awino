@@ -10,8 +10,10 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 import stat
 import subprocess
+import time
 from pathlib import Path
 
 TOOL_DEFS = {
@@ -20,6 +22,18 @@ TOOL_DEFS = {
     "patch_file": {"consequential": True, "args": ["path", "diff"]},
     "list_dir": {"consequential": False, "args": []},
     "run_command": {"consequential": False, "args": ["cmd"]},
+    # v0.6 project-context tools: read-only by construction, never write.
+    "search_files": {"consequential": False, "args": ["pattern"]},
+    "find_symbol": {"consequential": False, "args": ["name"]},
+    "git_status": {"consequential": False, "args": []},
+    "git_diff": {"consequential": False, "args": []},
+    "diagnostics": {"consequential": False, "args": []},
+    # v0.6 harness tools: intercepted by the loop, never reach the sandbox.
+    "attempt_completion": {"consequential": False, "args": ["summary"],
+                           "harness": True},
+    "task_add": {"consequential": False, "args": ["title"], "harness": True},
+    "task_update": {"consequential": False, "args": ["id", "status"],
+                    "harness": True},
 }
 
 
@@ -231,13 +245,19 @@ def _apply_hunks(orig_lines: list[str], hunks: list[dict]) -> list[str]:
 
 
 class Sandbox:
-    def __init__(self, root: str | Path, venv_bin: str | Path | None = None):
+    def __init__(self, root: str | Path, venv_bin: str | Path | None = None,
+                 project_root: str | Path | None = None):
         # Resolve the root: on Windows, Temp paths may use 8.3 short names
         # (e.g. RUNNER~1) while Path.resolve() returns the long form. If
         # root is unresolved, _resolve()'s parent check compares short vs
         # long and falsely rejects every path as "escapes sandbox".
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
+        # v0.6: the project root for git tools. Defaults to the sandbox
+        # root (the prototype's sandbox IS the project); the extension
+        # passes the workspace folder.
+        self.project_root = Path(project_root).resolve() if project_root \
+            else self.root
         self._manifest: dict[str, str] = {}  # Phase B: path -> sha256 of writes
         # Track A (project bootstrap): when a project .venv exists, every
         # command resolves the venv's bin/ first so the venv python is used
@@ -356,7 +376,8 @@ class Sandbox:
                 problems.append(f"{path}: hash mismatch (modified externally)")
         return (not problems, problems)
 
-    def run_command(self, cmd: str, timeout: int = 30) -> dict:
+    def run_command(self, cmd: str, timeout: int = 30,
+                    cancel=None) -> dict:
         """Run a shell command with cwd confined to the sandbox.
 
         Track A: when venv_bin is set (project bootstrap found/created a
@@ -366,7 +387,12 @@ class Sandbox:
         shell=True, i.e. sh on POSIX and cmd.exe on Windows — keep
         commands portable (no Unix-only builtins, no sh-only syntax).
 
-        Returns {"cmd", "exit_code", "stdout", "stderr"}. Output truncated.
+        v0.6: subprocess.run is replaced by Popen + a 50ms poll loop so a
+        CancelToken can pre-empt a long-running command: terminate, 2s
+        grace, then kill. Result shapes are unchanged otherwise:
+        {"cmd", "exit_code", "stdout", "stderr"}, plus "cancelled": True
+        (exit 130) on pre-emption. Timeout path unchanged (exit 124).
+        Output truncated.
         """
         env = None
         if self.venv_bin and self.venv_bin.is_dir():
@@ -375,19 +401,47 @@ class Sandbox:
                            + env.get("PATH", ""))
             env["VIRTUAL_ENV"] = str(self.venv_bin.parent)
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 cmd, shell=True, cwd=self.root,
-                capture_output=True, text=True, timeout=timeout,
-                env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, env=env,
             )
-        except subprocess.TimeoutExpired:
-            return {"cmd": cmd, "exit_code": 124,
-                    "stdout": "", "stderr": f"timed out after {timeout}s"}
         except OSError as exc:
             return {"cmd": cmd, "exit_code": 127,
                     "stdout": "", "stderr": str(exc)}
+        start = time.monotonic()
+        cancelled = False
+        while True:
+            try:
+                proc.wait(timeout=0.05)
+                break
+            except subprocess.TimeoutExpired:
+                pass
+            if cancel is not None and cancel.is_set():
+                cancelled = True
+                break
+            if time.monotonic() - start >= timeout:
+                break
+        if cancelled:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            out, err = proc.communicate()
+            return {"cmd": cmd, "exit_code": 130, "cancelled": True,
+                    "stdout": out[-2000:], "stderr": err[-2000:]}
+        if proc.poll() is None:
+            # Timeout: kill and reap. stdout is discarded (historical
+            # shape); the stderr carries the timeout note.
+            proc.kill()
+            proc.wait()
+            return {"cmd": cmd, "exit_code": 124,
+                    "stdout": "", "stderr": f"timed out after {timeout}s"}
+        out, err = proc.communicate()
         return {"cmd": cmd, "exit_code": proc.returncode,
-                "stdout": proc.stdout[-2000:], "stderr": proc.stderr[-2000:]}
+                "stdout": out[-2000:], "stderr": err[-2000:]}
 
     def list_dir(self, path: str = "") -> dict:
         p = self._resolve(path)
@@ -398,3 +452,235 @@ class Sandbox:
         if not p.is_dir():
             return {"error": f"not a directory: {path}"}
         return {"path": path or ".", "entries": sorted(x.name for x in p.iterdir())}
+
+    # ------------------------------------------------- v0.6 project-context
+    # tools. Read-only by construction: they never write. Timeouts are
+    # hard (15s) — a slow search returns {"error": "timed out"}, never a
+    # hang. Args arrive as JSON scalars; top_k is coerced defensively.
+
+    @staticmethod
+    def _coerce_top_k(top_k, default: int = 50) -> int:
+        try:
+            n = int(top_k)
+        except (TypeError, ValueError):
+            return default
+        return max(1, min(200, n))
+
+    def search_files(self, pattern: str, path: str = "",
+                     file_glob: str = "", top_k=50) -> dict:
+        """Regex search over file contents. ripgrep when available, else
+        stdlib os.walk + re. Returns {matches: [{file, line, text}],
+        truncated: bool}."""
+        try:
+            base = self._resolve(path or "")
+        except ValueError as ex:
+            return {"error": str(ex)}
+        if not base.is_dir():
+            return {"error": f"not a directory: {path or '.'}"}
+        limit = self._coerce_top_k(top_k)
+        try:
+            rx = re.compile(pattern)
+        except re.error as ex:
+            return {"error": f"invalid regex: {ex}"}
+        matches: list[dict] = []
+        truncated = False
+        rg = shutil.which("rg")
+        if rg:
+            cmd = [rg, "-n", "--no-heading", "-m", str(limit)]
+            if file_glob:
+                cmd += ["-g", file_glob]
+            cmd += ["-e", pattern, str(base)]
+            try:
+                p = subprocess.run(cmd, capture_output=True, text=True,
+                                   timeout=15)
+            except subprocess.TimeoutExpired:
+                return {"error": "timed out"}
+            except OSError as ex:
+                return {"error": str(ex)}
+            for line in p.stdout.splitlines():
+                # rg -n format: file:line:text
+                parts = line.split(":", 2)
+                if len(parts) != 3:
+                    continue
+                f, ln, text = parts
+                try:
+                    ln_no = int(ln)
+                except ValueError:
+                    continue
+                try:
+                    f = str(Path(f).resolve().relative_to(self.root))
+                except ValueError:
+                    pass  # keep the absolute path if it escapes the root
+                matches.append({"file": f, "line": ln_no,
+                                "text": text[:300]})
+                if len(matches) >= limit:
+                    break
+            truncated = len(matches) >= limit and bool(p.stdout.strip())
+        else:
+            deadline = time.monotonic() + 15
+            for root, _dirs, files in os.walk(base):
+                if time.monotonic() > deadline:
+                    return {"error": "timed out"}
+                for fn in files:
+                    if len(matches) >= limit:
+                        truncated = True
+                        break
+                    fp = Path(root) / fn
+                    try:
+                        text = fp.read_text(errors="strict")
+                    except (OSError, UnicodeError, ValueError):
+                        continue
+                    for i, ln in enumerate(text.splitlines(), 1):
+                        if rx.search(ln):
+                            matches.append({
+                                "file": str(fp.relative_to(self.root)),
+                                "line": i, "text": ln[:300]})
+                            if len(matches) >= limit:
+                                truncated = True
+                                break
+                    if truncated:
+                        break
+                if truncated:
+                    break
+        return {"pattern": pattern, "matches": matches,
+                "truncated": truncated}
+
+    def find_symbol(self, name: str, path: str = "") -> dict:
+        """Find function/class definitions by name. Python files are parsed
+        with ast (exact match, then substring); other files fall back to a
+        `^(def|class)\\s+name` ripgrep scan. Returns {symbols: [...]}."""
+        try:
+            base = self._resolve(path or "")
+        except ValueError as ex:
+            return {"error": str(ex)}
+        if not base.is_dir():
+            return {"error": f"not a directory: {path or '.'}"}
+        symbols: list[dict] = []
+        deadline = time.monotonic() + 15
+        import ast as _ast
+        for root, _dirs, files in os.walk(base):
+            if time.monotonic() > deadline:
+                return {"error": "timed out", "symbols": symbols}
+            for fn in files:
+                fp = Path(root) / fn
+                rel = str(fp.relative_to(self.root))
+                if fp.suffix == ".py":
+                    try:
+                        tree = _ast.parse(fp.read_text(errors="strict"))
+                    except (OSError, SyntaxError, ValueError):
+                        continue
+                    for node in _ast.walk(tree):
+                        if isinstance(
+                                node, (_ast.FunctionDef, _ast.AsyncFunctionDef,
+                                       _ast.ClassDef)):
+                            kind = ("class" if isinstance(node, _ast.ClassDef)
+                                    else "function")
+                            if node.name == name or name in node.name:
+                                symbols.append({
+                                    "file": rel, "line": node.lineno,
+                                    "kind": kind, "name": node.name,
+                                    "exact": node.name == name})
+                if len(symbols) >= 200:
+                    return {"symbols": symbols, "truncated": True}
+        # Non-Python fallback via ripgrep when nothing found and rg exists.
+        if not symbols and shutil.which("rg"):
+            try:
+                p = subprocess.run(
+                    [shutil.which("rg"), "-n", "--no-heading",
+                     rf"^\s*(def|class)\s+{re.escape(name)}\b", str(base)],
+                    capture_output=True, text=True, timeout=15)
+            except (subprocess.TimeoutExpired, OSError):
+                p = None
+            if p:
+                for line in p.stdout.splitlines()[:200]:
+                    parts = line.split(":", 2)
+                    if len(parts) != 3:
+                        continue
+                    f, ln, text = parts
+                    try:
+                        ln_no = int(ln)
+                    except ValueError:
+                        continue
+                    try:
+                        f = str(Path(f).resolve().relative_to(self.root))
+                    except ValueError:
+                        pass
+                    kind = "class" if "class" in text.split()[:2] else "function"
+                    symbols.append({"file": f, "line": ln_no, "kind": kind,
+                                    "name": name, "exact": True})
+        # Exact matches first.
+        symbols.sort(key=lambda s: (not s.get("exact"), s["file"], s["line"]))
+        return {"name": name, "symbols": symbols[:200],
+                "truncated": len(symbols) > 200}
+
+    def _git(self, *args, timeout: int = 15):
+        """Run git in the project root. Returns (ok, output)."""
+        try:
+            p = subprocess.run(["git", "-C", str(self.project_root), *args],
+                               capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return False, "timed out"
+        except OSError as ex:
+            return False, str(ex)
+        return p.returncode == 0, p.stdout
+
+    def git_status(self) -> dict:
+        """git status --porcelain, capped at 200 lines. Non-git dir is an
+        informational {"error": "not a git checkout"}, not a refusal."""
+        ok, out = self._git("status", "--porcelain=v1", "-uall")
+        if not ok:
+            return {"error": "not a git checkout"}
+        lines = out.splitlines()
+        return {"status": lines[:200], "truncated": len(lines) > 200}
+
+    def git_diff(self, path: str = "") -> dict:
+        """git diff HEAD, capped at 400 lines. Binary-safe: falls back to
+        --numstat when the output contains NULs."""
+        args = ["diff", "HEAD", "--"]
+        if path:
+            args.append(path)
+        ok, out = self._git(*args)
+        if not ok:
+            return {"error": "not a git checkout"}
+        if "\x00" in out:
+            ok2, out2 = self._git("diff", "HEAD", "--numstat", "--",
+                                  *( [path] if path else []))
+            out = out2 if ok2 else ""
+            return {"numstat": out.splitlines()[:400],
+                    "truncated": len(out.splitlines()) > 400,
+                    "binary": True}
+        lines = out.splitlines()
+        return {"diff": "\n".join(lines[:400]),
+                "truncated": len(lines) > 400}
+
+    def diagnostics(self, path: str = "") -> dict:
+        """v0.6 = Python only: py_compile every .py file under path and
+        report syntax errors. Returns {diagnostics: [{file, line, message}]}.
+        Extension-supplied language diagnostics arrive in v0.7; the tool
+        shape is forward-compatible."""
+        try:
+            base = self._resolve(path or "")
+        except ValueError as ex:
+            return {"error": str(ex)}
+        if base.is_file():
+            files = [base]
+        elif base.is_dir():
+            files = sorted(base.rglob("*.py"))
+        else:
+            return {"error": f"not found: {path or '.'}"}
+        import py_compile
+        diags: list[dict] = []
+        for fp in files[:500]:
+            try:
+                py_compile.compile(str(fp), doraise=True)
+            except py_compile.PyCompileError as ex:
+                msg = str(ex)
+                line = None
+                m = re.search(r"line (\d+)", msg)
+                if m:
+                    line = int(m.group(1))
+                diags.append({"file": str(fp.relative_to(self.root)),
+                              "line": line, "message": msg[:300]})
+            except (OSError, ValueError):
+                continue
+        return {"diagnostics": diags, "truncated": len(files) > 500}

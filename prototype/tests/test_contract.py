@@ -111,8 +111,17 @@ class TestTypedContract(unittest.TestCase):
         bad = self.good_raw()
         bad["done_claim"] = "yes"
         self.assertRaises(ContractTypeError, coerce_turn_contract, bad)
+        # v0.6 JSON-scalar rule: int/float/bool/None args are VALID;
+        # only lists and dicts are rejected.
+        good = self.good_raw()
+        good["tool_calls"] = [{"name": "x", "args": {"k": 123, "f": 1.5,
+                                                    "b": True, "n": None}}]
+        coerce_turn_contract(good)  # must not raise
         bad = self.good_raw()
-        bad["tool_calls"] = [{"name": "x", "args": {"k": 123}}]
+        bad["tool_calls"] = [{"name": "x", "args": {"k": [1, 2]}}]
+        self.assertRaises(ContractTypeError, coerce_turn_contract, bad)
+        bad = self.good_raw()
+        bad["tool_calls"] = [{"name": "x", "args": {"k": {"nested": 1}}}]
         self.assertRaises(ContractTypeError, coerce_turn_contract, bad)
 
     def test_immutable(self):

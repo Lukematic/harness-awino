@@ -21,9 +21,19 @@ import urllib.request
 class ModelBackend:
     def generate(self, contract_block: str, history: list,
                  feedback: str | None = None,
-                 temperature: float | None = None) -> dict:
+                 temperature: float | None = None,
+                 stream_cb=None,
+                 tools: list | None = None,
+                 cancel=None) -> dict:
         """temperature: per-call sampling override (None = backend default).
-        Backends that cannot sample (echo/scripted) accept and ignore it."""
+        Backends that cannot sample (echo/scripted) accept and ignore it.
+        tools: provider-agnostic schema dicts (tool_schema.schemas_for);
+        when given, backends with native tool-calling translate them
+        (provider_tools.to_provider), merge native calls into the returned
+        turn dict's tool_calls, and validate them against the offered set.
+        cancel: cancel.CancelToken; backends check it before the HTTP call
+        and between stream chunks, raising cancel.Cancelled.
+        """
         raise NotImplementedError
 
 
@@ -89,10 +99,16 @@ class ScriptedBackend(ModelBackend):
                 yield ("said", said)
 
     def generate(self, contract_block, history, feedback=None,
-                 temperature=None, stream_cb=None):
+                 temperature=None, stream_cb=None, tools=None, cancel=None):
+        # v0.6: cancellation is cooperative — a set token aborts before the
+        # (scripted) model call, the same checkpoint a real backend uses.
+        if cancel is not None and cancel.is_set():
+            from cancel import Cancelled
+            raise Cancelled("cancelled before model call")
         self.calls.append({"contract": contract_block, "feedback": feedback,
                            "history_len": len(history),
-                           "temperature": temperature})
+                           "temperature": temperature,
+                           "tools": [t.get("name") for t in (tools or [])]})
         if self.script:
             entry = copy.deepcopy(self.script.pop(0))
         else:
@@ -100,7 +116,17 @@ class ScriptedBackend(ModelBackend):
                                progress_delta="Script exhausted; awaiting direction.")
         chunks = (entry.pop("chunks", None)
                   if isinstance(entry, dict) else None)
+        # v0.6 test hook: a scripted entry may carry "native_tool_calls" in
+        # OpenAI tool_calls shape; they are normalized and merged exactly as
+        # a native backend's calls would be. NormalizationError propagates
+        # to the loop, which turns it into harness-rejection feedback.
+        native = entry.pop("native_tool_calls", None) if isinstance(entry, dict) else None
         turn = _fill_echo(entry, contract_block)
+        if native:
+            from provider_tools import from_provider
+            merged = from_provider("openai", native)
+            turn.setdefault("tool_calls", []).extend(
+                {"name": n, "args": a} for n, a in merged)
         if stream_cb is not None:
             if chunks:
                 for kind, text in self._iter_chunks(chunks):
@@ -140,7 +166,7 @@ class HostileBackend(ModelBackend):
         self.tool_name = tool_name
 
     def generate(self, contract_block, history, feedback=None,
-                 temperature=None):
+                 temperature=None, stream_cb=None, tools=None, cancel=None):
         self.calls.append({"contract": contract_block, "feedback": feedback})
         a = self.attacks[self.i % len(self.attacks)]
         self.i += 1
@@ -247,8 +273,11 @@ class EchoBackend(ModelBackend):
     of the contract block; never calls consequential tools on its own."""
 
     def generate(self, contract_block, history, feedback=None,
-                 temperature=None):
+                 temperature=None, stream_cb=None, tools=None, cancel=None):
         # temperature accepted and ignored: the echo planner is deterministic.
+        if cancel is not None and cancel.is_set():
+            from cancel import Cancelled
+            raise Cancelled("cancelled before model call")
         if feedback:
             return _fill_echo(
                 _base_turn(plan=[], questions=[],
@@ -296,7 +325,9 @@ _OLLAMA_SYSTEM = """You are the model inside the A.W.I.N.O. turn loop. The harne
   ```
 - "objective": the current objective, in your own words.
 - "plan": list of step strings. Use [] when there is no plan.
-- "tool_calls": list of {"name": ..., "args": {...}}. Call ONLY tools the contract lists as offered for the current mode. Available tools: read_file {"path"}, list_dir {} (takes no arguments), run_command {"cmd"}, write_file {"path", "content"} (consequential: propose only when a plan exists and was approved), patch_file {"path", "diff"} (consequential: unified diff applied atomically; same approval and SCOPE rules as write_file).
+- "tool_calls": list of {"name": ..., "args": {...}}. Call ONLY tools the contract lists as offered for the current mode. Available tools: read_file {"path"}, list_dir {} (takes no arguments), run_command {"cmd"}, write_file {"path", "content"} (consequential: propose only when a plan exists and was approved), patch_file {"path", "diff"} (consequential: unified diff applied atomically; same approval and SCOPE rules as write_file), search_files {"pattern"} (regex search over file contents; read-only), find_symbol {"name"} (find function/class definitions; read-only), git_status {} (read-only), git_diff {} (read-only), diagnostics {} (Python syntax check; read-only), attempt_completion {"summary"} (propose completion; the harness verifies every done criterion in code), task_add {"title"} / task_update {"id", "status"} (harness TODO list).
+- Every round, pick ONE coherent step: plan it, act on it with tools, and report what you did in "progress_delta". The harness re-invokes you each round with the tool results, so continue from them instead of repeating a step.
+- "args" values may be strings, numbers, booleans, or null — never nested objects or arrays.
 - "questions": list of question strings when you are blocked; otherwise [].
 - "assumptions": list of assumption strings; otherwise [].
 - "progress_delta": non-empty string describing what this turn does.
@@ -356,32 +387,118 @@ class OllamaBackend(ModelBackend):
         self.last_egress: dict | None = None
 
     def generate(self, contract_block, history, feedback=None,
-                 temperature=None, stream_cb=None):
+                 temperature=None, stream_cb=None, tools=None, cancel=None):
+        # v0.6: cooperative cancellation — a set token aborts before the
+        # HTTP call. A call already in flight cannot be pre-empted (stdlib
+        # HTTP); it completes and the loop halts at the next checkpoint.
+        if cancel is not None and cancel.is_set():
+            from cancel import Cancelled
+            raise Cancelled("cancelled before model call")
+        native_defs = None
+        offered_names: list[str] = []
+        if tools:
+            from provider_tools import to_provider
+            native_defs = to_provider("openai", tools)
+            offered_names = [t["name"] for t in tools]
         self.calls.append({"contract": contract_block[:200], "feedback": feedback,
                            "history_len": len(history),
-                           "temperature": temperature})
+                           "temperature": temperature,
+                           "native_tools": bool(native_defs)})
         expected_header = contract_block.split("\n", 1)[0]
         system = _OLLAMA_SYSTEM.replace("{header}", expected_header)
-        prompt = self._user_prompt(contract_block, history, feedback)
+        prompt = self._user_prompt(contract_block, history, feedback,
+                                   native_tools=bool(native_defs))
+        raw_tool_calls: list = []
+        from cancel import Cancelled  # local import: avoids a hard
+        # dependency at module load; matches the other backend methods.
         try:
-            if stream_cb is not None:
-                text = self._stream_text(prompt, system, stream_cb)
+            if native_defs is not None:
+                # Native tool path: OpenAI-compatible /v1/chat/completions
+                # with function definitions (non-streaming; the envelope
+                # JSON stays the governed carrier).
+                text, raw_tool_calls = self._chat_tools(
+                    prompt, system, native_defs, temperature, cancel)
+                if stream_cb is not None and text:
+                    stream_cb("said", text)
+            elif stream_cb is not None:
+                text = self._stream_text(prompt, system, stream_cb, cancel)
             else:
                 text = self._chat(prompt, system)
+        except Cancelled:
+            # Cooperative cancellation must propagate to the loop driver,
+            # which renders it as a cancelled turn — never as a model error.
+            raise
         except Exception as e:  # server down, timeout, bad payload: safe fallback
             return self._fallback(expected_header, f"backend error: {type(e).__name__}")
         turn = _extract_json(text)
         if not isinstance(turn, dict):
             return self._fallback(expected_header, "model output was not a JSON object")
-        return self._normalize(turn, expected_header)
+        turn = self._normalize(turn, expected_header)
+        if raw_tool_calls:
+            # Merge native calls into the turn's tool_calls as
+            # [{name, args}]; unknown names become validation errors for the
+            # loop (never silent drops). Offered-set check is structural
+            # here: native_defs were built from exactly the offered tools.
+            from provider_tools import from_provider, merge_native_calls, NormalizationError
+            try:
+                native = from_provider("openai", raw_tool_calls)
+            except NormalizationError as ex:
+                turn["_native_tool_errors"] = [str(ex)]
+            else:
+                errs = merge_native_calls(turn, native, offered_names)
+                if errs:
+                    turn["_native_tool_errors"] = errs
+        return turn
 
-    def _stream_text(self, prompt: str, system: str, stream_cb) -> str:
+    def _chat_tools(self, prompt: str, system: str, native_defs: list,
+                    temperature: float | None = None,
+                    cancel=None) -> tuple[str, list]:
+        """OpenAI-compatible chat with native function definitions.
+
+        Returns (message content text, raw message.tool_calls). cancel is
+        checked before the call; a call already in flight runs to completion
+        (stdlib HTTP has no mid-flight abort) and the loop halts after.
+        """
+        body = json.dumps({
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+            "stream": False,
+            "temperature": self.temperature if temperature is None
+                           else temperature,
+            "max_tokens": self.num_predict,
+            "tools": native_defs,
+            "tool_choice": "auto",
+        }).encode()
+        req = urllib.request.Request(
+            self.host + "/v1/chat/completions", data=body,
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            raw = resp.read()
+            payload = json.loads(raw.decode())
+        # Track C: report the network I/O so the loop can journal it.
+        self.last_egress = {"destination": self.host + "/v1/chat/completions",
+                            "bytes_out": len(body), "bytes_in": len(raw)}
+        message = payload["choices"][0]["message"]
+        return message.get("content") or "", message.get("tool_calls") or []
+
+    def _stream_text(self, prompt: str, system: str, stream_cb,
+                     cancel=None) -> str:
         """Drive _chat_stream, forwarding ("thinking"|"said", chunk) to
         stream_cb as chunks arrive. Returns the accumulated ("said", ...)
         text for turn parsing. Thinking chunks are UI-only: they never
-        enter the turn dict, the journal, or the contract."""
+        enter the turn dict, the journal, or the contract.
+
+        v0.6: cancel is checked between chunks; a set token raises
+        cancel.Cancelled so the loop halts instead of streaming on.
+        """
+        from cancel import Cancelled
         parts = []
         for kind, chunk in self._chat_stream(prompt, system):
+            if cancel is not None and cancel.is_set():
+                raise Cancelled("cancelled during model streaming")
             if kind not in ("thinking", "said") or not chunk:
                 continue
             stream_cb(kind, chunk)
@@ -431,13 +548,20 @@ class OllamaBackend(ModelBackend):
             self.last_egress = {"destination": url,
                                 "bytes_out": len(body), "bytes_in": raw_in}
 
-    def _user_prompt(self, contract_block, history, feedback):
+    def _user_prompt(self, contract_block, history, feedback,
+                     native_tools: bool = False):
         lines = [contract_block, "", "--- recent history ---"]
         for h in (history or [])[-6:]:
             lines.append(f"[{h.get('role', '?')}] {str(h.get('text', ''))[:300]}")
         lines += ["", "--- harness feedback (fix and resubmit) ---",
                   feedback or "(none)", "",
                   "Reply with ONLY the JSON turn object."]
+        if native_tools:
+            # v0.6: the model may ALSO call the provided functions natively;
+            # native calls are merged into the turn's tool_calls by the
+            # harness. The JSON envelope stays the governed carrier.
+            lines.append("You may call the provided functions natively; "
+                         "native calls are validated and merged into tool_calls.")
         return "\n".join(lines)
 
     def _chat(self, prompt: str, system: str,

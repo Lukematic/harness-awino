@@ -86,6 +86,9 @@ def initial_snapshot(project_id: str, conversation_id: str) -> dict:
         "approvals": [],  # [{id, call_id, tool, args, idem_key, revision, status}]
         "pending_calls": [],  # [{call_id, tool, args, idem_key, approval_id}]
         "active_turn": None,  # validated turn paused for approval
+        # v0.6: harness-owned TODO list (state-authoritative across rounds)
+        "tasks": [],  # [{id, title, status, notes, created_round, updated_round}]
+        "task_seq": 0,  # monotonically increasing task id counter
         "flags": [],
         "done": False,
         "terminal": False,
@@ -98,6 +101,10 @@ def initial_snapshot(project_id: str, conversation_id: str) -> dict:
         "verify_pending": None,  # Track G: {worker_id} while verifier runs
         "awaiting_approval": False,
         "awaiting_inspection": None,  # call_id or None
+        # v0.6: set when the recursive loop halts on round budget or stall.
+        "awaiting_operator": False,
+        "awaiting_operator_reason": None,
+        "awaiting_operator_round": None,
         "awaiting_operator": False,
         "turn_count": 0,
         "retries": 0,
@@ -261,12 +268,38 @@ def apply_event(snap: dict, ev: dict) -> None:
         snap["active_turn"] = {"turn_id": d["turn_id"], "turn": d["turn"],
                                "results": d.get("results", []),
                                "routing": d.get("routing"),
-                               "header": d.get("header")}
+                               "header": d.get("header"),
+                               # v0.6: round context so the resumed loop
+                               # continues at the next round, not round 0.
+                               "round_ctx": d.get("round_ctx")}
     elif t == "tool_result":
         cid = d["call_id"]
         snap["pending_calls"] = [c for c in snap["pending_calls"] if c["call_id"] != cid]
     elif t == "progress_recorded":
         snap["progress"].append({"turn": d["turn_id"], "delta": d["delta"]})
+    # v0.6: harness-owned TODO list. task_added skips duplicates by title
+    # (the loop checks before journaling; this is belt-and-braces).
+    elif t == "task_added":
+        if not any(x["title"] == d["title"] for x in snap["tasks"]):
+            snap["task_seq"] += 1
+            snap["tasks"].append({"id": f"t{snap['task_seq']}",
+                                  "title": d["title"], "status": "todo",
+                                  "notes": "", "created_round": d.get("round"),
+                                  "updated_round": d.get("round")})
+    elif t == "task_updated":
+        for x in snap["tasks"]:
+            if x["id"] == d["id"]:
+                x["status"] = d["status"]
+                if d.get("notes") is not None:
+                    x["notes"] = d["notes"]
+                x["updated_round"] = d.get("round")
+                break
+    # v0.6: the recursive loop's budget/stall halt. Journaled with the
+    # round number and reason so the operator sees exactly what happened.
+    elif t == "round_budget_exhausted":
+        snap["awaiting_operator"] = True
+        snap["awaiting_operator_reason"] = d.get("reason")
+        snap["awaiting_operator_round"] = d.get("round")
     elif t == "learning_recorded":
         # Phase C: append-only learning record.
         snap.setdefault("learnings", []).append(

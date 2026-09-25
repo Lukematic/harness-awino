@@ -345,6 +345,20 @@ class WorkspaceToolsTest(unittest.TestCase):
                      "decision": "approve"})
         e = self.c.recv(timeout=60)
         self.assertEqual(e["event"], "turn_result")
+        # v0.6: the recursive loop may have more pending approvals from
+        # later rounds; approve them by ID from the last approval event.
+        _pending = list(ap["approvals"][1:])  # already approved item[0]
+        while e["result"]["status"] == "awaiting_approval":
+            if not _pending:
+                # No more known approvals; wait for the next request.
+                ap2 = self.c.recv(timeout=30)
+                self.assertEqual(ap2["event"], "approval_requested")
+                _pending = list(ap2["approvals"])
+            nxt = _pending.pop(0)
+            self.c.send({"cmd": "approve", "id": nxt["id"],
+                         "decision": "approve"})
+            e = self.c.recv(timeout=60)
+            self.assertEqual(e["event"], "turn_result")
         self.assertEqual(e["result"]["status"], "ok")
         with open(os.path.join(self.c.ws, "notes.txt")) as f:
             self.assertEqual(f.read(), "Hello from the harness\n")
@@ -881,6 +895,13 @@ class McpClientTest(unittest.TestCase):
             c.send({"cmd": "approve", "id": ap["approvals"][0]["id"],
                     "decision": "approve"})
             e = c.recv(timeout=60)
+            # v0.6: drain any further approval rounds before expecting ok.
+            while e["result"]["status"] == "awaiting_approval":
+                ap = c.recv(timeout=30)
+                for approval in ap["approvals"]:
+                    c.send({"cmd": "approve", "id": approval["id"],
+                             "decision": "approve"})
+                e = c.recv(timeout=60)
             self.assertEqual(e["result"]["status"], "ok")
             out = e["result"]["results"][0]["result"].get("output", "")
             self.assertIn("ECHO:hello-mcp", out)
@@ -915,6 +936,13 @@ class McpClientTest(unittest.TestCase):
             c.send({"cmd": "approve", "id": ap["approvals"][0]["id"],
                     "decision": "approve"})
             e = c.recv(timeout=60)
+            # v0.6: drain any further approval rounds before expecting ok.
+            while e["result"]["status"] == "awaiting_approval":
+                ap = c.recv(timeout=30)
+                for approval in ap["approvals"]:
+                    c.send({"cmd": "approve", "id": approval["id"],
+                             "decision": "approve"})
+                e = c.recv(timeout=60)
             self.assertEqual(e["result"]["status"], "ok")
             err = e["result"]["results"][0]["result"].get("error", "")
             self.assertIn("boom", err)

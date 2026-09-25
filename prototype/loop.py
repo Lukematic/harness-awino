@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import hashlib
+import inspect
 import json
 import re
 import time
@@ -19,7 +20,7 @@ from pathlib import Path
 
 from state import ProjectState, _uid
 from contract import (
-    MODES, compile_contract, criterion_status, detect_mission_kind,
+    MODES, HARNESS_TOOLS, compile_contract, criterion_status, detect_mission_kind,
     knowledge_counts, next_action_line, parse_criteria, render_header,
     route_mode, validate_header, validate_schema, verify_done_criteria,
     coerce_turn_contract, ContractTypeError,
@@ -37,6 +38,11 @@ from contract_loop import (
     BREAK_WRITE_WITHOUT_APPROVAL, check_pre_execute, check_pre_turn,
     compile_turn_contract,
 )
+# v0.6 recursive agent loop: cooperative cancellation, provider-agnostic
+# tool schemas, and native tool-call normalization.
+from cancel import CancelToken, Cancelled
+from tool_schema import schemas_for
+from provider_tools import NormalizationError
 
 
 SCOPE_CHANGE_RE = re.compile(
@@ -313,9 +319,26 @@ class Loop:
         self.judge = judge or ScriptedJudge()
         self.sandbox = Sandbox(sandbox_dir or (self.state.dir / "sandbox"))
         cfg = {"max_retries": 3, "max_turns": 50, "stall_limit": 5,
-               "token_budget": 200_000, "max_seconds": 3600}
+               "token_budget": 200_000, "max_seconds": 3600,
+               # v0.6 recursive loop: per-turn round budget and in-turn
+               # stall detector (3 consecutive identical rounds).
+               "max_rounds_per_turn": 25, "round_stall_limit": 3}
         cfg.update(config or {})
         self.config = cfg
+        # v0.6: cooperative cancellation. One token per user turn, created
+        # by run_user_turn (or the sidecar) and threaded through the round
+        # driver -> tool executor -> sandbox/backend.
+        self._cancel_token: CancelToken | None = None
+        # v0.6: in-turn recursive-loop state. Re-initialized at the start of
+        # every user turn by _run_agent_loop (and restored on approval
+        # resume); never persisted — the journal is the durable record.
+        self._round_transcript: list[dict] = []
+        self._round_no: int = 0
+        self._call_offset: int = 0
+        self._round_schemas: list[dict] = []
+        self._last_round_sig = None
+        self._round_stall_count: int = 0
+        self._stall_warned: bool = False
         self.history: list[dict] = []
         self.setup_checks = [self._check_sandbox_writable]
         # Track B (memory registry): the sidecar attaches a Registry here on
@@ -565,14 +588,19 @@ class Loop:
         return [self.state.dir / "artifacts", self.sandbox.root]
 
     # -------------------------------------------------------------- user turn
-    def run_user_turn(self, text: str) -> dict:
+    def run_user_turn(self, text: str, cancel_token: CancelToken | None = None) -> dict:
         """One user turn, plus the story-ledger turn-boundary checks.
 
         The nudge check runs after the turn completes: every
         STORIES_NUDGE_EVERY turns, untouched open stories journal a
         `stories_nudge` event and the reminder is appended to the reply.
+
+        v0.6: cancel_token is the turn's cooperative cancellation token.
+        None (CLI/MCP/tests) creates a fresh unset token. The sidecar
+        passes the token it also hands to its stdin pump so typing
+        /cancel while a turn runs stops the loop at the next checkpoint.
         """
-        result = self._run_user_turn_inner(text)
+        result = self._run_user_turn_inner(text, cancel_token)
         try:
             self._stories_nudge_check(result)
         except Exception:
@@ -625,7 +653,8 @@ class Loop:
         if isinstance(result, dict) and "said" in result:
             result["said"] = f"{result['said']}\n\n{nudge}"
 
-    def _run_user_turn_inner(self, text: str) -> dict:
+    def _run_user_turn_inner(self, text: str,
+                               cancel_token: CancelToken | None = None) -> dict:
         s = self.state.snapshot
         if s["done"]:
             return {"status": "closed", "said": "Mission already complete (SHIP)."}
@@ -677,7 +706,8 @@ class Loop:
                               {"kind": "qa",
                                "text": f"Q: {' | '.join(resolved)[:200]} -- "
                                        f"A: {text[:300]}"})
-        return self._run_turn(user_text=text, input_kind=kind)
+        return self._run_turn(user_text=text, input_kind=kind,
+                              cancel_token=cancel_token)
 
     # ------------------------------------------------------------------ loop
     # The per-turn pipeline (BUILD_SPEC section 3), executed in order, in code:
@@ -697,9 +727,16 @@ class Loop:
     #                          hard breaks refuse the turn, a missing approval
     #                          refuses execution and routes to the approval gate
     # ------------------------------------------------------------------
-    def _run_turn(self, user_text: str = "", input_kind: str = "info") -> dict:
+    def _run_turn(self, user_text: str = "", input_kind: str = "info",
+                  cancel_token: CancelToken | None = None) -> dict:
         s = self.state.snapshot
         cfg = self.config
+        # v0.6: the turn owns one cancellation token; None creates a fresh
+        # unset one so every code path below can poll unconditionally.
+        # (Explicit None check: an unset CancelToken is falsy, so `or`
+        # would discard a live token handed in by the sidecar.)
+        self._cancel_token = (cancel_token if cancel_token is not None
+                              else CancelToken())
         if s["turn_count"] >= cfg["max_turns"]:
             self.state.record("budget_exhausted", {"reason": f"max_turns={cfg['max_turns']}"})
             self.state.persist_snapshot()
@@ -800,149 +837,836 @@ class Loop:
         # sensor routed for THIS turn.
         tcontract = compile_turn_contract(self.state)
 
-        # ---- Stage 4: header emission & structured response ----
-        feedback = None
-        turn = None
+        # ---- Stage 4: the recursive agent loop (v0.6) ----
+        # model -> validate -> pre-execute -> intercept -> execute ->
+        # observe -> model ... until a validated round emits no tool calls
+        # (normal exit), completion verifies (mission done), or a budget /
+        # stall / cancel halt fires. Contract enforcement runs before every
+        # model round and every tool execution — never once per turn.
         if stream is not None:
             # turn_start precedes the first backend call, carrying the
             # routed mode; the stream object is the backend's stream_cb.
+            # (Emitted once per turn, not per round.)
             stream.turn_start(phase=s["phase"], mode_id=routing["mode"])
             stream.harness_check(*contract_check)
+        return self._run_agent_loop(turn_id, turn_no, routing, tcontract,
+                                    offered, stream, user_text,
+                                    input_kind=input_kind)
+
+    # ------------------------------------------------- v0.6 recursive loop
+    # The engine: model -> validate -> pre-execute -> intercept harness ->
+    # execute -> observe -> model -> ... The v0.5.2 control plane (contract
+    # compilation, permissions, approvals, judges, evidence, journal) is
+    # unchanged; only the driver changed from one-generation-per-turn to
+    # one-generation-per-ROUND, with tool results feeding the next round.
+    #
+    # Per-turn loop state (owned by _run_agent_loop, reset on every turn):
+    #   _round_transcript  in-turn assistant/tool messages (assistant-side
+    #                      only; the contract block carries persistent state)
+    #   _call_offset       next call index for turn-scoped call ids
+    #   _last_round_sig    previous round's (phase, calls, last-result) sig
+    #   _round_stall_count consecutive identical-signature rounds
+    #   _round_no          current round number (diagnostics / streaming)
+    #   _round_schemas     canonical tool schemas offered this turn
+    # self._cancel_token is the turn's CancelToken (sidecar-owned, set from
+    # the sidecar's stdin pump thread); every layer polls it at explicit
+    # checkpoints. A Loop instance drives one turn at a time, so sharing
+    # the token as an attribute is safe.
+
+    def _round_history(self) -> list[dict]:
+        """Model context for one round: the persistent tail (up to 6
+        entries) plus the in-turn transcript. Tool output travels here as
+        data — never inside the contract block."""
+        tail = self.history[-6:] if len(self.history) > 6 else list(self.history)
+        return tail + self._round_transcript
+
+    def _compile_round_contract(self, turn_id: str, turn_no: int,
+                                round_no: int) -> tuple[str, str]:
+        """Re-compile the contract block for one round: a fresh
+        `loop: turn.round` header, current persisted tasks, and the in-turn
+        ## ROUND history so the model continues from what the turn already
+        did. Returns (block, expected_header)."""
+        summaries = [e.get("summary", "") for e in self._round_transcript
+                     if e.get("role") == "tool" and e.get("summary")]
+        block = compile_contract(
+            self.state, turn_no=turn_no, round_no=round_no,
+            round_context={"max_rounds": self.config["max_rounds_per_turn"],
+                           "results": summaries})
+        return block, block.split("\n", 1)[0]
+
+    def _validate_round(self, turn_id: str, turn_no: int, round_no: int,
+                        routing: dict, user_text: str, offered: list[str],
+                        stream, contract_block: str, expected_header: str,
+                        feedback: str | None = None):
+        """One model generation plus the full v0.5.2 validation chain
+        (schema -> header/semantics -> drift -> judge -> stance rubric ->
+        typed coercion). The chain is unchanged; only its caller changed —
+        once per turn then, once per round now.
+
+        Returns ("valid", typed_turn_as_dict) or ("escalated", outcome).
+        Cancelled propagates to the caller (it becomes a cancelled turn,
+        never a model error). A provider native-call NormalizationError is
+        harness-rejection feedback, never a crash.
+        """
+        cfg = self.config
+        turn = None
+        errs: list[str] = []
+        # v0.6: only pass the per-round kwargs the backend accepts —
+        # older/test backends keep their generate(contract, history, …)
+        # shape and must not break.
+        _extra: dict = {}
+        try:
+            _params = inspect.signature(self.backend.generate).parameters
+            _kw = any(p.kind == inspect.Parameter.VAR_KEYWORD
+                      for p in _params.values())
+            if _kw or "tools" in _params:
+                _extra["tools"] = self._round_schemas
+            if _kw or "cancel" in _params:
+                _extra["cancel"] = self._cancel_token
+        except (TypeError, ValueError):
+            _extra = {"tools": self._round_schemas,
+                      "cancel": self._cancel_token}
         for attempt in range(cfg["max_retries"] + 1):
-            if stream is not None:
-                raw = self.backend.generate(
-                    contract_block, self.history, feedback=feedback,
-                    stream_cb=stream)
-            else:
-                # Unstreamed turns call generate() exactly as before.
-                raw = self.backend.generate(
-                    contract_block, self.history, feedback=feedback)
-            # Track C (egress audit): if the backend performed network I/O for
-            # this turn, journal it — turn, routed skills, destination, bytes.
-            # A skill declaring network:none with egress is flagged undeclared.
-            self._record_egress(turn_id)
-            self._charge_tokens(contract_block, raw)
-            errs = validate_schema(raw)
-            if not errs and ("mode_hint" in raw or "phase_hint" in raw):
-                self.state.record("turn_hint_ignored",
-                                  {"turn_id": turn_id,
-                                   "hints": {k: raw[k] for k in ("mode_hint", "phase_hint")
-                                             if k in raw}})
-            if not errs:
-                errs = self.validate_semantics(raw, expected_header, offered)
-            if not errs:
-                self.detect_drift(raw)
-                jv = self.judge.judge(raw, contract_block, self._judge_summary())
-                if jv["verdict"] == "PASS":
-                    self.state.record("judge_passed", {"turn_id": turn_id})
-                else:
-                    self.state.record("judge_failed",
-                                      {"turn_id": turn_id, "reason": jv["reason"]})
-                    errs = [f"judge FAIL: {jv['reason']}"]
+            tok = self._cancel_token
+            if tok is not None and tok.is_set():
+                raise Cancelled("cancelled before model call")
+            try:
                 if stream is not None:
-                    # Parallel _emit: surface the judge verdict(s) without
-                    # changing the journal records above.
-                    for name, ok, reason in _judge_check_rows(self.judge, jv):
-                        stream.harness_check(f"judge:{name}",
-                                             "pass" if ok else "fail",
-                                             reason[:200])
-            if not errs and routing["chain"] != ["advisor"]:
-                # Stance fired: the procedure was loaded into the contract
-                # block; the output is rubric-evaluated in code.
-                ok, failures = evaluate_chain(routing["chain"], raw, user_text)
-                if ok:
-                    self.state.record("stance_rubric_passed",
-                                      {"turn_id": turn_id,
-                                       "stance": "->".join(routing["chain"])})
-                    # Phase C: feynman pass records a teaching snapshot as a
-                    # learning (the turn's progress delta is the snapshot).
-                    if "feynman" in routing["chain"]:
-                        self.state.record("learning_recorded",
-                                          {"kind": "feynman",
-                                           "text": raw.get("progress_delta", "")[:500]})
-                    if "premortem" in routing["chain"]:
-                        self.state.record("premortem_completed",
-                                          {"turn_id": turn_id})
+                    raw = self.backend.generate(
+                        contract_block, self._round_history(),
+                        feedback=feedback, stream_cb=stream, **_extra)
                 else:
-                    self.state.record("stance_rubric_failed",
+                    raw = self.backend.generate(
+                        contract_block, self._round_history(),
+                        feedback=feedback, **_extra)
+                errs = []
+            except Cancelled:
+                raise
+            except NormalizationError as ex:
+                # A provider's native tool payload that cannot be
+                # normalized is harness-rejection feedback, never a crash.
+                raw = None
+                errs = [f"native tool-call normalization failed: {ex}"]
+            if not errs:
+                # Track C (egress audit): journal network I/O the backend did.
+                self._record_egress(turn_id)
+                self._charge_tokens(contract_block, raw)
+                errs = validate_schema(raw)
+                if not errs and ("mode_hint" in raw or "phase_hint" in raw):
+                    self.state.record("turn_hint_ignored",
                                       {"turn_id": turn_id,
-                                       "stance": "->".join(routing["chain"]),
-                                       "failures": failures})
-                    errs = [f"stance rubric FAIL ({'->'.join(routing['chain'])}): "
-                            + "; ".join(failures)]
+                                       "hints": {k: raw[k]
+                                                 for k in ("mode_hint", "phase_hint")
+                                                 if k in raw}})
+                if not errs:
+                    # Native tool-call merge errors reported by the backend.
+                    errs = list(raw.pop("_native_tool_errors", []) or [])
+                if not errs:
+                    errs = self.validate_semantics(raw, expected_header, offered)
+                if not errs:
+                    self.detect_drift(raw)
+                    jv = self.judge.judge(raw, contract_block, self._judge_summary())
+                    if jv["verdict"] == "PASS":
+                        self.state.record("judge_passed", {"turn_id": turn_id})
+                    else:
+                        self.state.record("judge_failed",
+                                          {"turn_id": turn_id, "reason": jv["reason"]})
+                        errs = [f"judge FAIL: {jv['reason']}"]
+                    if stream is not None:
+                        for name, ok, reason in _judge_check_rows(self.judge, jv):
+                            stream.harness_check(f"judge:{name}",
+                                                 "pass" if ok else "fail",
+                                                 reason[:200])
+                if not errs and routing["chain"] != ["advisor"]:
+                    ok, failures = evaluate_chain(routing["chain"], raw, user_text)
+                    if ok:
+                        self.state.record("stance_rubric_passed",
+                                          {"turn_id": turn_id,
+                                           "stance": "->".join(routing["chain"])})
+                        if "feynman" in routing["chain"]:
+                            self.state.record("learning_recorded",
+                                              {"kind": "feynman",
+                                               "text": raw.get("progress_delta", "")[:500]})
+                        if "premortem" in routing["chain"]:
+                            self.state.record("premortem_completed",
+                                              {"turn_id": turn_id})
+                    else:
+                        self.state.record("stance_rubric_failed",
+                                          {"turn_id": turn_id,
+                                           "stance": "->".join(routing["chain"]),
+                                           "failures": failures})
+                        errs = [f"stance rubric FAIL ({'->'.join(routing['chain'])}): "
+                                + "; ".join(failures)]
             if not errs:
                 turn = raw
-                self.state.record("turn_validated", {"turn_id": turn_id, "attempt": attempt})
+                self.state.record("turn_validated",
+                                  {"turn_id": turn_id, "attempt": attempt,
+                                   "round": round_no})
                 if stream is not None:
                     stream.harness_check("validation", "pass",
                                          f"attempt {attempt}")
                 break
             self.state.record("turn_rejected",
-                              {"turn_id": turn_id, "attempt": attempt, "errors": errs})
-            # Rigor: three-strike circuit breaker on repeated identical
-            # rejections. Runs before the escalation check so the final
-            # attempt carries the STOP directive, not just "fix and resubmit".
+                              {"turn_id": turn_id, "attempt": attempt,
+                               "round": round_no, "errors": errs})
             doom = self._check_doom_loop(
                 "turn_rejected", self._failure_signature("turn_rejected", errs))
             if attempt >= cfg["max_retries"]:
-                self.state.record("turn_escalated", {"turn_id": turn_id, "errors": errs})
+                self.state.record("turn_escalated", {"turn_id": turn_id,
+                                                     "round": round_no,
+                                                     "errors": errs})
                 self.state.persist_snapshot()
-                return {"status": "escalated",
-                        "said": "Turn escalated to operator: " + "; ".join(errs),
-                        "errors": errs}
+                return ("escalated",
+                        {"status": "escalated",
+                         "said": "Turn escalated to operator: " + "; ".join(errs),
+                         "errors": errs})
             feedback = (f"HARNESS REJECTION (attempt {attempt + 1}): "
                         f"{'; '.join(errs)}. Fix and resubmit a valid TurnContract.")
             if doom:
                 feedback = self._doom_loop_feedback() + " " + feedback
 
-        assert turn is not None
-        # Phase B: coerce the validated dict into the immutable typed contract.
-        # From here on the pipeline consumes the type-guaranteed form.
+        if turn is None:
+            # Only reachable when every attempt died in native-call
+            # normalization. Bounded by max_retries; escalate honestly.
+            self.state.record("turn_escalated",
+                              {"turn_id": turn_id, "round": round_no,
+                               "errors": errs})
+            self.state.persist_snapshot()
+            return ("escalated",
+                    {"status": "escalated",
+                     "said": "Turn escalated to operator: " + "; ".join(errs),
+                     "errors": errs})
         try:
-            typed_turn = coerce_turn_contract(turn)
+            typed = coerce_turn_contract(turn)
         except ContractTypeError as e:
             self.state.record("turn_rejected",
                               {"turn_id": turn_id, "attempt": "coerce",
-                               "errors": [str(e)]})
+                               "round": round_no, "errors": [str(e)]})
             self.state.persist_snapshot()
-            return {"status": "escalated",
-                    "said": "Turn failed typed coercion: " + str(e),
-                    "errors": [str(e)]}
-        turn = typed_turn.as_dict()
-        # ---- Stage 4b: contract pre-execute check ----
-        # The validated turn is checked against the compiled contract BEFORE
-        # anything executes. Hard breaks refuse the turn outright (no tool
-        # execution). A missing approval refuses execution and routes to the
-        # approval gate — the turn pauses, the write does not run.
-        xbreaks = check_pre_execute(
-            self.state, tcontract, turn,
-            has_valid_approval=self._has_valid_approval,
-            search_dirs=self._search_dirs())
-        hard = [b for b in xbreaks
-                if b.reason != BREAK_WRITE_WITHOUT_APPROVAL]
-        if hard:
-            return self._refuse_turn(hard, stage="pre_execute")
-        if xbreaks:
-            self.state.record(
-                "contract_refused",
-                {"stage": "pre_execute",
-                 "breaks": [{"reason": b.reason, "detail": b.detail}
-                            for b in xbreaks],
-                 "recourse": "approval_gate"})
-        calls = turn.get("tool_calls", [])
-        # Partition: non-consequential (or already approved) calls run now;
-        # only consequential calls without approval pause the turn.
-        need_idx = {i for i, c in enumerate(calls)
-                    if TOOL_DEFS[c["name"]]["consequential"]
-                    and not self._has_valid_approval(c)}
-        immediate = [c for i, c in enumerate(calls) if i not in need_idx]
-        results = self._execute_calls(turn_id, immediate, offset=0)
-        need = [(i, calls[i]) for i in sorted(need_idx)]
-        if need:
-            return self._pause_for_approval(turn_id, turn, results, need,
-                                            routing, expected_header)
-        return self._finalize_turn(turn_id, turn, results, routing,
-                                   expected_header)
+            return ("escalated",
+                    {"status": "escalated",
+                     "said": "Turn failed typed coercion: " + str(e),
+                     "errors": [str(e)]})
+        return ("valid", typed.as_dict())
+
+    # ------------------------------------------------- harness interception
+    def _execute_harness_tool(self, name: str, args: dict,
+                              turn_id: str, round_no: int) -> dict:
+        """Run a harness tool in-process. These never touch the sandbox or
+        the delegation layer: task_add/task_update mutate persisted task
+        state; attempt_completion runs the evidence-gated verifier."""
+        if name == "task_add":
+            return self._harness_task_add(args, turn_id, round_no)
+        if name == "task_update":
+            return self._harness_task_update(args, turn_id, round_no)
+        if name == "attempt_completion":
+            return self._attempt_completion(args, turn_id, round_no)
+        return {"error": f"unknown harness tool: {name}",
+                "error_code": "UNKNOWN_HARNESS_TOOL"}
+
+    def _journal_harness_result(self, turn_id: str, index: int, name: str,
+                                args: dict, inner: dict) -> dict:
+        """Journal a harness tool_result (same shape as executor results)
+        and return the {"tool", "result"} envelope the loop carries."""
+        call_id = f"{turn_id}.{self._call_offset + index}"
+        call = {"name": name, "args": args}
+        self.state.record("tool_result",
+                          {"call_id": call_id, "tool": name, "args": args,
+                           "idem_key": self._idem(call), "result": inner,
+                           "harness": True,
+                           "mission_rev": self.state.snapshot["mission_revision"]})
+        return {"tool": name, "result": inner}
+
+    # ------------------------------------------------- harness tool bodies
+    def _harness_task_add(self, args: dict, turn_id: str,
+                          round_no: int) -> dict:
+        title = (args.get("title") or "").strip()
+        if not title:
+            return {"error": "task_add requires a non-empty title",
+                    "error_code": "BAD_TITLE"}
+        existing = next((t for t in self.state.snapshot["tasks"]
+                         if t["title"] == title), None)
+        if existing is not None:
+            # Duplicate titles return the existing id — never a duplicate.
+            return {"id": existing["id"], "title": title,
+                    "status": existing["status"], "duplicate": True}
+        self.state.record("task_added",
+                          {"turn_id": turn_id, "round": round_no,
+                           "title": title})
+        task = next(t for t in self.state.snapshot["tasks"]
+                    if t["title"] == title)
+        return {"id": task["id"], "title": title, "status": task["status"]}
+
+    def _harness_task_update(self, args: dict, turn_id: str,
+                             round_no: int) -> dict:
+        tid = args.get("id")
+        status = args.get("status")
+        notes = args.get("notes")
+        task = next((t for t in self.state.snapshot["tasks"]
+                     if t["id"] == tid), None)
+        if task is None:
+            return {"error": f"unknown task id: {tid}",
+                    "error_code": "UNKNOWN_TASK"}
+        if status not in ("todo", "doing", "done"):
+            return {"error": f"invalid status: {status!r} (todo|doing|done)",
+                    "error_code": "BAD_STATUS"}
+        if status == "doing":
+            other = next((t for t in self.state.snapshot["tasks"]
+                          if t["status"] == "doing" and t["id"] != tid), None)
+            if other is not None:
+                return {"error": (f"task {other['id']} is already doing; mark "
+                                  "exactly one task doing at a time"),
+                        "error_code": "DOING_CONFLICT"}
+        self.state.record("task_updated",
+                          {"turn_id": turn_id, "round": round_no,
+                           "id": tid, "status": status, "notes": notes})
+        return {"id": tid, "status": status}
+
+    def _attempt_completion(self, args: dict, turn_id: str,
+                            round_no: int) -> dict:
+        """Evidence-gated completion. Every done criterion is checked in
+        code via verify_done_criteria; unverified criteria come back as a
+        missing-evidence list and the loop continues. On pass, journals a
+        harness verify_passed and returns completed=True — the driver then
+        finalizes with mission_done. Honored only on REVIEW; elsewhere the
+        phase floor is reported as missing evidence."""
+        summary = (args.get("summary") or "").strip()
+        s = self.state.snapshot
+        gaps: list[str] = []
+        if s.get("phase") != "REVIEW":
+            gaps.append(f"phase is {s.get('phase')}, not REVIEW "
+                        "(VERIFY -> REVIEW needs the verifier's pass first)")
+        _ok, crit_gaps = verify_done_criteria(
+            s, self.state.events, self._search_dirs())
+        gaps.extend(crit_gaps)
+        if gaps:
+            self.state.record("completion_rejected",
+                              {"turn_id": turn_id, "round": round_no,
+                               "missing_evidence": gaps})
+            return {"completed": False, "missing_evidence": gaps,
+                    "error": "completion rejected: missing evidence",
+                    "error_code": "COMPLETION_WITHOUT_EVIDENCE"}
+        self.state.record("verify_passed",
+                          {"worker_id": "harness",
+                           "verdict": "pass",
+                           "turn_id": turn_id, "round": round_no,
+                           "via": "attempt_completion"})
+        self.state.record("completion_verified",
+                          {"turn_id": turn_id, "round": round_no,
+                           "summary": summary[:500]})
+        return {"completed": True, "evidence": {}, "summary": summary[:500],
+                "via": "attempt_completion"}
+
+    def _intercept_harness_calls(self, turn_id: str, turn_no: int,
+                                 round_no: int, calls: list[dict]):
+        """Split harness calls out of a validated round.
+
+        task_add/task_update run immediately (bookkeeping — never
+        consequential, never approval-gated). attempt_completion is
+        DEFERRED: it verifies against the round's tool results, so it runs
+        after the round's immediate calls execute. (If the round pauses for
+        approval, the deferred claim is dropped — the resumed round's model
+        must re-claim after observing the approved effects.)
+
+        Returns (h_results, harness_idx, deferred) where h_results maps
+        call index -> result envelope, harness_idx is the set of intercepted
+        indices, and deferred is (index, call) for attempt_completion or
+        None.
+        """
+        h_results: dict[int, dict] = {}
+        harness_idx: set[int] = set()
+        deferred = None
+        for i, c in enumerate(calls):
+            name = c.get("name")
+            if name not in HARNESS_TOOLS:
+                continue
+            harness_idx.add(i)
+            if name == "attempt_completion":
+                deferred = (i, c)
+                continue
+            inner = self._execute_harness_tool(name, c.get("args", {}),
+                                               turn_id, round_no)
+            h_results[i] = self._journal_harness_result(
+                turn_id, i, name, c.get("args", {}), inner)
+        return h_results, harness_idx, deferred
+
+    def _run_deferred_completion(self, turn_id: str, round_no: int,
+                                 deferred) -> tuple[dict, dict]:
+        """Run a deferred attempt_completion and journal it. Returns
+        (envelope, inner_result)."""
+        i, c = deferred
+        inner = self._execute_harness_tool("attempt_completion",
+                                           c.get("args", {}), turn_id, round_no)
+        return (self._journal_harness_result(turn_id, i, "attempt_completion",
+                                             c.get("args", {}), inner),
+                inner)
+
+    # ------------------------------------------------- in-turn transcript
+    def _record_round_assistant(self, turn: dict) -> None:
+        self._round_transcript.append({
+            "role": "assistant",
+            "text": json.dumps({
+                "objective": turn.get("objective"),
+                "plan": turn.get("plan"),
+                "tool_calls": turn.get("tool_calls"),
+                "progress_delta": turn.get("progress_delta"),
+            }, default=str)[:2000],
+        })
+
+    @staticmethod
+    def _result_summary(env) -> str:
+        """One-line summary of a {"tool", "result"} envelope for the
+        ## ROUND history and the stall detector."""
+        if not isinstance(env, dict):
+            return str(env)[:200]
+        name = env.get("tool", "?")
+        res = env.get("result", env)
+        if not isinstance(res, dict):
+            return str(res)[:200]
+        if res.get("cancelled"):
+            return "cancelled before dispatch"
+        if res.get("missing_evidence"):
+            return ("completion rejected — missing evidence: "
+                    + "; ".join(res["missing_evidence"])[:300])
+        if res.get("error"):
+            return f"error: {str(res['error'])[:200]}"
+        if res.get("completed"):
+            return "completion VERIFIED by the harness"
+        if name == "run_command":
+            out = str(res.get("stdout", ""))[-200:]
+            return f"exit={res.get('exit_code')} {out}"
+        if name in ("write_file", "patch_file"):
+            return f"ok ({res.get('path', '')})"
+        if name == "read_file":
+            return f"{len(str(res.get('content', '')))} chars read"
+        if name == "task_add":
+            return f"task {res.get('id')}: {res.get('title', '')}"
+        if name == "task_update":
+            return f"task {res.get('id')} -> {res.get('status')}"
+        return json.dumps(res, default=str)[:200]
+
+    def _record_round_tool(self, round_pairs: list[tuple[int, dict]],
+                           calls: list[dict], note: str | None = None) -> None:
+        """round_pairs: [(call index, result envelope)] in call order."""
+        parts = []
+        for i, env in round_pairs:
+            name = calls[i]["name"] if 0 <= i < len(calls) else env.get("tool", "?")
+            parts.append(f"{name} -> {self._result_summary(env)}")
+        if note:
+            parts.append(note)
+        text = "\n".join(parts) if parts else "(no tool calls)"
+        self._round_transcript.append({"role": "tool", "text": text[:4000],
+                                       "summary": text[:500]})
+
+    def _round_signature(self, turn: dict, results_all: list[dict]):
+        """Stall detector: identical (phase, tool calls, last result
+        summary) three rounds running means the model is looping."""
+        calls = tuple(
+            (c.get("name"),
+             tuple(sorted((k, str(v)) for k, v in c.get("args", {}).items())))
+            for c in turn.get("tool_calls", []))
+        last = self._result_summary(results_all[-1]) if results_all else ""
+        return (self.state.snapshot.get("phase"), calls, last)
+
+    # ------------------------------------------------- elevator (per round)
+    def _check_elevator_gates(self, turn_id: str) -> None:
+        """Elevator exit gates as code checks on the transitions. Runs after
+        every round's tool results (and once more at finalize, which is
+        idempotent): BUILD -> VERIFY on write effects; VERIFY -> REVIEW on
+        exit 0 plus the journaled verifier pass."""
+        s = self.state.snapshot
+        if s["phase"] == "BUILD" and self._has_write_effects():
+            # BUILD exit gate: diff produced -> VERIFY. Done criteria are
+            # checked at the done claim, not here.
+            self.request_phase("VERIFY", reason="write effects produced")
+            s = self.state.snapshot
+        if s["phase"] == "VERIFY" and self._has_exit_zero():
+            # Track G: exit 0 alone does NOT unlock REVIEW — only the
+            # verifier worker's journaled pass verdict does. v0.6: the
+            # harness auto-spawns the verifier (existing machinery) instead
+            # of waiting for an operator to drive it.
+            if s.get("verify_pass"):
+                self.request_phase("REVIEW",
+                                   reason="verify exit 0 + verifier pass")
+            elif self._auto_verify():
+                s = self.state.snapshot
+                if s.get("verify_pass"):
+                    self.request_phase("REVIEW",
+                                       reason="verify exit 0 + verifier pass")
+            s = self.state.snapshot
+
+    def _auto_verify(self) -> bool:
+        """Track G auto-spawn: run the verifier worker without operator
+        shepherding. Returns True when a pass verdict was journaled.
+
+        Pre-check: every non-manual done criterion must already hold
+        against the journal (artifacts on disk, events journaled) —
+        otherwise the gate waits. The worker then independently
+        re-verifies the artifact criteria plus the recipe result; a pass
+        journals verify_passed (REVIEW unlocks), findings route back to
+        BUILD with verifier-filed tasks (existing complete_verification
+        behavior). Manual criteria stay operator-only at the done claim.
+        """
+        from contract import verify_done_criteria
+        from verify import criterion_text
+        s = self.state.snapshot
+        search_dirs = [self.state.dir / "artifacts", self.state.dir / "sandbox"]
+        _, gaps = verify_done_criteria(s, self.state.events, search_dirs,
+                                       manual_ok=False)
+        blocking = [g for g in gaps if not g.startswith("manual:")]
+        if blocking:
+            self.state.record("verify_gate_waiting",
+                              {"reason": ("exit 0 observed but done criteria "
+                                          "unmet"),
+                               "gaps": blocking})
+            self.state.persist_snapshot()
+            return False
+        mission = s.get("mission") or {}
+        artifact_criteria = [c for c in mission.get("done_criteria", [])
+                             if isinstance(c, dict)
+                             and c.get("kind") == "artifact_exists"]
+        if not artifact_criteria:
+            # Nothing file-based for the worker to independently re-check;
+            # the journal pre-check above is the verification.
+            self.state.record("verify_passed",
+                              {"worker_id": None,
+                               "note": ("auto-verify: no artifact criteria; "
+                                        "exit 0 + journal criteria hold")})
+            self.state.persist_snapshot()
+            return True
+        b = self.begin_verification()
+        if b["status"] != "ok":
+            # A verifier is already pending — wait for it.
+            return False
+        wid = b["worker_id"]
+        evidence_links = {criterion_text(c): c.get("path", "")
+                          for c in artifact_criteria}
+        rev = s["mission_revision"]
+        recipe = None
+        for e in reversed(self.state.events):
+            d = e.get("data", {})
+            if (e["type"] == "tool_result"
+                    and d.get("tool") == "run_command"
+                    and d.get("mission_rev") == rev):
+                res = d.get("result", {})
+                recipe = {"runner": "run_command",
+                          "recipe": res.get("cmd", "command"),
+                          "exit_code": res.get("exit_code")}
+                break
+        self.run_verifier_turn(
+            wid,
+            {"evidence_links": evidence_links,
+             "recipe_result": recipe,
+             "project_root": str(self.state.dir / "sandbox"),
+             "criteria": artifact_criteria})
+        res = self.complete_verification(wid)
+        return bool(res.get("passed"))
+
+    # ------------------------------------------------- halts
+    def _halt_turn(self, reason: str, turn_id: str, turn_no: int,
+                   round_no: int) -> dict:
+        """Honest terminal halt: round budget, in-turn stall, or operator
+        cancellation. Journals the halt, persists, and returns a terminal
+        outcome — never a silent stop."""
+        cfg = self.config
+        if reason == "cancelled":
+            tok = self._cancel_token
+            tok_reason = tok.reason if tok is not None else None
+            # Honest rendering: did the cancel arrive after tool effects
+            # were already journaled? Compare the token's set timestamp
+            # with journaled (non-reused, non-harness) tool_result times.
+            late_effects = 0
+            tok_ts = tok.set_ts if tok is not None else None
+            if tok_ts is not None:
+                for e in self.state.events:
+                    if (e["type"] == "tool_result"
+                            and not e["data"].get("reused")
+                            and not e["data"].get("harness")
+                            and (e.get("ts") or 0) > tok_ts):
+                        late_effects += 1
+            self.state.record("turn_cancelled",
+                              {"turn_id": turn_id, "round": round_no,
+                               "reason": tok_reason,
+                               "late_effects": late_effects})
+            self.state.persist_snapshot()
+            said = f"Turn cancelled by the operator at round {round_no}."
+            if late_effects:
+                said += (f" The cancel arrived after {late_effects} tool "
+                         f"effect(s) were already journaled — those stand "
+                         f"(too-late-with-effects); nothing further ran.")
+            else:
+                said += " No tool effects ran after the cancel."
+            return {"status": "cancelled", "said": said,
+                    "late_effects": late_effects}
+        if reason == "stall":
+            # state.py's `stalled` handler sets awaiting_operator — the
+            # halt is operator-visible on replay, not just in the log.
+            self.state.record("stalled",
+                              {"turn_id": turn_id, "round": round_no,
+                               "reason": "round_stall",
+                               "detail": (f"{cfg['round_stall_limit']} consecutive "
+                                          "rounds with identical phase, tool "
+                                          "calls, and last result")})
+            self.state.persist_snapshot()
+            return {"status": "stalled",
+                    "said": (f"Turn halted at round {round_no}: the agent "
+                             f"repeated the same round {cfg['round_stall_limit']} "
+                             f"times with no new information. Escalated to the "
+                             f"operator.")}
+        # round_budget
+        # state.py's `round_budget_exhausted` handler sets awaiting_operator
+        # with reason + round — replay restores the operator-wait state.
+        self.state.record("round_budget_exhausted",
+                          {"turn_id": turn_id, "round": round_no,
+                           "reason": "round_budget",
+                           "detail": f"max_rounds_per_turn={cfg['max_rounds_per_turn']}"})
+        self.state.persist_snapshot()
+        return {"status": "budget_exhausted",
+                "said": (f"Turn halted at round {round_no}: round budget "
+                         f"exhausted (max_rounds_per_turn="
+                         f"{cfg['max_rounds_per_turn']}). The mission is "
+                         f"unchanged; re-run to continue from journaled state.")}
+
+    # ------------------------------------------------- the driver
+    def _run_agent_loop(self, turn_id: str, turn_no: int, routing: dict,
+                        tcontract: dict, offered: list[str], stream,
+                        user_text: str = "", input_kind: str = "info",
+                        resume: dict | None = None) -> dict:
+        """The recursive agent loop (v0.6 engine).
+
+        Fresh turn: round_no starts at 0 with an empty transcript. Resume
+        (from _drain_pending after an approval round-trip): continues at
+        resume["round_no"] + 1 with the persisted transcript, call offset,
+        and stall state — the model sees the grant/deny note, not a blank
+        slate.
+
+        Each round: elevator gates -> re-route (mode/stance/offered follow
+        the current phase) -> recompile the contract (fresh `loop: turn.round`
+        header) -> one model generation -> full validation chain (retry on
+        harness rejection) -> legacy done_claim rerouted to
+        attempt_completion -> in-turn stall check -> per-round contract
+        pre-execute check (hard breaks are round feedback; the missing-
+        approval break routes to the approval gate) -> harness interception
+        (task tools now, attempt_completion after immediate calls) ->
+        execute -> observe -> next round.
+
+        Exits: a validated round with no tool calls (normal); a verified
+        attempt_completion (mission done); round budget, in-turn stall, or
+        operator cancellation (honest halts); validation escalation.
+        """
+        cfg = self.config
+        max_rounds = cfg["max_rounds_per_turn"]
+        if resume is not None:
+            round_no = resume["round_no"] + 1
+            self._round_transcript = list(resume.get("transcript", []))
+            self._call_offset = resume.get("call_offset", 0)
+            self._last_round_sig = resume.get("last_round_sig")
+            self._round_stall_count = resume.get("round_stall_count", 0)
+            self._stall_warned = resume.get("stall_warned", False)
+            results_all = list(resume.get("results_so_far", []))
+            round_feedback = resume.get("round_feedback")
+            user_text = resume.get("user_text", user_text)
+            input_kind = resume.get("input_kind", input_kind)
+            resume_note = resume.get("resume_note")
+            if resume_note:
+                self._round_transcript.append(
+                    {"role": "tool", "text": resume_note[:2000],
+                     "summary": resume_note[:500]})
+        else:
+            round_no = 0
+            self._round_transcript = []
+            self._call_offset = 0
+            self._last_round_sig = None
+            self._round_stall_count = 0
+            self._stall_warned = False
+            results_all = []
+            round_feedback = None
+        self._round_no = round_no
+        self._round_schemas = schemas_for(offered)
+        while True:
+            if round_no >= max_rounds:
+                return self._halt_turn("round_budget", turn_id, turn_no,
+                                       round_no)
+            tok = self._cancel_token
+            if tok is not None and tok.is_set():
+                return self._halt_turn("cancelled", turn_id, turn_no, round_no)
+            self._round_no = round_no
+            # Per-round control-plane refresh: the elevator may have moved
+            # the phase (after the last round's tool results, or after an
+            # approval drain's granted writes). Re-route so the mode, stance
+            # chain, offered tools, and typed contract track the CURRENT
+            # phase — a stale routing would validate the round against the
+            # wrong mode's tool set. _sensor_route only journals on actual
+            # change, so steady-state rounds are journal-quiet.
+            self._check_elevator_gates(turn_id)
+            routing = self._sensor_route(user_text, input_kind)
+            offered = self._permission_gate()
+            tcontract = compile_turn_contract(self.state)
+            self._round_schemas = schemas_for(offered)
+            contract_block, expected_header = self._compile_round_contract(
+                turn_id, turn_no, round_no)
+            try:
+                status, payload = self._validate_round(
+                    turn_id, turn_no, round_no, routing, user_text, offered,
+                    stream, contract_block, expected_header,
+                    feedback=round_feedback)
+            except Cancelled:
+                return self._halt_turn("cancelled", turn_id, turn_no, round_no)
+            if status == "escalated":
+                return payload
+            turn = payload
+            calls = turn.get("tool_calls", [])
+            # Legacy done_claim backstop: reroute to a harness
+            # attempt_completion call BEFORE the pre-execute check (which
+            # would otherwise hard-break COMPLETION_WITHOUT_EVIDENCE).
+            # validate_semantics already enforced the forgery + REVIEW-floor
+            # rules, so this only reroutes verified claims.
+            if turn.get("done_claim") and not any(
+                    c.get("name") == "attempt_completion" for c in calls):
+                calls = calls + [{"name": "attempt_completion",
+                                  "args": {"summary": (turn.get("progress_delta")
+                                                       or "")[:500]}}]
+                turn["done_claim"] = False
+                turn["tool_calls"] = calls
+            # In-turn stall detector: identical (phase, calls, last result)
+            # `round_stall_limit` rounds running trips the breaker — the
+            # model is looping without new information.
+            sig = self._round_signature(turn, results_all)
+            if sig == self._last_round_sig:
+                self._round_stall_count += 1
+                if self._round_stall_count >= cfg["round_stall_limit"]:
+                    if not self._stall_warned:
+                        # First threshold hit: warn and grant exactly one
+                        # more round with the warning as feedback — the
+                        # model gets a chance to break the loop itself.
+                        # A repeated identical round after the warning
+                        # terminates the turn.
+                        self._stall_warned = True
+                        self.state.record(
+                            "round_stall_warning",
+                            {"turn_id": turn_id, "round": round_no,
+                             "signature": str(sig)[:300],
+                             "detail": ("first threshold hit; one more "
+                                        "round granted before halt")})
+                        self.state.persist_snapshot()
+                        self._record_round_assistant(turn)
+                        round_feedback = (
+                            f"HARNESS STALL WARNING (round {round_no}): the "
+                            f"last {cfg['round_stall_limit']} rounds were "
+                            f"identical (same phase, same tool calls, same "
+                            f"last result) — the turn is looping with no new "
+                            f"information. Next round do something "
+                            f"different (a new tool, new arguments, or stop "
+                            f"calling tools and finalize), or the turn "
+                            f"halts as stalled.")
+                        round_no += 1
+                        continue
+                    return self._halt_turn("stall", turn_id, turn_no, round_no)
+            else:
+                self._round_stall_count = 0
+                self._stall_warned = False
+            self._last_round_sig = sig
+            self._record_round_assistant(turn)
+            if not calls:
+                # Normal exit: a validated round that calls no tools.
+                return self._finalize_turn(turn_id, turn, results_all,
+                                           routing, expected_header)
+            # Per-round contract pre-execute check. Hard breaks are round
+            # feedback (the model replans); only the missing-approval break
+            # routes to the approval gate.
+            xbreaks = check_pre_execute(
+                self.state, tcontract, turn,
+                has_valid_approval=self._has_valid_approval,
+                search_dirs=self._search_dirs())
+            hard = [b for b in xbreaks
+                    if b.reason != BREAK_WRITE_WITHOUT_APPROVAL]
+            if hard:
+                self.state.record(
+                    "contract_refused",
+                    {"stage": "pre_execute", "round": round_no,
+                     "breaks": [{"reason": b.reason, "detail": b.detail}
+                                for b in hard],
+                     "recourse": "replan"})
+                round_feedback = (
+                    f"HARNESS REJECTION (round {round_no}): "
+                    + "; ".join(f"{b.reason}: {b.detail}" for b in hard)
+                    + ". Replan within the contract and resubmit.")
+                round_no += 1
+                continue
+            if xbreaks:
+                self.state.record(
+                    "contract_refused",
+                    {"stage": "pre_execute", "round": round_no,
+                     "breaks": [{"reason": b.reason, "detail": b.detail}
+                                for b in xbreaks],
+                     "recourse": "approval_gate"})
+            # Harness interception: task tools run now; attempt_completion
+            # defers until after the round's immediate calls (it verifies
+            # against their results).
+            h_results, harness_idx, deferred = self._intercept_harness_calls(
+                turn_id, turn_no, round_no, calls)
+            rest = [(i, calls[i]) for i in range(len(calls))
+                    if i not in harness_idx]
+            need_idx = {i for i, c in rest
+                        if TOOL_DEFS[c["name"]]["consequential"]
+                        and not self._has_valid_approval(c)}
+            immediate = [(i, c) for i, c in rest if i not in need_idx]
+            # Index-keyed execution (not _execute_calls' positional list)
+            # so harness + executor results merge back into call order.
+            exec_pairs = {}
+            for i, c in immediate:
+                call_id = f"{turn_id}.{self._call_offset + i}"
+                exec_pairs[i] = self._execute_single(
+                    call_id, c["name"], c["args"], self._idem(c))
+            merged = dict(h_results)
+            merged.update(exec_pairs)
+            completion = None
+            if deferred is not None and not need_idx:
+                tok = self._cancel_token
+                if tok is None or not tok.is_set():
+                    env, inner = self._run_deferred_completion(
+                        turn_id, round_no, deferred)
+                    merged[deferred[0]] = env
+                    if inner.get("completed"):
+                        completion = inner
+            round_pairs = [(i, merged[i]) for i in sorted(merged)]
+            round_results = [r for _, r in round_pairs]
+            results_all.extend(round_results)
+            self._call_offset += len(calls)
+            note = None
+            if deferred is not None and need_idx:
+                # The completion claim is dropped: it was made before the
+                # paused writes execute, so it cannot verify. The resumed
+                # round's model must re-claim after observing the effects.
+                note = ("attempt_completion was deferred past an approval "
+                        "pause and dropped — re-claim after the approved "
+                        "calls' results if the mission is complete.")
+            self._record_round_tool(round_pairs, calls, note=note)
+            # The elevator runs at the top of the next round (and once more
+            # at finalize) — single-sourced, idempotent.
+            tok = self._cancel_token
+            if tok is not None and tok.is_set():
+                return self._halt_turn("cancelled", turn_id, turn_no, round_no)
+            if need_idx:
+                need = [(i, calls[i]) for i in sorted(need_idx)]
+                return self._pause_for_approval(
+                    turn_id, turn, results_all, need, routing,
+                    expected_header, base=self._call_offset,
+                    round_ctx={"round_no": round_no,
+                               "call_offset": self._call_offset,
+                               "last_round_sig": self._last_round_sig,
+                               "round_stall_count": self._round_stall_count,
+                               "stall_warned": self._stall_warned,
+                               "user_text": user_text,
+                               "input_kind": input_kind,
+                               "transcript": self._round_transcript})
+            if completion is not None and completion.get("completed"):
+                done_results = results_all
+                return self._finalize_turn(turn_id, turn, done_results,
+                                           routing, expected_header,
+                                           completion=completion)
+            round_feedback = None
+            round_no += 1
 
     # ---- Rigor: three-strike doom-loop circuit breaker ----
     # Agent-rigor's Error Recovery Protocol (STOP → DIAGNOSE → ISOLATE →
@@ -1086,6 +1810,12 @@ class Loop:
         parent_tools = self.state.snapshot.get("parent_mode_tools")
         if parent_tools is not None:
             offered = [t for t in offered if t in parent_tools]
+        # v0.6: the harness tools are loop protocol, not mode tools — they
+        # are offered in every mode and intercepted by the loop (they never
+        # reach the sandbox). Appended after the fanout clamp.
+        for ht in HARNESS_TOOLS:
+            if ht not in offered:
+                offered.append(ht)
         return offered
 
     def _refuse_turn(self, breaks: list, stage: str) -> dict:
@@ -1446,8 +2176,20 @@ class Loop:
         if not proceed:
             return early
         fn = self._resolve_tool_fn(tool_name)
+        # v0.6: cooperative cancellation reaches the tool itself — a tool
+        # whose signature accepts `cancel` (e.g. run_command's Popen poll
+        # loop) gets the turn's CancelToken so a long-running command can
+        # be pre-empted mid-execution, not just between rounds.
         try:
-            result = fn(**args)
+            import inspect as _inspect
+            _params = _inspect.signature(fn).parameters
+            _extra = ({"cancel": self._cancel_token}
+                      if "cancel" in _params and self._cancel_token is not None
+                      else {})
+        except (TypeError, ValueError):
+            _extra = {}
+        try:
+            result = fn(**args, **_extra)
         except Exception as ex:  # noqa: BLE001 - tool errors are data
             result = {"error": f"{type(ex).__name__}: {ex}"}
         return self._post_execute(call_id, tool_name, args, idem_key, result,
@@ -1464,10 +2206,11 @@ class Loop:
     # --------------------------------------------------------------- approvals
     def _pause_for_approval(self, turn_id: str, turn: dict, results_so_far: list,
                             need: list[tuple[int, dict]], routing: dict,
-                            expected_header: str) -> dict:
+                            expected_header: str, base: int = 0,
+                            round_ctx: dict | None = None) -> dict:
         approvals, pending = [], []
         for i, c in need:
-            call_id = f"{turn_id}.{i}"
+            call_id = f"{turn_id}.{base + i}"
             ap = {"id": "ap-" + _uid()[:8], "call_id": call_id, "tool": c["name"],
                   "args": c["args"], "idem_key": self._idem(c),
                   "revision": self._revision(), "status": "pending"}
@@ -1492,7 +2235,11 @@ class Loop:
                            "pending_calls": pending})
         self.state.record("turn_paused_for_approval",
                           {"turn_id": turn_id, "turn": turn, "results": results_so_far,
-                           "routing": routing, "header": expected_header})
+                           "routing": routing, "header": expected_header,
+                           # v0.6: the real round context so the resumed
+                           # loop continues at round_no + 1 with the same
+                           # transcript, call offset, and stall state.
+                           "round_ctx": round_ctx or {}})
         self.state.persist_snapshot()
         ids = [a["id"] for a in approvals]
         return {"status": "awaiting_approval",
@@ -1608,24 +2355,41 @@ class Loop:
         # every granted file write of this drain goes through ONE delegated
         # batch (one extension round-trip, one WorkspaceEdit, one undo
         # unit) instead of per-call sandbox writes. Results splice back into
-        # pending_calls order so journaling order is unchanged. The tail
-        # below (approvals_cleared, finalize) is untouched — the
-        # recursive-loop builder owns it.
-        if self.delegation is not None:
-            writes = [pc for pc in granted
-                      if pc["tool"] in ("write_file", "patch_file")]
-            batch_out = self._execute_delegated_batch(writes) if writes else []
-            by_call = {pc["call_id"]: r for pc, r in zip(writes, batch_out)}
-            for pc in granted:
-                if pc["tool"] in ("write_file", "patch_file"):
-                    results.append(by_call[pc["call_id"]])
-                else:
+        # pending_calls order so journaling order is unchanged.
+        tok = self._cancel_token
+        try:
+            if tok is not None and tok.is_set():
+                raise Cancelled("cancelled before approval drain")
+            if self.delegation is not None:
+                writes = [pc for pc in granted
+                          if pc["tool"] in ("write_file", "patch_file")]
+                batch_out = self._execute_delegated_batch(writes) if writes else []
+                by_call = {pc["call_id"]: r for pc, r in zip(writes, batch_out)}
+                for pc in granted:
+                    if pc["tool"] in ("write_file", "patch_file"):
+                        results.append(by_call[pc["call_id"]])
+                    else:
+                        results.append(self._execute_single(pc["call_id"], pc["tool"],
+                                                            pc["args"], pc["idem_key"]))
+            else:
+                for pc in granted:
                     results.append(self._execute_single(pc["call_id"], pc["tool"],
                                                         pc["args"], pc["idem_key"]))
-        else:
-            for pc in granted:
-                results.append(self._execute_single(pc["call_id"], pc["tool"],
-                                                    pc["args"], pc["idem_key"]))
+        except Cancelled:
+            # Cooperative cancel during the approval drain: whatever ran is
+            # journaled (too-late-with-effects); the rest stays pending and
+            # the turn stays paused — re-run approve/deny to continue.
+            self.state.record("turn_cancelled",
+                              {"phase": "approval_drain",
+                               "reason": tok.reason if tok is not None else None,
+                               "executed": len(results),
+                               "remaining_pending": len(
+                                   self.state.snapshot["pending_calls"])})
+            self.state.persist_snapshot()
+            return {"status": "cancelled",
+                    "said": (f"Cancelled during the approval drain after "
+                             f"{len(results)} granted call(s) executed. The rest "
+                             "stay pending — re-run approve/deny to continue.")}
         s = self.state.snapshot
         if not s["pending_calls"]:
             self.state.record("approvals_cleared", {})
@@ -1634,13 +2398,40 @@ class Loop:
         if active is None:
             return {"status": "ok", "said": "Approval recorded.",
                     "results": results}
-        results = list(active.get("results", [])) + results
+        # v0.6: the turn does NOT finalize here. Resume the recursive loop
+        # at the next round so the model observes the grant/deny outcome
+        # and replans — an approval denial becomes a replan round, not a
+        # dead end. The round context was persisted by _pause_for_approval.
+        round_ctx = active.get("round_ctx") or {}
+        notes = []
         if denied:
-            results.append({"denied": denied,
-                            "note": "operator denied the write; completed without those effects"})
-        return self._finalize_turn(active["turn_id"], active["turn"], results,
-                                   active.get("routing") or {},
-                                   active.get("header") or "")
+            notes.append(f"operator DENIED approval(s) {denied}: those calls "
+                         "did not execute — replan without those effects.")
+        if results:
+            notes.append(f"operator APPROVED {len(results)} call(s); the "
+                         "harness executed them and their results are recorded.")
+        resume = {
+            "round_no": round_ctx.get("round_no", 0),
+            "call_offset": round_ctx.get("call_offset", 0),
+            "last_round_sig": round_ctx.get("last_round_sig"),
+            "round_stall_count": round_ctx.get("round_stall_count", 0),
+            "stall_warned": round_ctx.get("stall_warned", False),
+            "user_text": round_ctx.get("user_text", ""),
+            "input_kind": round_ctx.get("input_kind", "info"),
+            "transcript": list(round_ctx.get("transcript", [])),
+            "results_so_far": list(active.get("results", [])) + results,
+            "round_feedback": None,
+            "resume_note": " ".join(notes) if notes else None,
+        }
+        tcontract = compile_turn_contract(self.state)
+        offered = list(MODES[s.get("mode", "observe")]["tools"])
+        for ht in HARNESS_TOOLS:
+            if ht not in offered:
+                offered.append(ht)
+        return self._run_agent_loop(
+            active["turn_id"], s.get("turn_count", 0) + 1,
+            active.get("routing") or {}, tcontract, offered, None,
+            resume=resume)
 
     # ------------------------------------------------------- contract approval
     def _has_write_effects(self) -> bool:
@@ -1960,7 +2751,8 @@ class Loop:
                    for e in self.state.events)
 
     def _finalize_turn(self, turn_id: str, turn: dict, results: list[dict],
-                       routing: dict, expected_header: str) -> dict:
+                       routing: dict, expected_header: str,
+                       completion: dict | None = None) -> dict:
         if turn.get("plan"):
             self.state.record("plan_updated", {"plan": turn["plan"]})
         if turn.get("questions"):
@@ -1972,30 +2764,32 @@ class Loop:
                            "results": len(results)})
         self._hist("assistant", f"[{turn_id}] {turn['progress_delta'][:300]}")
 
-        # Elevator exit gates (code checks on the transitions, not reminders).
+        # Elevator exit gates (code checks on the transitions, not
+        # reminders). Also runs per round; idempotent here.
+        self._check_elevator_gates(turn_id)
         s = self.state.snapshot
-        if s["phase"] == "BUILD" and self._has_write_effects():
-            # BUILD exit gate: diff produced -> VERIFY. Done criteria are
-            # checked at the done claim, not here.
-            self.request_phase("VERIFY", reason="write effects produced")
+        done = None
+        if completion is not None and completion.get("completed"):
+            done = completion
+        elif s["phase"] == "REVIEW" and turn.get("done_claim"):
+            # Legacy backstop: a done_claim that reached finalize without
+            # interception (e.g. a turn paused under v0.5.2 and resumed).
+            # Semantic validation already proved every criterion in code,
+            # and the turn already passed the REVIEW premortem rubric.
+            done = {"completed": True,
+                    "evidence": {},
+                    "summary": (turn.get("progress_delta") or "")[:500],
+                    "via": "legacy_done_claim"}
+        if s["phase"] == "REVIEW" and done:
+            # The mission_done event is the terminal record; the phase
+            # stays REVIEW (there is no DONE phase — downstream tooling
+            # keys on the journal, not a phase string).
+            self.state.record("mission_done",
+                              {"turn_id": turn_id,
+                               "via": done.get("via", "attempt_completion"),
+                               "evidence": done.get("evidence"),
+                               "summary": done.get("summary")})
             s = self.state.snapshot
-        if s["phase"] == "VERIFY" and self._has_exit_zero():
-            # Track G: exit 0 alone does NOT unlock REVIEW — only the
-            # verifier worker's journaled pass verdict does.
-            if s.get("verify_pass"):
-                self.request_phase("REVIEW",
-                                   reason="verify exit 0 + verifier pass")
-            else:
-                self.state.record("verify_gate_waiting",
-                                  {"reason": ("exit 0 observed but no "
-                                             "journaled verifier pass")})
-            s = self.state.snapshot
-        if s["phase"] == "REVIEW" and turn.get("done_claim"):
-            # Semantic validation already proved every criterion in code, and
-            # the turn already passed the REVIEW premortem rubric.
-            self.state.record("mission_done", {"turn_id": turn_id, "via": "verified_claim"})
-            s = self.state.snapshot
-
         sig = self._progress_sig()
         stalls = s["consecutive_stalls"] + 1 if sig == s["last_progress_sig"] else 0
         self.state.record("turn_completed",
@@ -2450,7 +3244,9 @@ class Loop:
                 f"No worker spawned; pool unchanged.")
         # ---- spawn (spawn_worker enforces the per-spawn budget again) ----
         parent_mode = s.get("mode", "observe")
-        parent_tools = list(MODES[parent_mode]["tools"])
+        # v0.6: the authoritative offered set includes the harness tools
+        # in every mode.
+        parent_tools = list(MODES[parent_mode]["tools"]) + list(HARNESS_TOOLS)
         self.state.record(
             "fanout_started",
             {"objective": objective,
@@ -2605,8 +3401,13 @@ class Loop:
             dag_tasks = reg.tasks() if reg is not None else []
             blockers = reg.unblock_report() if reg is not None else []
             mission = s.get("mission") or {}
-            criteria = [criterion_text(c)
-                        for c in mission.get("done_criteria", [])]
+            # v0.6: the harness auto-spawn may narrow the verified set to
+            # the artifact criteria (event criteria are already
+            # journal-proven by the auto-spawn's pre-check; manual criteria
+            # stay operator-only at the final done claim). A manual
+            # begin_verification always verifies the full criterion set.
+            criteria = context.get("criteria") or mission.get("done_criteria", [])
+            criteria = [criterion_text(c) for c in criteria]
             role = (s.get("role_mode") or {}).get("role", "")
             role_ev = list(_modes.ROLES.get(role, {}).get("required_evidence", []))
             result = compute_verdict(

@@ -1329,8 +1329,13 @@ _ACTIVE_SIDECAR = None
 _COMPILE_PATCHED = False
 
 
-def _patched_compile_contract(state, turn_no=1):
-    block = _real_compile_contract(state, turn_no=turn_no)
+def _patched_compile_contract(state, turn_no=1, knowledge=None,
+                              round_no=None, round_context=None):
+    # v0.6: forward the round kwargs — the recursive loop recompiles the
+    # contract per round with a `loop: turn.round` header.
+    block = _real_compile_contract(state, turn_no=turn_no,
+                                    knowledge=knowledge, round_no=round_no,
+                                    round_context=round_context)
     if _ACTIVE_SIDECAR is not None:
         # Persona is front-loaded (pinned tier, right after the header
         # sensor line, which must stay first): a lens on how to think.
@@ -1693,7 +1698,7 @@ class _ModeAwareBackend:
         return getattr(self._inner, name)
 
     def generate(self, contract_block, history, feedback=None,
-                 stream_cb=None):
+                 stream_cb=None, tools=None, cancel=None, temperature=None):
         """stream_cb(kind, text): optional streaming sink for the sidecar
         protocol (spec §3.2–3.3). kind is "thinking" or "said". Default
         None preserves today's behavior exactly: the inner backend is
@@ -1704,19 +1709,40 @@ class _ModeAwareBackend:
         _chat_stream (echo, hostile, plain scripted) runs its existing
         generate() untouched and the turn's progress_delta goes out as
         one ("said", ...) chunk — those providers keep working with zero
-        changes to their code."""
-        temperature = self._sidecar._active_temperature()
+        changes to their code.
+
+        v0.6: accepts and forwards the loop's per-round kwargs (tools,
+        cancel, temperature) to the inner backend.
+        """
+        # v0.6: the loop may pass tools/cancel/temperature per round; the
+        # sidecar's temperature takes precedence unless explicitly given.
+        if temperature is None:
+            temperature = self._sidecar._active_temperature()
         inner = self._inner
+        # v0.6: only forward kwargs the inner backend actually accepts —
+        # plain providers (echo/hostile/scripted) keep their old shape.
+        import inspect as _inspect
+        try:
+            _params = _inspect.signature(inner.generate).parameters
+            _accepts_kw = any(p.kind == _inspect.Parameter.VAR_KEYWORD
+                              for p in _params.values())
+        except (TypeError, ValueError):
+            _params, _accepts_kw = {}, True
+        _extra = {}
+        if _accepts_kw or "tools" in _params:
+            _extra["tools"] = tools
+        if _accepts_kw or "cancel" in _params:
+            _extra["cancel"] = cancel
         if stream_cb is None:
             return inner.generate(
                 contract_block, history, feedback=feedback,
-                temperature=temperature)
+                temperature=temperature, **_extra)
         if hasattr(inner, "_chat_stream"):
             return inner.generate(
                 contract_block, history, feedback=feedback,
-                temperature=temperature, stream_cb=stream_cb)
+                temperature=temperature, stream_cb=stream_cb, **_extra)
         turn = inner.generate(contract_block, history, feedback=feedback,
-                              temperature=temperature)
+                              temperature=temperature, **_extra)
         said = (turn or {}).get("progress_delta") or ""
         if said:
             stream_cb("said", said)
@@ -2085,6 +2111,12 @@ class Sidecar:
         self.model_desc = ""
         self.alive = True
         self._cancel = threading.Event()
+        # v0.6: per-turn cooperative cancellation. The token is created
+        # fresh for each user turn, handed to Loop.run_user_turn, and set
+        # by the stdin pump when a cancel command arrives mid-turn. The
+        # loop polls it at round checkpoints and inside run_command.
+        from cancel import CancelToken
+        self._turn_token: CancelToken | None = None
         self._worker: threading.Thread | None = None
         self._turn_out: queue.Queue = queue.Queue()
         self._pending_says: list = []  # per-command _say() buffer
@@ -3737,6 +3769,8 @@ class Sidecar:
             _err('user_message requires "text" (non-empty string)')
             return
         self._cancel.clear()
+        from cancel import CancelToken
+        self._turn_token = CancelToken()
         self._turn_out = queue.Queue()
         # Sidecar streaming protocol (spec §3): per-turn opt-in via
         # "stream": true. Absent/false preserves the 0.3.0 event set
@@ -3768,6 +3802,8 @@ class Sidecar:
                 continue
             if isinstance(inner, dict) and inner.get("cmd") == "cancel":
                 self._cancel.set()
+                if self._turn_token is not None:
+                    self._turn_token.set("operator stop")
             else:
                 self.deferred.append(inner)
         result = self._turn_out.get()
@@ -3844,7 +3880,8 @@ class Sidecar:
 
     def _run_turn_thread(self, text: str) -> None:
         try:
-            result = self.loop.run_user_turn(text)
+            result = self.loop.run_user_turn(text,
+                                             cancel_token=self._turn_token)
         except Exception as e:  # noqa: BLE001 - fail-closed turn result
             traceback.print_exc(file=sys.stderr)
             result = {"status": "error",
@@ -4610,7 +4647,11 @@ class Sidecar:
         if self._worker is not None and self._worker.is_alive():
             # The pump loop (above) will see this flag; the in-flight model
             # HTTP call cannot be interrupted, only its result discarded.
+            # v0.6: the CancelToken reaches the loop's round checkpoints
+            # and run_command's poll loop, so the turn halts cooperatively.
             self._cancel.set()
+            if self._turn_token is not None:
+                self._turn_token.set("operator stop")
         else:
             _emit({"event": "cancel_ack", "accepted": False,
                    "note": "no turn in flight"})

@@ -17,6 +17,13 @@ def build_ready_loop(**kw):
                        "args": {"path": "out.txt", "content": "hello"}}],
           progress_delta="Writing out.txt (needs approval).",
           assumptions=["Cause: the file does not exist yet."]),
+        # v0.6: approve()/deny() resume the recursive loop instead of
+        # finalizing, so the script carries the post-drain round the
+        # resumed loop consumes: a no-call round that observes the
+        # grant/deny outcome and exits normally.
+        T(plan=["Write it"],
+          progress_delta="Observed the approval outcome.",
+          assumptions=["Cause: the file was missing."]),
     ])
     loop, _ = make_loop(backend=backend, **kw)
     loop.set_mission("Write the file", ["manual"])

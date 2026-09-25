@@ -7,7 +7,13 @@ from backends import HostileBackend, ScriptedBackend
 
 
 def plan_write_verify():
-    """Script: plan turn, build write turn, verify command turn."""
+    """Script: plan turn, build write turn, verify turn, done-claim turn.
+
+    v0.6: approve() resumes the recursive loop instead of finalizing, so
+    the resumed round consumes the verify turn (the phase is VERIFY by
+    then — the elevator fires on the drained write effects). The "run the
+    tests" turn that follows is a no-call observation round.
+    """
     return [
         T(plan=["Write the fix"], progress_delta="Planning.",
           assumptions=["Cause: the empty-password path."]),
@@ -16,23 +22,36 @@ def plan_write_verify():
                        "args": {"path": "fix.py", "content": "patched"}}],
           progress_delta="Writing the fix (needs approval).",
           assumptions=["Cause: the empty-password path passes None."]),
+        # Consumed by the resumed round after approve(): phase is VERIFY,
+        # mode is verify, stance is devil's-advocate — the assumptions
+        # carry a substantive attack on the result.
         T(plan=["Verify"],
           tool_calls=[{"name": "run_command", "args": {"cmd": "true"}}],
           progress_delta="Tests pass: exit 0.",
           assumptions=["The command ran green, but it does not itself "
                        "exercise the empty-password path."]),
+        # The "run the tests" turn: tests already ran in the resume round;
+        # a no-call round that observes and exits.
+        T(plan=["Verify"],
+          progress_delta="Tests already green from the approval resume.",
+          assumptions=["The verify round's exit 0 stands untouched; "
+                       "re-running the suite would add no new evidence."]),
     ]
 
 
 def drive_to_review(loop):
-    """Approve the contract + scope, run the plan/write/verify script, then
-    pass the verifier gate (Track G) to reach REVIEW."""
+    """Approve the contract + scope, run the plan/write script, then
+    pass the verifier gate (Track G) to reach REVIEW.
+
+    v0.6: approve() resumes the recursive loop, and the resumed round
+    runs the verify turn itself — there is no separate "run the tests"
+    user turn anymore. The phase is VERIFY when the drain returns.
+    """
     loop.run_user_turn("draft the plan")
     loop.approve_contract()
     loop.approve_contract(["fix.py"])
     loop.run_user_turn("fix it now")
     loop.approve()
-    loop.run_user_turn("run the tests")
     assert loop.state.snapshot["phase"] == "VERIFY", loop.state.snapshot["phase"]
     # Track G: the verifier worker must journal a pass verdict.
     res = drive_verification(
