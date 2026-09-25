@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.3 — interview-convergence + transcript-persistence hotfix (2026-09-25)
+
+Pre-release (beta channel). Fixes two reported blockers:
+
+- Discovery interview could ask questions forever: the model is now told
+  to converge and has a model-callable `set_mission` tool (observe/plan
+  only, non-consequential, revision-tracked) that records the mission and
+  done criteria, unblocking the floors.
+- Chat transcript wiped on tab switch: `retainContextWhenHidden` plus a
+  host-side transcript buffer and a `chatReady` handshake that replays the
+  transcript and re-pushes fresh chrome on every view (re)load.
+- Backend fallbacks now include the exception message (e.g. `endpoint
+  HTTP 404`), not just the exception type.
+
 ## 0.5.2 — honest-gaps fix program (2026-09-25)
 
 Every previously documented "honest limitation" below is now fixed with
