@@ -15,7 +15,7 @@ not a mode.
 |---|---|---|---|
 | observe | read_file, list_dir | — | teach intent (Feynman) |
 | plan | read_file, list_dir | — | opinion / advise / triage intents; DEFINE+PLAN floors |
-| build | + write_file | write_file (needs approval; SCOPE-bounded) | fix intent; BUILD floor (only after /approve-contract + SCOPE) |
+| build | + write_file, patch_file | write_file + patch_file (need approval; SCOPE-bounded) | fix intent; BUILD floor (only after /approve-contract + SCOPE) |
 | verify | + run_command | — | VERIFY/REVIEW floors (no write tool offered: tests can't be edited to force a pass) |
 | ship | read_file, list_dir | — | ship intent; SHIP floor |
 
@@ -113,6 +113,48 @@ reasons — never silently. Refusals are `contract_refused` events
 Status: **done (2026-09-18)** — `tests/test_contract_loop.py` (12 tests),
 suite 113/113 green ×3.
 
+## Trust boundaries (2026-09-25 honest-gaps program)
+
+- **`patch_file`** (`prototype/tools.py`): atomic unified-diff application
+  (temp file + `os.replace`), fail-closed with named refusal codes
+  (`BAD_HUNK_HEADER`, `BODY_COUNT_MISMATCH`, `CONTEXT_MISMATCH`,
+  `AMBIGUOUS_MATCH`, `FUZZY_OFFSET`, `PATCH_TARGET_MISSING`, `EMPTY_PATCH`,
+  `MULTI_FILE_PATCH`, `UNSUPPORTED_DIFF`). Zero fuzz, zero guessing.
+  Build-mode only, consequential like `write_file`; applies and refusals
+  journaled as `patch_applied` / `patch_refused`.
+- **Secret redaction** (`prototype/secret_redaction.py`): high-confidence
+  credential shapes (AWS `AKIA…` keys, `sk-`/`sk-or-v1-`/`sk-ant-` keys,
+  `ghp_`/`gho_`/`github_pat_` tokens, `Bearer` tokens, `xoxb-`/`xoxp-`
+  tokens, high-entropy `api_key`/`secret`/`token`/`password` assignments)
+  are redacted at the journaling boundary (`ProjectState.record()` covers
+  `events.jsonl`, in-memory events, journal exports; `persist_snapshot()`
+  covers `snapshot.json`) and on the sidecar's log output path (`_emit()`
+  stdout, `_RedactingStderr` wrapper). General PII scrubbing of arbitrary
+  free text is deliberately NOT attempted (arms race). Follow-up:
+  `prototype/awino_mcp.py`'s stderr/diagnostic path is not wrapped yet.
+- **Approval-target visibility** (`prototype/approval_targets.py`):
+  shell approval cards show the command's cwd-resolved absolute file
+  targets and flag anything outside the workspace
+  (`outside_workspace: true`). Visibility, not prohibition — there is no
+  dangerous-command blacklist; the user stays the authority. Expansion,
+  globs, pipes, and unknown command shapes are marked UNRESOLVED rather
+  than silently skipped.
+- **Fan-out routing** (`prototype/loop.py::fanout`): a fan-out request can
+  carry a code-owned routing map (`model_routes`: name → backend) and each
+  subtask may name its backend; unknown names raise `UnknownBackendError`
+  ("fanout refused") in pre-flight, before any worker spawns. Tournament
+  mode and loop-until-done remain unimplemented roadmap items.
+- **Bedrock AWS profile/SSO** (`prototype/awino_sidecar.py`): stdlib-only
+  SigV4 signing from the standard AWS credential chain (env →
+  `~/.aws/credentials` → `~/.aws/config` with `source_profile` chaining →
+  SSO cache via `GetRoleCredentials` — the SSO token is exchanged, never
+  used directly as a signing key). Fail-closed with named errors
+  (`AWS_SSO_TOKEN_EXPIRED`, `AWS_PROFILE_NOT_FOUND`,
+  `AWS_CREDENTIALS_NOT_FOUND`, …); never sends unsigned requests.
+  Honest limit: signatures are cross-validated against botocore in tests,
+  but the first LIVE Bedrock call from this path is still untested here
+  (no AWS credentials in this environment).
+
 ## The old world: 16 repo skills (`~/workspace/awino-recovery/skills/`)
 
 These are SKILL.md files the model must voluntarily fetch — the advisory
@@ -121,11 +163,11 @@ model this rebuild replaces. Mapping to the loop-owner:
 | Repo skill | Loop-owner counterpart | Status |
 |---|---|---|
 | awino-discover | discovery skill + planning-grill stance | **done (ported via template, 2026-09-18)** — full interview procedure (detect-before-ask, frontier mission→user→goals→tenets→expectations→metric, diverge/converge, adaptive grill, confirm intent, 7 failure modes) in the discovery skill body; new-task routes mission-definition+discovery; grill enforces one-question-at-a-time and ask-XOR-advance |
-| awino-debug | fix intent + first-principles | partial (no debug procedure yet) |
+| awino-debug | fix intent + first-principles + `debug` skill | **done (2026-09-25)** — reproduce→diagnose→fix→verify procedure with checklist gates (reproduction evidence before diagnosis, ROOT CAUSE statement format, verification criteria); routed on fix intent |
 | awino-consult | advisor chain | partial |
 | awino-evidence | verification skill + VERIFY floor | partial |
 | awino-triage | triage stance + skill | **done (authored via template, 2026-09-18)** |
-| awino-rpi | — | gap |
+| awino-rpi | `rpi` skill (loop-owner multi-file workflow) | **done (2026-09-25)** — file set named in SCOPE, sequenced edits, verify each file, integrate; works through the contract/mission machinery, never around it |
 | awino-delegate | `Loop.fanout` — parallel workers, atomic overlap/budget preflight, fail-closed synthesis barrier | **done (merged)** |
 | awino-ralph | the harness loop itself | superseded |
 | awino-memory | durable-memory skill + `prototype/memory_store.py` (MemPalace cherry-pick: local-first JSONL, chunking, content-hash dedup) | **done (2026-09-25)** |
@@ -142,9 +184,10 @@ model this rebuild replaces. Mapping to the loop-owner:
 1. **~~discover is thin~~ resolved 2026-09-18** — the discovery skill now carries
    the full interview procedure and the grill enforces it (see awino-discover
    row above).
-2. **debug procedure** — fix intent routes first-principles (cause in
-   assumptions) but there's no reproduce→diagnose→fix procedure body.
-3. **rpi** — multi-file change workflow still has no loop-owner form.
+2. **~~debug procedure~~ resolved 2026-09-25** — the `debug` skill carries the
+   reproduce→diagnose→fix→verify procedure and is routed on fix intent.
+3. **~~rpi~~ resolved 2026-09-25** — the `rpi` skill is the loop-owner
+   multi-file change workflow.
    (Delegate is done: the fan-out primitive merged — `Loop.fanout` with
    atomic overlap/budget preflight and a fail-closed synthesis barrier.)
 4. **~~memory~~ resolved 2026-09-25** — MemPalace head-to-head verdict:

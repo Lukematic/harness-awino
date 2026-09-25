@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 
 PROTOTYPE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -110,13 +111,17 @@ class SidecarCleanupTest(unittest.TestCase):
         self.assertEqual(leaked, [],
                          f"leaked temp dirs after failing run: {leaked}")
 
-    def test_sweeper_removes_stray_dirs(self):
-        from tests.temp_sweep import sweep
+    def test_sweeper_removes_stale_stray_dirs(self):
+        from tests.temp_sweep import sweep, STALE_AFTER_SECONDS
         tmpdir = _fresh_tmpdir(self)
         strays = []
         for prefix in LEAK_PREFIXES:
             d = tempfile.mkdtemp(prefix=prefix, dir=tmpdir)
             strays.append(d)
+        # Backdate: only STALE strays may be swept.
+        old = time.time() - STALE_AFTER_SECONDS - 60
+        for d in strays:
+            os.utime(d, (old, old))
         # a non-matching dir must be left alone
         keep = tempfile.mkdtemp(prefix="awino-cleanup-check-keep-",
                                 dir=tmpdir)
@@ -136,6 +141,27 @@ class SidecarCleanupTest(unittest.TestCase):
         self.assertTrue(os.path.isdir(keep))
         for d in strays:
             self.assertFalse(os.path.exists(d), d)
+
+    def test_sweeper_never_touches_fresh_dirs(self):
+        # Concurrency safety: a matching dir younger than the staleness
+        # threshold may belong to a LIVE concurrent suite run sharing this
+        # TMPDIR — the sweeper must leave it alone.
+        from tests.temp_sweep import sweep
+        tmpdir = _fresh_tmpdir(self)
+        fresh_dirs = [tempfile.mkdtemp(prefix=p, dir=tmpdir)
+                      for p in LEAK_PREFIXES]
+        old_tmpdir = os.environ.get("TMPDIR")
+        os.environ["TMPDIR"] = tmpdir
+        try:
+            sweep()
+        finally:
+            if old_tmpdir is None:
+                del os.environ["TMPDIR"]
+            else:
+                os.environ["TMPDIR"] = old_tmpdir
+        for d in fresh_dirs:
+            self.assertTrue(os.path.isdir(d),
+                            f"fresh dir must survive the sweep: {d}")
 
 
 if __name__ == "__main__":

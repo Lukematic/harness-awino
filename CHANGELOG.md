@@ -1,7 +1,34 @@
 # Changelog
 
-## Unreleased
+## Unreleased — honest-gaps fix program (2026-09-25)
 
+Every previously documented "honest limitation" below is now fixed with
+tests, not just documented. 123 new tests across 8 workstreams.
+
+- Bedrock AWS profile/SSO: stdlib-only SigV4 signing in the sidecar from
+  the standard AWS credential chain (env → `~/.aws/credentials` →
+  `~/.aws/config` with `source_profile` chaining → SSO cache exchanged
+  via `GetRoleCredentials`, never used directly as a key). Named
+  fail-closed errors (`AWS_SSO_TOKEN_EXPIRED`, `AWS_PROFILE_NOT_FOUND`,
+  `AWS_CREDENTIALS_NOT_FOUND`); profile selection in the Bedrock setup
+  flow (`awino.bedrockAuthMode`, `awino.bedrockAwsProfile`). Signatures
+  cross-validated against botocore (26 tests). First LIVE Bedrock call
+  still untested here — no AWS credentials in this environment.
+- `patch_file` tool: atomic, fail-closed unified-diff application with
+  named refusal codes; build-mode only, consequential like `write_file`.
+- Secret redaction: high-confidence credential shapes redacted at the
+  journaling boundary and on sidecar log output; cleartext secrets never
+  persist. General PII scrubbing stays out of scope by design.
+- Approval-target visibility: shell approval cards show cwd-resolved
+  absolute targets and flag out-of-workspace addressing. No blacklist —
+  the user stays the authority.
+- Durable memory: MemPalace cherry-pick — local-first JSONL store
+  (`.awino/memory.jsonl`), word-boundary chunking, content-hash dedup.
+- `debug` + `rpi` skills: reproduce→diagnose→fix→verify procedure and the
+  loop-owner multi-file workflow (52 skills total).
+- Sidecar test temp-dir leak fixed at source (`SidecarClient.close()`
+  removes its dirs; a stale-only sweeper guards crashed runs without
+  touching live concurrent runs).
 - Fan-out: per-worker model routing. A fan-out request can carry a
   code-owned routing map (`model_routes`: name → backend) and each
   subtask may name its backend; unknown names raise the new named error

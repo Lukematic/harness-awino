@@ -155,7 +155,10 @@ class TestDurableMemoryRouting(unittest.TestCase):
     def test_skill_counts_stay_green(self):
         from skills import SkillStore
         store = SkillStore.default()
-        self.assertEqual(len(store.names()), 50)
+        # 52: 49 base + durable-memory + debug + rpi (see
+        # test_rigor.py::TestRigorSkills::test_pins_load, the canonical
+        # count assertion — this one guards the routing surface only)
+        self.assertEqual(len(store.names()), 52)
         self.assertIn("durable-memory", store.names())
 
 

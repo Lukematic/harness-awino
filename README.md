@@ -21,7 +21,7 @@ Two things live here:
 ## Run it
 
 ```sh
-cd prototype && ./run_tests.sh   # full harness suite (621 tests, ~6 min; point TMPDIR at a roomy dir)
+cd prototype && ./run_tests.sh   # full harness suite (745 tests, ~6 min; point TMPDIR at a roomy dir)
 cd integrations/vscode/extension && npm test   # extension suite (node)
 ```
 
@@ -53,11 +53,15 @@ package.
 | Per-turn contract loop | `prototype/contract_loop.py`, `loop.py` | Compiles and validates the turn contract pre-turn and pre-execute; refuses broken contracts with named reasons |
 | Modes (5) | `prototype/contract.py::MODES` | observe, plan, build, verify, ship — permission profiles, computed before the model acts |
 | Stances (9) | `prototype/stances.py` | steel-man, feynman, planning-grill, first-principles, premortem, devil's-advocate, advisor, triage, verifier — reasoning procedures with rubrics |
-| Skills (50) | `prototype/skills/` | Injected knowledge, SHA-256 pinned, verified at load. Core loop, rigor coach, osmani port, agent personas, references, durable-memory |
+| Skills (52) | `prototype/skills/` | Injected knowledge, SHA-256 pinned, verified at load. Core loop, rigor coach, osmani port, agent personas, references, durable-memory, debug, rpi |
 | Judge panel | `prototype/judges.py` | N judges vote by quorum per turn; no single gatekeeper; fail-closed |
 | Skill synthesis | `prototype/synthesis.py` | Learnings → sandbox verification → pin → admit only on pass |
-| Fan-out | `prototype/loop.py` | Parallel workers with atomic overlap/budget checks and a fail-closed synthesis barrier |
-| Approval binding | `prototype/approvals.py` | Approval bound to canonical plan bytes, scope, base commit, approver, timestamp; re-approval chains via `supersedes_digest` |
+| Fan-out | `prototype/loop.py` | Parallel workers with atomic overlap/budget checks and a fail-closed synthesis barrier; per-worker backend/model routing via a code-owned routing map |
+| Approval binding | `prototype/approvals.py` | Approval bound to canonical plan bytes, scope, base commit, approver, timestamp; re-approval chains via `supersedes_digest`. Shell cards show cwd-resolved absolute targets and flag out-of-workspace addressing |
+| patch_file | `prototype/tools.py` | Atomic, fail-closed unified-diff application (named refusal codes); build-mode only, consequential like `write_file` |
+| Secret redaction | `prototype/secret_redaction.py` | High-confidence credential shapes redacted at the journaling boundary and on sidecar log output; general PII scrubbing out of scope by design |
+| Durable memory | `prototype/memory_store.py` | Local-first JSONL store (`.awino/memory.jsonl`), chunked entries, content-hash dedup |
+| Bedrock SigV4 | `prototype/awino_sidecar.py` | Stdlib-only SigV4 from the AWS credential chain (env / `~/.aws` / SSO via GetRoleCredentials); fail-closed named errors; first live call still untested here |
 | Discovery interview | `prototype/skills/discovery.md` | Fires on new tasks; grill enforces one-question-at-a-time, ask-XOR-advance |
 | MCP server | `integrations/mcp-server/` | Standalone, client-agnostic: contract compiler, turn validator, judge panel, skill synthesis |
 

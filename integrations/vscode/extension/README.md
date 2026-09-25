@@ -56,7 +56,11 @@ Two auth modes, both real and working:
   No key is needed, none is sent, and the sidecar refuses to connect with a
   named error (`AWS_SSO_TOKEN_EXPIRED`, `AWS_PROFILE_NOT_FOUND`, ...)
   rather than silently falling back. For SSO profiles run
-  `aws sso login --profile <name>` first.
+  `aws sso login --profile <name>` first. Honest status: request
+  signatures are cross-validated against botocore in the test suite, but
+  the first live Bedrock call through the profile path is still untested
+  here (no AWS credentials in the build environment) — try it with your
+  own profile and report back.
 
 - **Setup:** run `Awino: Set Up AWS Bedrock` (or the Models & Providers panel's
   *Bedrock authentication* / *AWS profile* / *Bedrock region* fields). The endpoint is derived from
