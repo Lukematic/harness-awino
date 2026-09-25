@@ -991,6 +991,28 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
       if (a.diff) {
         html += '<div>Diff preview:</div>' + AwinoMarkdown("```diff\n" + String(a.diff) + "\n```");
       }
+      // approval-target visibility: resolved absolute targets + flag when
+      // the command addresses outside the workspace (visibility only —
+      // nothing here changes approve/deny semantics)
+      var st = a.shell_targets;
+      if (st) {
+        if (st.outside_workspace) {
+          html += '<div class="outside-banner">\u26a0\ufe0f This command addresses ' +
+            'paths OUTSIDE the workspace. Review the resolved targets before deciding.</div>';
+        }
+        html += '<div class="targets"><div><b>Resolved targets</b> (cwd: ' +
+          esc(st.effective_cwd || "") + ")</div>";
+        (st.targets || []).forEach(function (t) {
+          html += '<div class="trow"><span class="' + (t.in_workspace ? "in" : "out") + '">' +
+            (t.in_workspace ? "\u2713" : "\u26a0\ufe0f") + "</span><code>" + esc(t.path) + "</code>" +
+            (t.in_workspace ? "" : ' <span class="out">outside workspace</span>') + "</div>";
+        });
+        (st.unresolved || []).forEach(function (u) {
+          html += '<div class="trow"><span class="in">?</span><code>' + esc(u.raw) + "</code>" +
+            ' <span class="in">unresolved: ' + esc(u.reason || "") + "</span></div>";
+        });
+        html += "</div>";
+      }
       html += '<div class="btnrow">' +
         '<button data-act="approve">Approve</button>' +
         '<button data-act="deny" class="secondary">Deny</button></div></div>';

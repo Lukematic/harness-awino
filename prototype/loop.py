@@ -30,6 +30,7 @@ from skills import SkillIntegrityError
 from synthesis import synthesize_learning as _synthesize_learning
 from stances import evaluate_chain, route_triple, FLOORS
 from tools import Sandbox, TOOL_DEFS
+from approval_targets import resolve_shell_targets
 from backends import ScriptedJudge
 from contract_loop import (
     BREAK_WRITE_WITHOUT_APPROVAL, check_pre_execute, check_pre_turn,
@@ -1294,6 +1295,19 @@ class Loop:
             ap = {"id": "ap-" + _uid()[:8], "call_id": call_id, "tool": c["name"],
                   "args": c["args"], "idem_key": self._idem(c),
                   "revision": self._revision(), "status": "pending"}
+            if c["name"] == "run_command":
+                # Approval-target visibility (not prohibition): resolve the
+                # shell command's file targets against the workspace cwd and
+                # flag out-of-workspace addressing on the approval card.
+                # The user remains the authority — this changes nothing
+                # about approve/deny semantics.
+                try:
+                    ap["shell_targets"] = resolve_shell_targets(
+                        str((c.get("args") or {}).get("cmd") or ""),
+                        str(self.sandbox.root))
+                except Exception:  # noqa: BLE001 - visibility must never
+                    # break the approval gate itself
+                    pass
             approvals.append(ap)
             pending.append({"call_id": call_id, "tool": c["name"], "args": c["args"],
                             "idem_key": ap["idem_key"], "approval_id": ap["id"]})

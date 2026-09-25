@@ -99,7 +99,9 @@ deliberately never read.
   explicit and journal-logged. Project A can never see project B's key.
 - Approval flow: `approval_requested` → VS Code modal (Approve / Deny /
   "Always allow this tool" for the session). `write_file` approvals carry a
-  unified diff. Deny/dismiss is the safe direction.
+  unified diff; `run_command` approvals carry cwd-resolved absolute shell
+  targets with an out-of-workspace flag (visibility only — no blacklist,
+  nothing blocked). Deny/dismiss is the safe direction.
 - Compaction at ~85% of the context window pauses the turn and asks the
   operator (modal + webview card). Denial is journaled; auto-approve is
   per-project and defaults off.

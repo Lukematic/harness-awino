@@ -981,6 +981,29 @@ interface ApprovalItem {
   args: Record<string, unknown>;
   diff?: string;
   old_exists?: boolean;
+  // approval-target visibility: cwd-resolved file targets for shell
+  // commands, with the out-of-workspace flag (visibility only)
+  shell_targets?: {
+    effective_cwd?: string;
+    targets?: Array<{ raw: string; path: string; in_workspace: boolean; kind: string }>;
+    unresolved?: Array<{ raw: string; reason: string }>;
+    outside_workspace?: boolean;
+  };
+}
+
+function formatShellTargets(st: NonNullable<ApprovalItem["shell_targets"]>): string {
+  const lines: string[] = [];
+  if (st.outside_workspace) {
+    lines.push("⚠️ OUTSIDE WORKSPACE — this command addresses paths outside the workspace.");
+  }
+  lines.push(`resolved targets (cwd: ${st.effective_cwd ?? ""}):`);
+  for (const t of st.targets ?? []) {
+    lines.push(`  ${t.in_workspace ? "✓" : "⚠️ OUTSIDE"} ${t.path}`);
+  }
+  for (const u of st.unresolved ?? []) {
+    lines.push(`  ? unresolved: ${u.raw} (${u.reason ?? ""})`);
+  }
+  return lines.join("\n");
 }
 
 async function handleApprovalRequested(ev: SidecarEvent): Promise<void> {
@@ -1001,6 +1024,7 @@ async function handleApprovalRequested(ev: SidecarEvent): Promise<void> {
       `tool: ${a.tool}`,
       `args: ${JSON.stringify(a.args, null, 2)}`,
       a.diff ? `\n--- diff ---\n${a.diff}` : "",
+      a.shell_targets ? `\n--- shell targets ---\n${formatShellTargets(a.shell_targets)}` : "",
     ]
       .filter(Boolean)
       .join("\n");
