@@ -11,7 +11,7 @@ Spec-driven development says what to build. Test-driven development proves it wo
 5. GUARD THE BAR ITSELF: tightening is silent, loosening is loud. At review, watch the diff for the five cheap roads to green: the threshold moved; a test got easier (skip added, test deleted, assertions pulled); a checker got silenced (new ignore/disable comments); work left unfinished (stubs, TODOs standing where implementation should be); an unexplained exception row. Compare the constraints record against its state at the branch point — `CONSTRAINTS.md` changed in the same commit as the failing feature is a red flag.
 6. ESCALATION: written-only first (agents read it), then scripted (a `check` command wired into hooks/CI), then tool-backed only when the config outgrows a script. Most projects stop at scripted.
 
-Attribution: adapted from agent-skills constraint-driven-development (MIT, Addy Osmani).
+Source: agent-skills (MIT, Addy Osmani)
 Adapted for Awino: the source's live-user interview maps to PLAN-phase contract approval — the user approves the mission contract, so the four questions are answered there (or the defaults apply and are recorded). Mapped to Awino phases instead of slash commands: fast checks in BUILD, task-level in VERIFY, slow in CI/SHIP. The floor's "no skipped tests" rule reinforces rigor-checkpoint's binary commit gate. Web-specific dimensions (Lighthouse, axe, bundle size) kept as optional examples, not defaults — Awino missions are not always web apps.
 
 Layered loading: the harness routes this skill only as noted below. Never bulk-load all skills into one turn's context.

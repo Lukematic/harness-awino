@@ -11,7 +11,7 @@ Security is a constraint on every line that touches untrusted data, auth, or ext
 9. DEPENDENCIES: one installation boundary, one lockfile; review the lockfile diff (most installed packages were never directly chosen); never blanket-approve install scripts; audits match known advisories only — review new packages for typosquatting/ownership/provenance; upgrade one dependency per change, read the changelog (semver is a promise, not a guarantee), verify with a green suite before and after.
 10. REVIEW-TIME AUDIT (REVIEW phase): walk the diff against the red flags — unvalidated input into queries/shell/HTML, missing auth checks, wildcard CORS, no rate limit on auth endpoints, secrets in the diff, stack traces in responses, user-influenced server fetches, model output into sinks. Zero unresolved Critical findings is the PASS bar.
 
-Attribution: adapted from agent-skills security-and-hardening (MIT, Addy Osmani).
+Source: agent-skills (MIT, Addy Osmani)
 Adapted for Awino: implementation references to the source's external references/ files removed (Awino is stdlib-only); the "Ask First" tier mapped onto Awino's existing consequential-tool approval flow rather than a separate mechanism; web-framework specifics (helmet, CSP strings) trimmed to portable rules. The destructive-path rule complements Sandbox._resolve with the depth/ownership checks the sandbox does not do.
 
 Layered loading: the harness routes this skill only as noted below. Never bulk-load all skills into one turn's context.

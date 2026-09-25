@@ -15,7 +15,7 @@ Every change is reviewed before it advances to SHIP — no exceptions. The revie
 8. VERIFY THE VERIFICATION: what tests ran? Build green? Manual verification done? Screenshots for UI changes?
 Verdict: Approve (ready to advance), Request changes (Critical/Required outstanding), or Defer with justification. This review PRODUCES findings; rigor-checkpoint's binary gate DECIDES the commit.
 
-Attribution: adapted from agent-skills code-review-and-quality (MIT, Addy Osmani).
+Source: agent-skills (MIT, Addy Osmani)
 Adapted for Awino: slash-command references removed; mapped to the REVIEW phase (the diff review before SHIP). The source's "approve when it definitely improves" standard is kept for review judgment, but the commit/merge bar stays rigor-checkpoint's binary gate — review informs, checkpoint decides. Multi-model review pattern trimmed (Awino's judge panel covers independent review).
 
 Layered loading: the harness routes this skill only as noted below. Never bulk-load all skills into one turn's context.

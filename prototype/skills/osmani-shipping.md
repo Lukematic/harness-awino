@@ -8,7 +8,7 @@ Ship with confidence: every launch reversible, observable, and incremental. This
 6. ROLLOUT DISCIPLINE: staging first (full suite + smoke test), then production with flag off (verify health, watch errors), then team, then canary with a 24-48h window. Advance on green (error rate within 10% of baseline, p95 within 20%), hold on yellow, roll back on red. "It works in staging" is not evidence it works in production.
 7. FINAL SHIP GATE — THE DEFINITION OF DONE (definition-of-done): a release ships only when BOTH hold: the release's acceptance criteria ("did we build this thing?") AND the standing Definition of Done ("is it ready?" — correctness, quality, integration, documentation, ship-readiness). The checklist above is the deploy-specific layer; the DoD is the floor beneath it. A green checklist with a failing DoD is not shippable.
 
-Attribution: adapted from agent-skills shipping-and-launch (MIT, Addy Osmani).
+Source: agent-skills (MIT, Addy Osmani)
 Adapted for Awino: slash-command references removed; mapped to the SHIP phase exit gate. Web-app specifics (Core Web Vitals, CDN, axe-core) trimmed to the portable core — the checklist applies to any shippable artifact (VSIX, CLI, library, service). React error-boundary code and the external reference links removed; the source's "see also" pointers to unported skills (observability-and-instrumentation, ci-cd-and-automation) dropped rather than dangling. The error-budget gate kept as stated: it is the objective form of "production ready".
 
 Layered loading: the harness routes this skill only as noted below. Never bulk-load all skills into one turn's context.

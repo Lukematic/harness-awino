@@ -54,10 +54,13 @@ FLOORS = {
         # guardrails). Interrogation stays available via explicit skill_add; the
         # discovery grill covers routine questioning.
         # Osmani: adoption (greenfield vs brownfield path selection happens
-        # when the mission starts — the discipline follows the path).
+        # when the mission starts — the discipline follows the path) +
+        # idea-refine (post-interview sharpening: takes the discovery output
+        # and converges it into a spec-ready one-pager BEFORE the contract
+        # is drafted — never re-runs the interview).
         "skills": ["mission-definition", "discovery",
                    "rigor-distillation", "rigor-laws",
-                   "osmani-adoption"],
+                   "osmani-adoption", "osmani-idea-refine"],
         "mode": "plan",
         "exit": "contract drafted → human approves → PLAN",
     },
@@ -69,10 +72,15 @@ FLOORS = {
         # Osmani: constraints (decide the quality bar once, at contract
         # approval; enforce it everywhere after) + failure-modes (the agent's
         # own behavioral failure modes; cross-phase guardrail declared here,
-        # self-applied at every turn/phase boundary).
+        # self-applied at every turn/phase boundary) + api-design
+        # (contract-first interface design; Hyrum's Law at every seam) +
+        # doubt (adversarial fresh-context review of non-trivial decisions;
+        # the WORKFLOW skill — devil's-advocate is the turn-level STANCE, they
+        # compose; declared here, self-applied wherever stakes justify it).
         "skills": ["decision-analysis", "domain",
                    "rigor-decomposition", "rigor-scope",
-                   "osmani-constraints", "osmani-failure-modes"],
+                   "osmani-constraints", "osmani-failure-modes",
+                   "osmani-api-design", "osmani-doubt"],
         "mode": "plan",
         "exit": "contract approved (with SCOPE) → BUILD",
     },
@@ -83,10 +91,16 @@ FLOORS = {
         # (TDD: red-green-refactor). three-strike is injected by the harness
         # only when the doom-loop circuit breaker fires — never floor-routed.
         # Osmani: tdd (test-writing discipline around the proof-cycles core) +
-        # security (threat-model-first as the code is written).
+        # security (threat-model-first as the code is written) +
+        # source-driven (verify framework patterns against official docs
+        # before implementing; cite, never write from memory) +
+        # observability (instrument the user's system as it is built — the
+        # harness's own traceability is its effect journal, a different
+        # thing).
         "skills": ["repo", "code",
                    "rigor-iteration", "rigor-proof-cycles",
-                   "osmani-tdd", "osmani-security"],
+                   "osmani-tdd", "osmani-security",
+                   "osmani-source-driven", "osmani-observability"],
         "mode": "build",
         "exit": "diff produced → VERIFY",
     },
@@ -105,9 +119,12 @@ FLOORS = {
         # Rigor: entropy reduction pass before SHIP.
         # Osmani: code-review (five-axis diff review with severity labels) +
         # security (audit the diff against the red flags; zero unresolved
-        # Critical findings is the PASS bar).
+        # Critical findings is the PASS bar) + adrs (every significant
+        # decision in the diff has its ADR — written when the decision was
+        # made, reviewed before ship).
         "skills": ["code-review", "rigor-entropy",
-                   "osmani-code-review", "osmani-security"],
+                   "osmani-code-review", "osmani-security",
+                   "osmani-adrs"],
         "mode": "verify",
         "exit": "no regressions/dead code/side effects → SHIP",
     },
@@ -116,9 +133,11 @@ FLOORS = {
         "stance": ["premortem"],
         # Rigor: checkpoint (state snapshot + known-good commit before release).
         # Osmani: shipping (production-readiness gates: pre-launch checklist,
-        # rollback plan before deploy, staged rollout, error-budget gate).
+        # rollback plan before deploy, staged rollout, error-budget gate) +
+        # cicd (automated quality gates on every change — the pipeline is set
+        # up during BUILD, enforced here on every ship).
         "skills": ["verification", "rigor-checkpoint",
-                   "osmani-shipping"],
+                   "osmani-shipping", "osmani-cicd"],
         "mode": "ship",
         "exit": "completion claimed only on evidence",
     },

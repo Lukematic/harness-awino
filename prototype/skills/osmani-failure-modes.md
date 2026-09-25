@@ -12,7 +12,7 @@ Awino already names PRODUCT failure modes (premortem) and complaint failure mode
 10. SKIPPING VERIFICATION BECAUSE "IT LOOKS RIGHT" -> caught by rigor-proof-cycles + the judge ("proof, not claims"): the failing-then-passing test is the only proof the behavior exists. Looks-right is not done.
 VERIFICATION STEP: at every turn boundary and every phase transition, scan your own recent behavior against this list. On any hit: STOP, name the failure mode, state which mechanism should have caught it, and correct course before continuing. Log repeated hits — a mode that fires twice is a pattern, not an accident.
 
-Attribution: adapted from agent-skills skills/using-agent-skills "Failure Modes to Avoid" (MIT, Addy Osmani).
+Source: agent-skills (MIT, Addy Osmani)
 Adapted for Awino: the meta-skill itself was NOT ported — its router duplicates Awino's phase-based skill loading, and its six Core Operating Behaviors are already covered (surface-assumptions -> rigor-laws declared uncertainty; manage-confusion/STOP -> rigor-laws; push-back/anti-sycophancy -> devil's-advocate stance; simplicity -> osmani-code-review; scope discipline -> rigor-scope; verify-don't-assume -> rigor-proof-cycles). Only the failure-modes list was missing as an explicit checklist: Awino names product failure modes (premortem) and complaint failure modes (triage), but not the agent's own behavioral ones. Each mode here names the Awino mechanism that catches it, so it reads as "how OUR machine catches each" rather than generic advice. Slash-command and Claude-Code references removed; mapped to Awino phases and skills.
 
 Layered loading: the harness routes this skill only as noted below. Never bulk-load all skills into one turn's context.

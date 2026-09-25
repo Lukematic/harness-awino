@@ -73,7 +73,7 @@ of Done.
 - "Done" declared before human review on changes that need it.
 
 ---
-Attribution: adapted from agent-skills references/definition-of-done.md (MIT, Addy Osmani).
+Source: agent-skills (MIT, Addy Osmani)
 Adapted for Awino: this is a SUPPORTING REFERENCE, not a routed skill — it is
 pinned in the skill store for fail-closed integrity but is never floor-routed
 into a turn's context. Wired in two places: osmani-constraints (PLAN) defines

@@ -9,7 +9,7 @@ rigor-proof-cycles gives the oracle-first thin-slice cycle (RED/GREEN/REFACTOR p
 7. VERIFY IN THE REAL RUNTIME: unit tests are necessary but not sufficient. For anything with a runtime surface, verify there too — a real VS Code install for the extension, a real CLI invocation, a real browser for UI. "All tests pass" with no tests actually run is a red flag; so is re-running the same green command twice with no code change in between.
 8. ANTI-PATTERNS: testing implementation details; flaky/order-dependent tests; testing framework behavior instead of your code; snapshot abuse (large unreviewed snapshots); no test isolation; mocking everything; skipping tests to make the suite pass; bug fixes without reproduction tests.
 
-Attribution: adapted from agent-skills test-driven-development (MIT, Addy Osmani).
+Source: agent-skills (MIT, Addy Osmani)
 Adapted for Awino: the RED/GREEN/REFACTOR mechanics defer to rigor-proof-cycles where they overlap (oracle-first, thin slices) — this skill adds the surrounding discipline the rigor port did not cover (prove-it pattern, pyramid, test-writing craft, anti-patterns). TypeScript examples and the Chrome DevTools MCP section removed; the runtime-verification rule rewritten for Awino's surfaces (real VS Code, real CLI). The "when not to use" carve-out (config/docs-only changes) kept implicitly: no behavior change, no test required.
 
 Layered loading: the harness routes this skill only as noted below. Never bulk-load all skills into one turn's context.

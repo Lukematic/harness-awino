@@ -47,7 +47,7 @@ reference checklist, not a skill: it is pinned for integrity and wired into
 `discovery` `mission-definition` `osmani-constraints` `triage` `rigor-decomposition` `rigor-iteration` `osmani-failure-modes` `rigor-proof-cycles` `definition-of-done` `explainer`
 
 ---
-Attribution: adapted from Addy Osmani (LinkedIn) critical-thinking questions for engineers.
+Source: Addy Osmani (LinkedIn) critical-thinking questions
 Adapted for Awino: a REFERENCE CHECKLIST, not a skill — pinned in the skill
 store for fail-closed integrity, never floor-routed. Wired into
 `mission-definition` (DEFINE phase): the checklist runs while the contract
