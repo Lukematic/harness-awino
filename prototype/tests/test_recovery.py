@@ -62,7 +62,8 @@ class TestRecovery(unittest.TestCase):
         self.assertEqual(active["routing"]["mode"], "build")
         self.assertEqual(active["routing"]["chain"], ["first-principles"])
         self.assertEqual(active["routing"]["skills"],
-                         ["repo", "code", "mode-software-engineer"])
+                         ["repo", "code", "rigor-iteration", "rigor-proof-cycles",
+                                      "mode-software-engineer"])
         self.assertIn("[A.W.I.N.O.", active["header"])
 
     def test_resolve_not_applied_executes_exactly_once(self):

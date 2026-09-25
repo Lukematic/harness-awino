@@ -83,6 +83,166 @@ def _overlap(a: str, b: str) -> float:
     return len(ta & tb) / max(len(ta), len(tb))
 
 
+# ---------------------------------------------------------------------------
+# Sidecar streaming protocol (spec §3.2–3.3).
+#
+# _SidecarStream is the per-turn streaming context. The sidecar attaches an
+# emitter (loop.sidecar_emit) and an optional turn_start metadata hook
+# (loop.sidecar_turn_meta); both are None in every other context (CLI, MCP,
+# unit tests), where every streaming code path is a no-op and today's
+# behavior is preserved exactly.
+#
+# The stream object doubles as the backend stream_cb(kind, text): kind is
+# "thinking" or "said". Thinking text is UI-only — it is accumulated here
+# for turn_result enrichment and never written to the journal, the
+# contract, or any .awino/ file.
+# ---------------------------------------------------------------------------
+class _SidecarStream:
+    CHUNK_CAP = 4096  # max text payload per stdout line (split larger)
+    THINKING_CAP = 8000  # max accumulated thinking chars in turn_result
+
+    def __init__(self, emit, turn_id: str, turn_start_extra=None):
+        self._emit = emit
+        self.turn_id = turn_id
+        self._turn_start_extra = turn_start_extra
+        self._thinking_parts: list[str] = []
+        self._thinking_chars = 0
+        self._thinking_truncated = False
+        self._thinking_seen = False
+        self.checks: list[dict] = []
+
+    # -- stream_cb(kind, text) -------------------------------------------
+    def __call__(self, kind: str, text: str) -> None:
+        if kind == "thinking":
+            self._thinking_seen = True
+            self._accumulate_thinking(text or "")
+            self._emit_text("thinking_delta", text or "")
+        elif kind == "said":
+            self._emit_text("said_delta", text or "")
+
+    def _emit_text(self, event: str, text: str) -> None:
+        if not text:
+            return
+        # Split so every chunk's UTF-8 encoding is at most CHUNK_CAP bytes;
+        # multi-byte characters are never cut (a single char is <= 4 bytes).
+        buf: list[str] = []
+        size = 0
+        for ch in text:
+            n = len(ch.encode("utf-8"))
+            if buf and size + n > self.CHUNK_CAP:
+                self._emit({"event": event, "turn_id": self.turn_id,
+                            "text": "".join(buf)})
+                buf, size = [], 0
+            buf.append(ch)
+            size += n
+        if buf:
+            self._emit({"event": event, "turn_id": self.turn_id,
+                        "text": "".join(buf)})
+
+    def _accumulate_thinking(self, text: str) -> None:
+        if self._thinking_truncated or not text:
+            return
+        room = self.THINKING_CAP - self._thinking_chars
+        if room <= 0:
+            self._thinking_parts.append("… [truncated]")
+            self._thinking_truncated = True
+            return
+        self._thinking_parts.append(text[:room])
+        self._thinking_chars += min(len(text), room)
+        if len(text) > room:
+            self._thinking_parts.append("… [truncated]")
+            self._thinking_truncated = True
+
+    def thinking_text(self) -> str | None:
+        """Full accumulated thinking, or None when no thinking_delta was
+        emitted (spec: the provider exposes no thinking)."""
+        if not self._thinking_seen:
+            return None
+        return "".join(self._thinking_parts)
+
+    # -- turn_start -------------------------------------------------------
+    def turn_start(self, phase: str, mode_id: str) -> None:
+        event = {"event": "turn_start", "turn_id": self.turn_id,
+                 "phase": phase,
+                 "mode": {"id": mode_id, "source": "stage"},
+                 "persona": None}
+        if self._turn_start_extra is not None:
+            extra = self._turn_start_extra(self.turn_id, phase, mode_id) or {}
+            if isinstance(extra.get("mode"), dict):
+                event["mode"] = extra["mode"]
+            if "persona" in extra:
+                event["persona"] = extra["persona"]
+        self._emit(event)
+
+    # -- harness_check ----------------------------------------------------
+    def harness_check(self, check: str, verdict: str, detail: str = "") -> None:
+        row = {"check": check, "verdict": verdict, "detail": detail or ""}
+        self.checks.append(row)
+        self._emit({"event": "harness_check", "turn_id": self.turn_id, **row})
+
+    # -- tool_progress ----------------------------------------------------
+    def tool_progress(self, tool: str, phase: str, summary: str = "",
+                      ms: int | None = None) -> None:
+        event = {"event": "tool_progress", "turn_id": self.turn_id,
+                 "tool": tool, "phase": phase, "summary": summary or ""}
+        if ms is not None:
+            event["ms"] = ms
+        self._emit(event)
+
+
+def _ms_since(t0: float) -> int:
+    return max(0, int((time.monotonic() - t0) * 1000))
+
+
+def _tool_call_summary(tool_name: str, args: dict) -> str:
+    """Short human summary for a tool_progress start event (no secrets:
+    paths/commands only)."""
+    args = args or {}
+    for key in ("path", "cmd", "pattern"):
+        val = args.get(key)
+        if isinstance(val, str) and val:
+            return val[:80]
+    return tool_name
+
+
+def _tool_failed(result) -> bool:
+    return (isinstance(result, dict)
+            and (bool(result.get("error"))
+                 or (isinstance(result.get("exit_code"), int)
+                     and result["exit_code"] != 0)))
+
+
+def _tool_result_summary(result) -> str:
+    if isinstance(result, dict):
+        if result.get("error"):
+            return str(result["error"])[:160]
+        if isinstance(result.get("exit_code"), int):
+            extra = ""
+            err = str(result.get("stderr") or "").strip().splitlines()
+            if err:
+                extra = ": " + err[0][:120]
+            return f"exit {result['exit_code']}{extra}"
+        return json.dumps(result, default=str)[:160]
+    return str(result)[:160]
+
+
+def _judge_check_rows(judge, jv: dict):
+    """Rows for harness_check emission from a judge verdict: one per panel
+    vote when the judge exposes votes (JudgePanel), else a single row for
+    the judge backend. Yields (name, passed, reason)."""
+    votes = jv.get("votes") if isinstance(jv, dict) else None
+    if isinstance(votes, list) and votes:
+        for v in votes:
+            name = v.get("judge") or "?"
+            yield (str(name), v.get("verdict") == "PASS",
+                   str(v.get("reason") or ""))
+        return
+    name = getattr(judge, "name", None) or type(judge).__name__
+    verdict = jv.get("verdict") if isinstance(jv, dict) else None
+    reason = jv.get("reason") if isinstance(jv, dict) else ""
+    yield (str(name), verdict == "PASS", str(reason or ""))
+
+
 class Loop:
     def __init__(self, home, project_id: str, backend, judge=None,
                  sandbox_dir=None, config: dict | None = None,
@@ -113,6 +273,16 @@ class Loop:
         # could fire twice).
         self._stories_nudged_at = set()
         self._rebuild_history()
+        # Sidecar streaming protocol (spec §3): the sidecar attaches an
+        # event emitter + a turn_start metadata hook per streamed turn.
+        # None everywhere else (CLI, MCP, unit tests) — every streaming
+        # code path checks for None, so behavior there is unchanged.
+        self.sidecar_emit = None
+        self.sidecar_turn_meta = None
+        # The current/last turn's _SidecarStream (None when the turn is not
+        # streamed). Persists after the pipeline so approval resume and
+        # turn_result enrichment can reference the turn's context.
+        self._turn_stream: _SidecarStream | None = None
 
     # ------------------------------------------------------------------ setup
     def _check_sandbox_writable(self) -> str | None:
@@ -487,12 +657,39 @@ class Loop:
 
         return self._pipeline(user_text, input_kind)
 
+    def _begin_stream(self, turn_id: str) -> "_SidecarStream | None":
+        """Create the per-turn sidecar streaming context, or None when the
+        sidecar has not attached an emitter (CLI/MCP/tests: zero behavior
+        change — the caller skips every streaming step)."""
+        if self.sidecar_emit is None:
+            return None
+        return _SidecarStream(self.sidecar_emit, turn_id,
+                              turn_start_extra=self.sidecar_turn_meta)
+
+    def _stream_for(self, turn_id: str) -> "_SidecarStream | None":
+        """The turn's streaming context, or None when the turn is not
+        streamed. Guards against a stale context from an earlier turn."""
+        s = self._turn_stream
+        return s if (s is not None and s.turn_id == turn_id) else None
+
+    @staticmethod
+    def _turn_of_call(call_id: str) -> str:
+        """call_ids are f"{turn_id}.{index}" — recover the turn."""
+        return (call_id or "").rsplit(".", 1)[0]
+
     def _pipeline(self, user_text: str, input_kind: str) -> dict:
         """Stages 0-4b of the per-turn pipeline."""
         cfg = self.config
         s = self.state.snapshot
         turn_no = s["turn_count"] + 1
         turn_id = f"t{turn_no}"
+
+        # Sidecar streaming protocol (spec §3): per-turn streaming context,
+        # or None when the sidecar did not attach an emitter. None means
+        # zero behavior change anywhere below.
+        stream = self._begin_stream(turn_id)
+        if stream is not None:
+            self._turn_stream = stream
 
         # ---- Stage 0: per-turn contract loop (compile -> check -> refuse) ----
         # The contract is compiled from code-owned state BEFORE the backend
@@ -501,7 +698,21 @@ class Loop:
         tcontract = compile_turn_contract(self.state)
         breaks = check_pre_turn(self.state, tcontract)
         if breaks:
+            if stream is not None:
+                # The turn never reaches the backend, but the UI still gets
+                # a card: turn_start first (event order invariant), then the
+                # failed contract check.
+                stream.turn_start(phase=s["phase"], mode_id=s["mode"])
+                stream.harness_check(
+                    "contract", "fail",
+                    "; ".join(f"{b.reason}: {b.detail}" for b in breaks))
             return self._refuse_turn(breaks, stage="pre_turn")
+        # The stage-0 check passed; its harness_check is buffered and
+        # emitted right after turn_start (stage 4) to keep the event order
+        # turn_start -> checks -> deltas.
+        contract_check = (
+            "contract", "pass",
+            f"phase {tcontract.get('phase')} · mode {tcontract.get('mode')}")
 
         # ---- Stage 1: contract ingestion ----
         # The contract block is compiled from code-owned state. (It is
@@ -527,8 +738,20 @@ class Loop:
         # ---- Stage 4: header emission & structured response ----
         feedback = None
         turn = None
+        if stream is not None:
+            # turn_start precedes the first backend call, carrying the
+            # routed mode; the stream object is the backend's stream_cb.
+            stream.turn_start(phase=s["phase"], mode_id=routing["mode"])
+            stream.harness_check(*contract_check)
         for attempt in range(cfg["max_retries"] + 1):
-            raw = self.backend.generate(contract_block, self.history, feedback=feedback)
+            if stream is not None:
+                raw = self.backend.generate(
+                    contract_block, self.history, feedback=feedback,
+                    stream_cb=stream)
+            else:
+                # Unstreamed turns call generate() exactly as before.
+                raw = self.backend.generate(
+                    contract_block, self.history, feedback=feedback)
             # Track C (egress audit): if the backend performed network I/O for
             # this turn, journal it — turn, routed skills, destination, bytes.
             # A skill declaring network:none with egress is flagged undeclared.
@@ -551,6 +774,13 @@ class Loop:
                     self.state.record("judge_failed",
                                       {"turn_id": turn_id, "reason": jv["reason"]})
                     errs = [f"judge FAIL: {jv['reason']}"]
+                if stream is not None:
+                    # Parallel _emit: surface the judge verdict(s) without
+                    # changing the journal records above.
+                    for name, ok, reason in _judge_check_rows(self.judge, jv):
+                        stream.harness_check(f"judge:{name}",
+                                             "pass" if ok else "fail",
+                                             reason[:200])
             if not errs and routing["chain"] != ["advisor"]:
                 # Stance fired: the procedure was loaded into the contract
                 # block; the output is rubric-evaluated in code.
@@ -578,9 +808,17 @@ class Loop:
             if not errs:
                 turn = raw
                 self.state.record("turn_validated", {"turn_id": turn_id, "attempt": attempt})
+                if stream is not None:
+                    stream.harness_check("validation", "pass",
+                                         f"attempt {attempt}")
                 break
             self.state.record("turn_rejected",
                               {"turn_id": turn_id, "attempt": attempt, "errors": errs})
+            # Rigor: three-strike circuit breaker on repeated identical
+            # rejections. Runs before the escalation check so the final
+            # attempt carries the STOP directive, not just "fix and resubmit".
+            doom = self._check_doom_loop(
+                "turn_rejected", self._failure_signature("turn_rejected", errs))
             if attempt >= cfg["max_retries"]:
                 self.state.record("turn_escalated", {"turn_id": turn_id, "errors": errs})
                 self.state.persist_snapshot()
@@ -589,6 +827,8 @@ class Loop:
                         "errors": errs}
             feedback = (f"HARNESS REJECTION (attempt {attempt + 1}): "
                         f"{'; '.join(errs)}. Fix and resubmit a valid TurnContract.")
+            if doom:
+                feedback = self._doom_loop_feedback() + " " + feedback
 
         assert turn is not None
         # Phase B: coerce the validated dict into the immutable typed contract.
@@ -639,6 +879,85 @@ class Loop:
         return self._finalize_turn(turn_id, turn, results, routing,
                                    expected_header)
 
+    # ---- Rigor: three-strike doom-loop circuit breaker ----
+    # Agent-rigor's Error Recovery Protocol (STOP → DIAGNOSE → ISOLATE →
+    # ROLLBACK → LOG → RETRY) as a loop-level transition. Awino previously
+    # only failed forward (verify_failed → request_phase("BUILD") → patch
+    # again). This adds the explicit rollback-and-rethink path: 3 consecutive
+    # failures sharing one signature record doom_loop_detected, which makes
+    # the router inject rigor-three-strike until a turn validates. The breaker
+    # never touches the working tree itself — rollback stays the agent's act,
+    # journaled as a `rollback` event the coach later audits.
+    _DOOM_LOOP_THRESHOLD = 3
+    # Event types that carry no turn outcome: skipped, never chain-breaking.
+    # Mirrors rigor.failure_clusters' _NEUTRAL so the live detector and the
+    # coach audit the same pattern. Recovery is proven by the SUCCESS set
+    # (or a rollback), not by journaling a learning between failures.
+    _DOOM_LOOP_NEUTRAL = frozenset({
+        "tokens_charged", "egress", "harness_check", "skills_routed",
+        "stance_routed", "mode_routed", "tool_called", "progress_recorded",
+        "doom_loop_detected", "rigor_report", "learning_recorded",
+        "assumption_recorded", "questions_asked", "plan_updated",
+    })
+    # Event types proving recovery: break any failure chain.
+    _DOOM_LOOP_SUCCESS = frozenset({
+        "turn_validated", "verify_passed", "mission_done", "operator_resumed",
+    })
+
+    @staticmethod
+    def _failure_signature(source: str, parts) -> str:
+        norm = sorted({str(p).strip()[:160] for p in parts if str(p).strip()})
+        return source + ":" + "|".join(norm)
+
+    def _check_doom_loop(self, source: str, signature: str) -> bool:
+        """Count consecutive same-signature failures; trip the breaker at 3.
+
+        Walks the journal backward. Success events break the chain; failures
+        with a different signature reset it (a new approach is what we want);
+        bookkeeping events are skipped. Returns True when the breaker is (or
+        already was) active.
+        """
+        if self.state.snapshot.get("doom_loop_active"):
+            return True
+        consecutive = 0
+        for ev in reversed(self.state.events):
+            t = ev.get("type")
+            if t in self._DOOM_LOOP_SUCCESS:
+                break
+            if t in self._DOOM_LOOP_NEUTRAL:
+                continue
+            sig = None
+            if t == "turn_rejected":
+                sig = self._failure_signature(
+                    "turn_rejected", ev.get("data", {}).get("errors", []))
+            elif t == "verify_failed":
+                d = ev.get("data", {})
+                failed = [e.get("criterion") or e.get("label") or "?"
+                          for e in (d.get("verdict") or [])
+                          if e.get("accomplished") != "yes"]
+                sig = self._failure_signature(
+                    "verify_failed", failed or [d.get("reason", "?")])
+            else:
+                break  # escalation, stall, phase change…: not this loop
+            if sig == signature:
+                consecutive += 1
+            else:
+                break  # different signature: the agent already rethought
+        if consecutive >= self._DOOM_LOOP_THRESHOLD:
+            self.state.record("doom_loop_detected",
+                              {"source": source, "signature": signature,
+                               "consecutive": consecutive})
+            return True
+        return False
+
+    def _doom_loop_feedback(self) -> str:
+        return ("RIGOR CIRCUIT BREAKER — STOP. Three consecutive failures "
+                "share one signature. Do NOT patch forward. Follow the "
+                "rigor-three-strike skill now routed into your contract: "
+                "revert to the last known-good state, state your diagnosis "
+                "in one paragraph, then re-approach from clean state. "
+                "A fourth identical attempt will be escalated.")
+
     def _sensor_route(self, user_text: str, input_kind: str) -> dict:
         """Stage 2: route the (mode, stance chain, skills) triple in code.
 
@@ -659,6 +978,14 @@ class Loop:
                 skills = [*skills, lens]
             elif lens not in get_skill_store().names():
                 self.state.record("role_lens_missing", {"lens": lens})
+        # Rigor: while the doom-loop circuit breaker is active, the harness
+        # injects rigor-three-strike into every turn's routed skills — the
+        # explicit rollback-and-rethink transition. Cleared by turn_validated.
+        # Layered loading: this is the ONLY way this skill enters context.
+        if (s.get("doom_loop_active") and "rigor-three-strike" not in skills
+                and "rigor-three-strike" in get_skill_store().names()):
+            skills = [*skills, "rigor-three-strike"]
+            trigger = trigger + " + doom-loop circuit breaker"
         if chain != s["stance_chain"]:
             self.state.record("stance_routed",
                               {"stance": chain[0], "chain": chain,
@@ -763,11 +1090,31 @@ class Loop:
     # ------------------------------------------------------------------ judge
     def _judge_summary(self) -> dict:
         s = self.state.snapshot
+        evs = self.state.events
+        # Rigor (R3/R4): the judge needs verification evidence counts, not
+        # just tool-result counts, to refuse evidence-free done/verified
+        # claims. Additive keys — existing consumers unaffected.
+        verify_events = sum(1 for e in evs if e["type"] in (
+            "verify_started", "verify_verdict", "verify_passed",
+            "verify_failed"))
+        test_runs = 0
+        for e in evs:
+            if e.get("type") != "tool_called":
+                continue
+            d = e.get("data") or {}
+            if d.get("name") != "run_command":
+                continue
+            cmd = str((d.get("args") or {}).get("cmd") or "")
+            if re.search(r"\b(pytest|jest|vitest|mocha|go test|npm test|"
+                         r"tsc\b|make test|\btest\b)", cmd, re.I):
+                test_runs += 1
         return {
             "turn_count": s["turn_count"],
             "phase": s["phase"],
-            "results_this_session": sum(1 for e in self.state.events
+            "results_this_session": sum(1 for e in evs
                                         if e["type"] == "tool_result"),
+            "verify_events": verify_events,
+            "test_runs": test_runs,
             "open_questions": list(s["open_questions"]),
         }
 
@@ -784,6 +1131,14 @@ class Loop:
 
     def _execute_single(self, call_id: str, tool_name: str, args: dict,
                         idem_key: str) -> dict:
+        # Sidecar streaming protocol (spec §3): tool_progress events around
+        # the execution. None when the turn is not streamed — zero overhead
+        # and zero behavior change otherwise.
+        stream = self._stream_for(self._turn_of_call(call_id))
+        t0 = time.monotonic() if stream is not None else 0.0
+        if stream is not None:
+            stream.tool_progress(tool_name, "start",
+                                 _tool_call_summary(tool_name, args))
         # Phase D: worker file ownership — a worker Loop (has worker_id in
         # its snapshot) may only touch files within its owned_files scope.
         scope = self.state.snapshot.get("scope")
@@ -804,6 +1159,10 @@ class Loop:
                                    "args": args, "idem_key": idem_key,
                                    "result": result,
                                    "mission_rev": self.state.snapshot["mission_revision"]})
+                if stream is not None:
+                    stream.tool_progress(tool_name, "error",
+                                         str(result["error"])[:160],
+                                         ms=_ms_since(t0))
                 return {"tool": tool_name, "result": result}
         # Idempotency: never re-execute an effect we already have a result for.
         for e in reversed(self.state.events):
@@ -813,6 +1172,10 @@ class Loop:
                                   {"call_id": call_id, "tool": tool_name, "args": args,
                                    "idem_key": idem_key, "result": res, "reused": True,
                                    "mission_rev": self.state.snapshot["mission_revision"]})
+                if stream is not None:
+                    stream.tool_progress(tool_name, "done",
+                                         "reused cached result",
+                                         ms=_ms_since(t0))
                 return {"tool": tool_name, "result": res, "reused": True}
         self.state.record("tool_called",
                           {"call_id": call_id, "tool": tool_name, "args": args,
@@ -827,6 +1190,11 @@ class Loop:
                           {"call_id": call_id, "tool": tool_name, "args": args,
                            "idem_key": idem_key, "result": result,
                            "mission_rev": self.state.snapshot["mission_revision"]})
+        if stream is not None:
+            stream.tool_progress(
+                tool_name,
+                "error" if _tool_failed(result) else "done",
+                _tool_result_summary(result), ms=_ms_since(t0))
         return {"tool": tool_name, "result": result}
 
     def _execute_calls(self, turn_id: str, calls: list[dict], offset: int = 0) -> list[dict]:
@@ -887,6 +1255,11 @@ class Loop:
         if ap["revision"] != self._revision():
             self.state.record("approval_stale",
                               {"id": ap["id"], "reason": "plan revision changed"})
+            _s = self._stream_for(self._turn_of_call(ap.get("call_id", "")))
+            if _s is not None:
+                _s.harness_check(
+                    "approval_gate", "warn",
+                    f"approval {ap['id']} stale: plan revision changed")
             self.state.persist_snapshot()
             return {"status": "stale",
                     "said": f"Approval {ap['id']} is stale (mission revision changed). "
@@ -894,11 +1267,22 @@ class Loop:
         if ap.get("scope_epoch", 0) != self.state.snapshot.get("scope_epoch", 0):
             self.state.record("approval_stale",
                               {"id": ap["id"], "reason": "scope epoch changed"})
+            _s = self._stream_for(self._turn_of_call(ap.get("call_id", "")))
+            if _s is not None:
+                _s.harness_check(
+                    "approval_gate", "warn",
+                    f"approval {ap['id']} stale: scope changed")
             self.state.persist_snapshot()
             return {"status": "stale",
                     "said": f"Approval {ap['id']} is stale (scope changed). "
                             f"The action was NOT executed."}
         self.state.record("approval_granted", {"id": ap["id"]})
+        _s = self._stream_for(self._turn_of_call(ap.get("call_id", "")))
+        if _s is not None:
+            # Parallel _emit: surface the gate decision; the journal record
+            # above is unchanged.
+            _s.harness_check("approval_gate", "pass",
+                             f"approval {ap['id']} granted")
         return self._drain_pending()
 
     def deny(self, approval_id: str | None = None) -> dict:
@@ -909,6 +1293,12 @@ class Loop:
         if ap is None:
             return {"status": "none", "said": f"No pending approval {approval_id}."}
         self.state.record("approval_denied", {"id": ap["id"]})
+        _s = self._stream_for(self._turn_of_call(ap.get("call_id", "")))
+        if _s is not None:
+            # Parallel _emit: surface the gate decision; the journal record
+            # above is unchanged.
+            _s.harness_check("approval_gate", "fail",
+                             f"approval {ap['id']} denied")
         return self._drain_pending(denied=[ap["id"]])
 
     def _drain_pending(self, denied: list[str] | None = None) -> dict:
@@ -1416,6 +1806,7 @@ class Loop:
             "premortem_completed": s["premortem_completed"],
             "ship_requested": s["ship_requested"],
             "mission": s["mission"]["text"] if s["mission"] else None,
+            "mission_revision": s["mission_revision"],
             "criteria": crit, "open_questions": s["open_questions"],
             "progress": [p["delta"] for p in s["progress"][-3:]],
             "pending_approvals": [a["id"] for a in s["approvals"]
@@ -1637,6 +2028,11 @@ class Loop:
             self.state.record("verify_failed",
                               {"worker_id": worker_id,
                                "reason": "no verifier verdict in worker journal"})
+            # Rigor: a verifier that never reports is itself a repeated
+            # failure mode — trip the breaker so the agent rethinks instead
+            # of blindly re-running the verifier.
+            self._check_doom_loop("verify_failed", self._failure_signature(
+                "verify_failed", ["no verifier verdict in worker journal"]))
             self.state.persist_snapshot()
             return {"status": "error",
                     "said": (f"Worker {worker_id} has no journaled verdict. "
@@ -1691,6 +2087,14 @@ class Loop:
         self.state.record("verify_failed",
                           {"worker_id": worker_id, "verdict": entries,
                            "findings_tasks": new_tasks})
+        # Rigor: repeated verification failures on the same criteria trip the
+        # doom-loop breaker — the mission routes back to BUILD, but now with
+        # rigor-three-strike in context demanding rollback-and-rethink, not
+        # another fix-forward pass.
+        failed_labels = [e.get("criterion") or e.get("label") or "?"
+                         for e in entries if e.get("accomplished") != "yes"]
+        self._check_doom_loop("verify_failed", self._failure_signature(
+            "verify_failed", failed_labels))
         self.state.persist_snapshot()
         # Failed verification routes back to BUILD with findings as tasks.
         self.request_phase("BUILD", reason="verification failed")

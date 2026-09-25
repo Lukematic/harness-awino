@@ -107,6 +107,15 @@ function pushFinding(
 ): void {
   const v = value.trim();
   if (!v) return;
+  // A URL can still carry a secret: userinfo (user:password@) before the
+  // host. looksLikeSecretValue exempts http(s) URLs, so check userinfo
+  // first — never emit `https://user:s3cr3t@proxy:8080/v1` as a plain
+  // endpoint value (it would land in plaintext settings and Output).
+  // The userinfo itself is never copied anywhere, not even into the note.
+  if (/^https?:\/\/[^/\s]*@/i.test(v)) {
+    credentialRef(out, source, "URL with embedded credentials (userinfo)");
+    return;
+  }
   if (looksLikeSecretValue(v)) return; // defense in depth: never emit secret-shaped values
   out.push({ source, provider, kind, value: v, note });
 }
@@ -170,7 +179,7 @@ function handleEnvPair(
     case "AWS_DEFAULT_PROFILE":
       pushFinding(
         out, source, "bedrock", "awsProfile", value,
-        "AWS profile found. Note: A.W.I.N.O.'s Bedrock provider uses an API key, not SSO profiles — enter the key yourself in the providers panel."
+        "AWS profile found. Note: Awino's Bedrock provider uses an API key, not SSO profiles — enter the key yourself in the providers panel."
       );
       return;
     case "ANTHROPIC_MODEL":
@@ -382,6 +391,15 @@ export function planSources(homeDir: string, workspaceDir: string | null): ScanC
     );
   }
   return c;
+}
+
+/**
+ * Plain "Looked in: ..." line for the results UI: the scanned source
+ * labels joined as a single readable line. Paths only — never file
+ * contents or secret values.
+ */
+export function formatScannedLine(scanned: string[]): string {
+  return scanned.length ? scanned.join(", ") : "(none found)";
 }
 
 /**

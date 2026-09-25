@@ -24,8 +24,15 @@ const SKIP_DIRS = new Set([
   "__pycache__",
   ".venv",
   "venv",
+  ".pytest_cache",
   "awino_loop.egg-info",
 ]);
+
+// Generated test/scratch directories (e.g. awino-sidecar-test-*, awino-bind-*)
+// must never ship either, even when they linger in a dev checkout.
+function isGeneratedDir(name) {
+  return name.startsWith("awino-");
+}
 
 function copyDir(src, dst) {
   fs.mkdirSync(dst, { recursive: true });
@@ -33,7 +40,7 @@ function copyDir(src, dst) {
     const s = path.join(src, e.name);
     const d = path.join(dst, e.name);
     if (e.isDirectory()) {
-      if (SKIP_DIRS.has(e.name)) {
+      if (SKIP_DIRS.has(e.name) || isGeneratedDir(e.name)) {
         continue;
       }
       copyDir(s, d);

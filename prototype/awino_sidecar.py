@@ -219,6 +219,58 @@ class OpenAICompatibleBackend(OllamaBackend):
                             "bytes_out": len(body), "bytes_in": len(raw)}
         return payload["choices"][0]["message"]["content"]
 
+    def _chat_stream(self, prompt: str, system: str):
+        """SSE streaming over the OpenAI-compatible chat-completions
+        endpoint ("stream": true). Yields ("said", delta) for each
+        choices[0].delta.content; skips the terminal [DONE] line.
+
+        The API key (if any) travels only in the Authorization header —
+        it never appears in events, logs, or the journal."""
+        body = json.dumps({
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+            "stream": True,
+            "temperature": 0.2,
+            "max_tokens": self.num_predict,
+        }).encode()
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = "Bearer " + self.api_key
+        req = urllib.request.Request(self.chat_url, data=body,
+                                     headers=headers)
+        # urlopen raising here (HTTP 401/403/429/5xx, unreachable) propagates
+        # to generate() -> safe fallback turn, with no egress recorded.
+        resp = urllib.request.urlopen(req, timeout=self.timeout)
+        raw_in = 0
+        try:
+            with resp:
+                for raw_line in resp:
+                    raw_in += len(raw_line)
+                    line = raw_line.decode("utf-8", "replace").strip()
+                    if not line.startswith("data:"):
+                        continue  # SSE comments / keep-alives
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        obj = json.loads(data)
+                    except ValueError:
+                        continue
+                    try:
+                        delta = obj["choices"][0]["delta"]
+                    except (KeyError, IndexError, TypeError):
+                        continue
+                    content = delta.get("content")
+                    if content:
+                        yield ("said", content)
+        finally:
+            # Track C: report the network I/O so the loop can journal it.
+            self.last_egress = {"destination": self.chat_url,
+                                "bytes_out": len(body), "bytes_in": raw_in}
+
 
 class AnthropicBackend(OllamaBackend):
     """Anthropic Messages API. Key from ANTHROPIC_API_KEY (env only)."""
@@ -262,6 +314,61 @@ class AnthropicBackend(OllamaBackend):
         self.last_egress = {"destination": self.messages_url,
                             "bytes_out": len(body), "bytes_in": len(raw)}
         return payload["content"][0]["text"]
+
+    def _chat_stream(self, prompt: str, system: str):
+        """SSE streaming over the Anthropic Messages API ("stream": true).
+
+        Yields ("thinking", text) for content_block_delta events whose
+        delta.type is "thinking_delta", and ("said", text) for "text_delta".
+        redacted_thinking blocks yield nothing (thinking stays null) —
+        thinking text is UI-only and never enters the turn dict or journal.
+
+        The API key travels only in the x-api-key header — it never
+        appears in events, logs, or the journal."""
+        body = json.dumps({
+            "model": self.model,
+            "max_tokens": self.num_predict,
+            "system": system,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": True,
+        }).encode()
+        headers = {"Content-Type": "application/json",
+                   "x-api-key": self.api_key or "",
+                   "anthropic-version": "2023-06-01"}
+        req = urllib.request.Request(self.messages_url, data=body,
+                                     headers=headers)
+        # urlopen raising here propagates to generate() -> safe fallback
+        # turn, with no egress recorded.
+        resp = urllib.request.urlopen(req, timeout=self.timeout)
+        raw_in = 0
+        try:
+            with resp:
+                for raw_line in resp:
+                    raw_in += len(raw_line)
+                    line = raw_line.decode("utf-8", "replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    try:
+                        obj = json.loads(line[5:].strip())
+                    except ValueError:
+                        continue
+                    if obj.get("type") != "content_block_delta":
+                        continue
+                    delta = obj.get("delta") or {}
+                    dtype = delta.get("type")
+                    if dtype == "thinking_delta":
+                        text = delta.get("thinking")
+                        if text:
+                            yield ("thinking", text)
+                    elif dtype == "text_delta":
+                        text = delta.get("text")
+                        if text:
+                            yield ("said", text)
+                    # signature_delta / redacted_thinking: yield nothing.
+        finally:
+            # Track C: report the network I/O so the loop can journal it.
+            self.last_egress = {"destination": self.messages_url,
+                                "bytes_out": len(body), "bytes_in": raw_in}
 
 
 # ---------------------------------------------------------------------------
@@ -332,7 +439,7 @@ def _serialize_criteria(done_criteria: list[dict]) -> list[str]:
     for c in done_criteria:
         k = c.get("kind")
         if k == "manual":
-            lines.append("manual")
+            lines.append(f"manual:{c['label']}" if c.get("label") else "manual")
         elif k == "artifact_exists":
             lines.append(f"artifact:{c.get('path', '')}")
         elif k == "event":
@@ -856,10 +963,35 @@ class _ModeAwareBackend:
     def __getattr__(self, name):
         return getattr(self._inner, name)
 
-    def generate(self, contract_block, history, feedback=None):
-        return self._inner.generate(
-            contract_block, history, feedback=feedback,
-            temperature=self._sidecar._active_temperature())
+    def generate(self, contract_block, history, feedback=None,
+                 stream_cb=None):
+        """stream_cb(kind, text): optional streaming sink for the sidecar
+        protocol (spec §3.2–3.3). kind is "thinking" or "said". Default
+        None preserves today's behavior exactly: the inner backend is
+        called as before and no chunks are emitted.
+
+        Backends that speak streaming define _chat_stream and accept
+        stream_cb in generate(). Base fallback: a backend without
+        _chat_stream (echo, hostile, plain scripted) runs its existing
+        generate() untouched and the turn's progress_delta goes out as
+        one ("said", ...) chunk — those providers keep working with zero
+        changes to their code."""
+        temperature = self._sidecar._active_temperature()
+        inner = self._inner
+        if stream_cb is None:
+            return inner.generate(
+                contract_block, history, feedback=feedback,
+                temperature=temperature)
+        if hasattr(inner, "_chat_stream"):
+            return inner.generate(
+                contract_block, history, feedback=feedback,
+                temperature=temperature, stream_cb=stream_cb)
+        turn = inner.generate(contract_block, history, feedback=feedback,
+                              temperature=temperature)
+        said = (turn or {}).get("progress_delta") or ""
+        if said:
+            stream_cb("said", said)
+        return turn
 
 
 # ---------------------------------------------------------------------------
@@ -996,7 +1128,9 @@ def _emit(obj: dict) -> None:
 
 
 def _err(message: str) -> None:
-    _emit({"event": "error", "message": message})
+    # Protocol/stream errors are non-fatal: the process is alive, only the
+    # command failed. A dead process is reported by the client (fatal: true).
+    _emit({"event": "error", "message": message, "fatal": False})
 
 
 _DIFF_MAX_LINES = 200
@@ -1033,6 +1167,9 @@ class Sidecar:
         self._worker: threading.Thread | None = None
         self._turn_out: queue.Queue = queue.Queue()
         self._pending_says: list = []  # per-command _say() buffer
+        # RISK 1: hello-time registry re-attach failure, if any. Recorded
+        # (never swallowed) so tasks_list can report it honestly.
+        self._registry_attach_error: str | None = None
         self._mcp_clients: list[McpClient] = []
         self._mcp_status: list[dict] = []
         # Scope #4 state: provider binding, mode overlay, skill persona.
@@ -1124,6 +1261,26 @@ class Sidecar:
             _err(f"workspace is not a directory: {ws!r}")
             return
         self.workspace = wsp  # set early: binding resolution reads .awino/
+        # 0.5.0 migration: that release auto-generated a template
+        # providers.yaml on first hello. A template-identical file would now
+        # silently override the user's VS Code provider settings — move it
+        # aside so the settings apply. A user-edited file is never touched
+        # (byte-identity check against the 0.5.0 template).
+        _pyaml = wsp / ".awino" / "providers.yaml"
+        if _pyaml.is_file():
+            try:
+                if _pyaml.read_bytes() == _PROVIDERS_YAML_TEMPLATE.encode("utf-8"):
+                    _bak = _pyaml.with_name("providers.yaml.autogen-bak")
+                    _pyaml.rename(_bak)
+                    print("hello: renamed auto-generated providers.yaml -> "
+                          f"{_bak.name}", file=sys.stderr)
+                    _emit({"event": "warning",
+                           "message": "removed auto-generated providers.yaml "
+                                      "from 0.5.0 — your VS Code provider "
+                                      "settings now apply"})
+            except OSError as e:  # noqa: BLE001 - never break hello
+                print(f"hello: providers.yaml migration check failed: "
+                      f"{type(e).__name__}: {e}", file=sys.stderr)
         # Persisted environment choice (explicit user action) applies when
         # hello does not name one.
         env_cmd = dict(cmd)
@@ -1136,6 +1293,21 @@ class Sidecar:
             self.workspace = None
             _err(f"provider binding failed: {binding['error']}")
             return
+        # Override visibility: a project-file binding that contradicts the
+        # provider/model hello explicitly carried (i.e. the user's VS Code
+        # settings) must not be silent — name the file that won.
+        if binding.get("source") == "project-file":
+            for _field in ("provider", "model"):
+                _asked = cmd.get(_field)
+                _used = binding.get(_field)
+                if (isinstance(_asked, str) and _asked.strip() and _used
+                        and str(_asked).strip().lower()
+                        != str(_used).strip().lower()):
+                    _emit({"event": "warning",
+                           "message": f"`.awino/providers.yaml` (environment "
+                                      f"'{binding.get('environment')}') "
+                                      f"overrode VS Code setting {_field} "
+                                      f"'{_asked}' → using '{_used}'"})
         try:
             backend, key_status = self._apply_binding(binding, env_cmd)
         except ValueError as e:
@@ -1153,6 +1325,15 @@ class Sidecar:
         # The IDE loop works on the real workspace, not a demo sandbox.
         loop.sandbox = WorkspaceSandbox(wsp)
         self.loop = loop
+        # Track B: re-attach the file-backed memory registry on (re)connect.
+        # The registry persists under <workspace>/.awino/registry/, but a
+        # fresh sidecar process starts with loop.registry = None — without
+        # this re-attach, tasks_list/seed_save see an empty registry after
+        # every reconnect. Never breaks hello: an attach failure is recorded
+        # (not swallowed) so tasks_list can report it instead of showing a
+        # misleadingly empty panel.
+        self._registry_attach_error = None
+        self._ensure_registry()
         self.provider = binding["provider"]
         self.model_desc = getattr(backend, "model", self.provider)
         self._binding = dict(binding)
@@ -1184,37 +1365,65 @@ class Sidecar:
         self._register_mcp_servers(cmd.get("mcp_servers") or [])
         # Track A/H: auto-init on session start. If the workspace is not an
         # awino project yet (.awino/project.yaml absent), run the full init
-        # flow now — the user never has to type `awino init` by hand — and
-        # carry the one brief plain-language summary in the ready event.
+        # flow — the user never has to type `awino init` by hand.
         # (First-message mission start re-runs the idempotent checklist
-        # anyway via _bootstrap_and_registry.) Never breaks hello.
-        auto_init_summary = None
-        stories_review_lines = None
-        try:
-            from bootstrap import session_start_auto_init
-            auto_init = session_start_auto_init(wsp)
-            if auto_init:
-                auto_init_summary = auto_init["summary"]
-                self.loop.state.record("auto_init", {
-                    "ok": auto_init["ok"], "summary": auto_init_summary})
-                # Story ledger: the session-start review is mandatory —
-                # journal the event and carry the lines in the ready event
-                # so the session presents open stories before new work.
-                sr = auto_init.get("stories_review")
-                if sr:
-                    stories_review_lines = sr["lines"]
-                    self.loop.state.record("stories_review", {
-                        "stories": sr["stories"]})
-        except Exception:  # noqa: BLE001 — session start must proceed
-            auto_init_summary = None
+        # anyway via _bootstrap_and_registry.)
+        #
+        # Windows fix (0.5.0): session_start_auto_init can block for 120s
+        # (ensure_venv runs `python -m venv`, whose ensurepip stalls on
+        # Windows). It MUST NOT block the ready event — the extension times
+        # out waiting for ready. Emit ready first, then run auto-init in a
+        # background daemon thread. The ready event carries nulls for the
+        # auto-init fields; when the thread finishes it records state and
+        # emits an auto_init_complete event with the summary.
         _emit({"event": "ready", "protocol": PROTOCOL, "project": project,
                "provider": self.provider, "model": self.model_desc,
                "workspace": str(wsp), "mcp": self._mcp_status,
                "binding": {k: v for k, v in self._binding.items()},
                "modes": self._modes_summary(),
                "active_mode": self._active_mode_info(),
-               "auto_init": auto_init_summary,
-               "stories_review": stories_review_lines})
+               "auto_init": None,
+               "stories_review": None})
+        self._run_auto_init_async(wsp)
+
+    def _run_auto_init_async(self, wsp) -> None:
+        """Run session_start_auto_init in a background daemon thread.
+
+        The init flow (venv creation, project scaffolding) can take 120s+
+        on Windows — it must never block the ready event. When the thread
+        finishes, state is recorded and an auto_init_complete event is
+        emitted so the UI can surface the summary.
+        """
+        import threading
+
+        def _worker():
+            try:
+                from bootstrap import session_start_auto_init
+                auto_init = session_start_auto_init(wsp)
+                if auto_init:
+                    try:
+                        self.loop.state.record("auto_init", {
+                            "ok": auto_init["ok"],
+                            "summary": auto_init["summary"]})
+                    except Exception:
+                        pass
+                    sr = auto_init.get("stories_review")
+                    if sr:
+                        try:
+                            self.loop.state.record("stories_review", {
+                                "stories": sr["stories"]})
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            # NOTE: no unsolicited event is emitted here. The request/response
+            # protocol expects recv() after a command to return that
+            # command's result; an auto_init_complete event would race with
+            # it. State is recorded in the journal; the summary is available
+            # via the contract/status paths.
+
+        threading.Thread(target=_worker, daemon=True,
+                         name="awino-auto-init").start()
 
     # --------------------------------------------- scoped provider bindings
     def _read_providers_file(self) -> dict | None:
@@ -1288,6 +1497,12 @@ class Sidecar:
                 merged[f] = binding[f]
         backend = self._make_backend(binding["provider"], merged,
                                      api_key=material)
+        # Truthfulness: the env fallback inside the backend may supply a
+        # key even when no key_id was given (VS Code injects stored keys
+        # into the sidecar env). If a key will actually be sent, say so.
+        if (key_status == "not-required"
+                and getattr(backend, "api_key", None)):
+            key_status = "configured"
         return _ModeAwareBackend(backend, self), key_status
 
     def _make_backend(self, provider: str, cmd: dict, api_key=None):
@@ -1655,6 +1870,40 @@ class Sidecar:
         st["persona"] = self._persona_info()
         return {"ok": True, "status": st}
 
+    def _cmd_rigor_report(self, args: dict) -> dict:
+        """Rigor coach: score mission(s) from journal evidence, journal it.
+
+        Read-only except for appending the `rigor_report` event — the report
+        itself becomes evidence. Args: {mission_id?, recent?}.
+        """
+        if self.loop is None:
+            return {"status": "refused", "code": "no-loop",
+                    "detail": "connect a project first"}
+        try:
+            import rigor as _rigor
+            mission_id = args.get("mission_id")
+            recent = args.get("recent")
+            if recent is not None:
+                recent = int(recent)
+            report = _rigor.report_rigor(self.loop.state,
+                                         mission_id=mission_id,
+                                         recent=recent, record=True)
+            reports = report if isinstance(report, list) else [report]
+            return {"ok": True, "reports": [
+                {"mission_id": r["mission_id"], "score": r["score"],
+                 "scored": f"{r['n_scored']}/{r['n_checks']}",
+                 "failing": r["failing"], "unknown": r["unknown"],
+                 "overrides": r["overrides"],
+                 "checks": {c["check"]: {"status": c["status"],
+                                         "law": c["law"],
+                                         "nudge": c["nudge"]}
+                            for c in r["checks"]},
+                 "text": _rigor.render_text(r)}
+                for r in reports]}
+        except (ValueError, TypeError) as e:
+            return {"status": "refused", "code": "bad-rigor-args",
+                    "detail": str(e)[:200]}
+
     def _cmd_env_switch(self, args: dict) -> dict:
         name = args.get("environment")
         if not isinstance(name, str) or not name:
@@ -1900,10 +2149,12 @@ class Sidecar:
         # providers.yaml: per-environment provider bindings (YAML is the
         # explicit plain-text exception to the JSON/Markdown FAIR rule —
         # provider configs are conventionally YAML).
+        # NOTE: Do NOT auto-generate this file. VS Code settings are the
+        # source of truth unless the user created .awino/providers.yaml,
+        # which takes precedence by design (project-local override).
         pyaml = base / "providers.yaml"
-        if not pyaml.is_file():
-            pyaml.write_text(_PROVIDERS_YAML_TEMPLATE)
-            actions.append("wrote .awino/providers.yaml (template)")
+        if pyaml.is_file():
+            actions.append("found .awino/providers.yaml (user-configured)")
         for d in self._HOUSEKEEPING_DIRS:
             p = base / d
             if not p.is_dir():
@@ -2236,6 +2487,28 @@ class Sidecar:
     def _awino_dir(self) -> Path:
         return self.workspace / ".awino"
 
+    def _ensure_registry(self):
+        """Attach the file-backed registry when not already attached.
+
+        Returns the registry, or None when attachment failed (the failure is
+        recorded in self._registry_attach_error, never swallowed). Never
+        raises.
+        """
+        reg = getattr(self.loop, "registry", None)
+        if reg is not None:
+            return reg
+        try:
+            from registry import Registry
+            awd = self._awino_dir()
+            awd.mkdir(parents=True, exist_ok=True)
+            reg = Registry(awd)
+            reg.ensure()
+            self.loop.registry = reg
+            return reg
+        except Exception as e:  # noqa: BLE001 - never break callers
+            self._registry_attach_error = f"{type(e).__name__}: {e}"
+            return None
+
     def sidecar_sections(self) -> str:
         """Operator-owned sections appended to every compiled contract."""
         parts = [self._provider_section(), self._mode_section()]
@@ -2334,6 +2607,16 @@ class Sidecar:
             return
         self._cancel.clear()
         self._turn_out = queue.Queue()
+        # Sidecar streaming protocol (spec §3): per-turn opt-in via
+        # "stream": true. Absent/false preserves the 0.3.0 event set
+        # byte-identically (old clients simply never send it).
+        use_stream = bool(cmd.get("stream"))
+        self.loop.sidecar_emit = _emit if use_stream else None
+        self.loop.sidecar_turn_meta = (
+            self._stream_turn_meta if use_stream else None)
+        # Identity snapshot: _for_turn below must be the context THIS turn
+        # created, not a stale one (early-return turns never run _pipeline).
+        stream_before = self.loop._turn_stream
         # Scope #5: compaction check happens BEFORE the turn starts. If the
         # ~0.85 threshold is hit, the sidecar emits compaction_proposed and
         # pauses for the user's approval (normal approve/deny commands).
@@ -2374,20 +2657,56 @@ class Sidecar:
                             "effects already executed remain in the journal. "
                             f"dropped {dropped} queued message(s).")})
             return
-        self._emit_turn_result(result)
+        # _for_turn: the streamed turn's context (thinking + checks) belongs
+        # to this result even when the result carries no turn_id (e.g. a
+        # turn paused for approval). None for non-streamed turns, and None
+        # when this turn never reached the pipeline (identity unchanged).
+        fresh_stream = self.loop._turn_stream if use_stream else None
+        self._emit_turn_result(
+            result,
+            _for_turn=(fresh_stream if fresh_stream is not None
+                       and fresh_stream is not stream_before else None))
         if isinstance(result, dict) and result.get("status") == \
                 "awaiting_approval":
             self._emit_approvals(result)
 
-    def _emit_turn_result(self, result: dict) -> None:
+    def _stream_turn_meta(self, turn_id: str, phase: str,
+                          mode_id: str) -> dict:
+        """Refine a streamed turn_start with sidecar-owned metadata: the
+        mode source (operator overlay vs stage default) and the active
+        persona. Key material never appears here."""
+        info = self._active_mode_info()
+        source = "overlay" if info.get("source") == "overlay" else "stage"
+        return {"mode": {"id": mode_id or info.get("id"), "source": source},
+                "persona": self._persona_info()}
+
+    def _emit_turn_result(self, result: dict, _for_turn=None) -> None:
         """turn_result enriched with the live mode/persona/binding identity
-        the turn ran under (UI mode chip + auditability)."""
+        the turn ran under (UI mode chip + auditability).
+
+        Step 3 (spec §3.1): streamed turns additionally carry the
+        accumulated thinking trace and the finalized harness checks, so a
+        client that never saw the deltas still gets everything in one
+        event. Non-streamed turns keep the 0.3.0 shape byte-identically:
+        no "thinking"/"checks" keys are added.
+        """
         if isinstance(result, dict):
             result = dict(result)
             result["active_mode"] = self._active_mode_info()
             result["persona"] = self._persona_info()
             result["provider"] = {"provider": self.provider,
                                   "model": self.model_desc}
+            tctx = (_for_turn if _for_turn is not None
+                    else getattr(self.loop, "_turn_stream", None))
+            tid = result.get("turn_id")
+            if tctx is not None and (_for_turn is not None
+                                     or tid == tctx.turn_id):
+                # _for_turn: the just-completed streamed turn in
+                # _do_user_message (its result may legitimately lack a
+                # turn_id, e.g. awaiting_approval). Otherwise the context
+                # must belong to this result's turn.
+                result["thinking"] = tctx.thinking_text()
+                result["checks"] = [dict(c) for c in tctx.checks]
         _emit({"event": "turn_result", "result": result})
         # Scope #5: automatic housekeeping on stage transitions.
         self._maybe_housekeep_on_phase(result)
@@ -2458,6 +2777,11 @@ class Sidecar:
     def _do_command(self, cmd: dict) -> None:
         name = cmd.get("name")
         args = cmd.get("args") or {}
+        # Request id: echoed back in command_result so the client can route
+        # concurrent same-name commands to the right waiter instead of
+        # matching on the command name alone. Absent on old clients — the
+        # extension falls back to name matching when no id is echoed.
+        req_id = cmd.get("id")
         if not isinstance(name, str) or not isinstance(args, dict):
             _err('command requires "name" (string) and "args" (object)')
             return
@@ -2494,16 +2818,20 @@ class Sidecar:
             "context_reorder": self._cmd_context_reorder,
             "skills_list": self._cmd_skills_list,
             "skill_add": self._cmd_skill_add,
+            "tasks_list": self._cmd_tasks_list,
+            "session_resume": self._cmd_session_resume,
             "mode_list": self._cmd_mode_list,
             "mode_invoke": self._cmd_mode_invoke,
             "mode_dismiss": self._cmd_mode_dismiss,
             "persona_assume": self._cmd_persona_assume,
             "persona_dismiss": self._cmd_persona_dismiss,
             "env_switch": self._cmd_env_switch,
+            "rigor_report": self._cmd_rigor_report,
         }
         fn = handlers.get(name)
         if fn is None:
-            _emit({"event": "command_result", "name": name, "ok": False,
+            _emit({"event": "command_result", "name": name, "id": req_id,
+                   "ok": False,
                    "result": {"error": f"unknown command {name!r}"}})
             return
         self._pending_says = []
@@ -2525,7 +2853,7 @@ class Sidecar:
             result["said"] = (extra + "\n" + prev) if prev else extra
             result["says"] = self._pending_says
         self._pending_says = []
-        _emit({"event": "command_result", "name": name, "ok": ok,
+        _emit({"event": "command_result", "name": name, "id": req_id, "ok": ok,
                "result": result})
 
     def _cmd_mission(self, args: dict) -> dict:
@@ -2757,16 +3085,31 @@ class Sidecar:
                                {"name": name, "file": p.name,
                                 "overwrote": existed})
         # Track B: seed_save also registers tasks — the seed becomes a task
-        # in the registry tracker so progress on it is tracked.
-        reg = getattr(self.loop, "registry", None)
+        # in the registry tracker so progress on it is tracked. The caller
+        # is told whether registration succeeded; a silent failure here
+        # used to read as a clean save.
+        reg = self._ensure_registry()
+        task_registered = False
+        registry_error: str | None = None
         if reg is not None:
             try:
                 reg.add_task(f"execute seed '{name}' ({p.name})",
                              source=f"seed:{slug}", state="open")
-            except Exception:
-                pass
+                task_registered = True
+            except Exception as e:  # noqa: BLE001 — log, don't silently fail
+                registry_error = f"{type(e).__name__}: {e}"
+                import sys
+                print(f"seed_save: add_task failed: {registry_error}",
+                      file=sys.stderr)
+        else:
+            registry_error = (getattr(self, "_registry_attach_error", None)
+                              or "no registry attached (loop.registry is None)")
+            import sys
+            print(f"seed_save: {registry_error}", file=sys.stderr)
         self.loop.state.persist_snapshot()
-        return {"status": "ok", "seed": p.name, "overwrote": existed}
+        return {"status": "ok", "seed": p.name, "overwrote": existed,
+                "task_registered": task_registered,
+                "registry_error": registry_error}
 
     def _cmd_bootstrap(self, args: dict) -> dict:
         """Re-run the project startup checklist on demand (Track A)."""
@@ -3041,6 +3384,74 @@ class Sidecar:
                                 "via": "skill_add"})
         self.loop.state.persist_snapshot()
 
+    def _cmd_tasks_list(self, args: dict) -> dict:
+        """Read-only: tasks from the harness registry tracker (Track B).
+
+        Returns exactly what the registry believes — states change only
+        through registry.set_task_state in code (verified completion), never
+        from the UI. Empty when no registry is attached yet (no mission
+        started in this project). When the hello-time registry re-attach
+        failed, `attached` is False and `error` names the failure so the UI
+        can show "registry failed to load" instead of a misleadingly empty
+        task list."""
+        reg = getattr(self.loop, "registry", None)
+        if reg is None:
+            return {"tasks": [], "attached": False,
+                    "error": getattr(self, "_registry_attach_error", None)}
+        try:
+            tasks = reg.tasks()
+        except Exception as e:  # noqa: BLE001 - read path never breaks chat
+            return {"tasks": [], "attached": True,
+                    "error": f"{type(e).__name__}: {e}"}
+        out = []
+        for t in tasks:
+            out.append({
+                "id": t.get("id"), "text": t.get("text"),
+                "state": t.get("state"), "source": t.get("source"),
+                "done_criteria": t.get("done_criteria", ""),
+                "depends_on": list(t.get("depends_on", [])),
+                "evidence": list(t.get("evidence", [])),
+            })
+        return {"tasks": out, "attached": True}
+
+    def _cmd_session_resume(self, args: dict) -> dict:
+        """Read-only session-focus summary, reconstructed from real state.
+
+        Mission, phase, verified done criteria, last progress deltas, next
+        expected action — all from loop.status() — plus the registry's last
+        stop point and recent milestones when a registry is attached.
+        Nothing is written: this is a pure reconstruction for the chat view
+        to render on open or on demand."""
+        st = self.loop.status()
+        crit = st.get("criteria", []) or []
+        verified = [c for c in crit if c.get("ok")]
+        summary = {
+            "mission": st.get("mission"),
+            "phase": st.get("phase"),
+            "mission_revision": st.get("mission_revision", 0),
+            "criteria_total": len(crit),
+            "criteria_verified": len(verified),
+            "verified_labels": [c.get("label") for c in verified],
+            "last_progress": st.get("progress", []) or [],
+            "next_action": st.get("next_action"),
+            "turns": st.get("turns", 0),
+            "last_stop_point": "",
+            "recent_milestones": [],
+        }
+        reg = getattr(self.loop, "registry", None)
+        mission = self.loop.state.snapshot.get("mission") or {}
+        if reg is not None and mission.get("id"):
+            try:
+                summary["last_stop_point"] = reg.last_stop_point(mission["id"])
+                ms = reg.milestones()
+                summary["recent_milestones"] = [
+                    {"kind": m.get("kind"), "text": m.get("text")}
+                    for m in ms[-5:]
+                ]
+            except Exception:  # noqa: BLE001 - read path never breaks chat
+                pass
+        return summary
+
     def _cmd_contract(self, args: dict) -> dict:
         # The compiled contract block, including operator context and
         # project-skill sections (same patched compiler the turns use).
@@ -3066,6 +3477,11 @@ class Sidecar:
 
 
 def main() -> None:
+    # The sidecar ships with its own Python (bundled runtime) — it must
+    # never create a project .venv. Bootstrap's ensure_venv checks this flag
+    # and skips creation (returns a warning instead of hanging for 120s on
+    # `python -m venv`, whose ensurepip stalls on Windows).
+    os.environ["AWINO_SIDECAR"] = "1"
     Sidecar().run()
 
 

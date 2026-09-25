@@ -53,6 +53,12 @@ class SkillStore:
                 raise SkillIntegrityError(
                     f"skill file missing for pinned skill {name!r}")
             raw = path.read_bytes()
+            # Windows checkouts (git autocrlf) store CRLF on disk while the
+            # manifest pins LF bytes. Normalize line endings before hashing
+            # so a line-ending-only difference is not mistaken for tampering;
+            # any content change still alters the digest. The canonical LF
+            # body is also what gets delivered to the harness.
+            raw = raw.replace(b"\r\n", b"\n")
             got = hashlib.sha256(raw).hexdigest()
             if got != want:
                 raise SkillIntegrityError(

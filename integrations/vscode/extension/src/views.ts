@@ -70,7 +70,7 @@ export class ContractView extends BaseView {
     const out: vscode.TreeItem[] = [];
     const mission = status["mission"];
     out.push(new Leaf("Mission", mission ? esc(mission) : "(none — open a mission to start)"));
-    out.push(new Leaf("Phase", esc(status["phase"] ?? "?")));
+    out.push(new Leaf("Phase", esc(status["phase"] ?? "?").toUpperCase()));
     const mode = (status["active_mode"] ?? {}) as Record<string, unknown>;
     out.push(new Leaf("Mode", `${esc(mode["id"] ?? "?")} (${esc(mode["source"] ?? "?")})`));
     const persona = status["persona"] as Record<string, unknown> | null;
@@ -120,7 +120,11 @@ export class JournalView extends BaseView {
             .join(" ")
         : "";
       const reused = e["reused"] ? " (reused)" : "";
-      return new Leaf(`#${esc(e["seq"])} ${esc(e["tool"])}`, `${summary}${reused}`);
+      const tool = esc(e["tool"]);
+      const denied = tool === "deny" || tool === "approval_denied" || tool === "error";
+      const approved = tool.indexOf("approv") === 0;
+      const mark = denied ? "✕ " : approved ? "✓ " : "";
+      return new Leaf(`${mark}#${esc(e["seq"])} ${tool}`, `${summary}${reused}`);
     });
   }
 }
@@ -252,7 +256,7 @@ export class ModesView extends BaseView {
       const isActive = m.id === active.id;
       const item = new Leaf(
         `${isActive ? "● " : "○ "}${m.label}`,
-        `${m.id}${m.custom ? " (custom)" : ""} · ${m.stages.join("/")}`
+        `${m.id}${m.custom ? " (custom)" : ""}${isActive ? " (active)" : ""} · ${m.stages.join("/")}`
       );
       item.tooltip = `Stages: ${m.stages.join(", ")}. Temperature: ${
         (m.sampling ?? {})["temperature"] ?? "?"
@@ -266,5 +270,99 @@ export class ModesView extends BaseView {
   static modeOf(item: vscode.TreeItem): { id: string; label: string } | null {
     const m = (item as unknown as { __awinoMode?: { id: string; label: string } }).__awinoMode;
     return m ?? null;
+  }
+}
+
+/**
+ * Tasks view: the harness registry task tracker (Track B).
+ *
+ * Read-only mirror of exactly what the registry believes. Task states
+ * change only in code (registry.set_task_state on verified completion) —
+ * this view never invents, edits, or checks off tasks. When no registry
+ * is attached yet (no mission started in the project), it says so
+ * instead of showing a stale or fabricated list.
+ */
+const TASK_STATE_MARK: Record<string, string> = {
+  doing: "◐",
+  open: "○",
+  blocked: "✕",
+  done: "☑",
+};
+
+export class TasksView extends BaseView {
+  async getChildren(element?: vscode.TreeItem): Promise<vscode.TreeItem[]> {
+    if (element instanceof Group) {
+      return element.children;
+    }
+    let r: Record<string, unknown>;
+    try {
+      r = (await this.query("tasks_list")) as Record<string, unknown>;
+    } catch (e) {
+      return [new Leaf("sidecar unavailable", esc(e))];
+    }
+    const tasks = (r["tasks"] ?? []) as Array<Record<string, unknown>>;
+    // Registry failed to load (hello-time re-attach blew up): show the
+    // error, not a misleadingly empty list. This is distinct from "no
+    // registry attached yet" below.
+    if (r["error"]) {
+      return [new Leaf("registry failed to load", esc(r["error"]))];
+    }
+    if (!tasks.length) {
+      return [
+        new Leaf(
+          r["attached"]
+            ? "(no tasks tracked yet)"
+            : "(no registry attached yet — the harness tracks tasks once a mission starts)"
+        ),
+      ];
+    }
+    const order = ["doing", "open", "blocked", "done"];
+    const out: vscode.TreeItem[] = [];
+    for (const state of order) {
+      const group_tasks = tasks.filter((t) => String(t["state"]) === state);
+      if (!group_tasks.length) {
+        continue;
+      }
+      const g = new Group(`${state} (${group_tasks.length})`);
+      for (const t of group_tasks) {
+        const mark = TASK_STATE_MARK[state] ?? "?";
+        const label = `${mark} ${esc(t["text"])}`;
+        const descBits = [esc(t["source"] ?? "")].filter(Boolean);
+        const dc = String(t["done_criteria"] ?? "").trim();
+        if (dc) {
+          descBits.push(dc.slice(0, 60));
+        }
+        const deps = (t["depends_on"] ?? []) as unknown[];
+        const item = new Leaf(label, descBits.join(" · ") || undefined);
+        // Seed-imported checklist items are human attestation, not harness
+        // verification — the tooltip must not claim otherwise.
+        const isSeedTask = String(t["source"] ?? "").startsWith("seed:");
+        item.tooltip =
+          `state: ${state}\n` +
+          `id: ${esc(t["id"])}\n` +
+          `source: ${esc(t["source"])}\n` +
+          (dc ? `done criteria: ${dc}\n` : "") +
+          (deps.length ? `depends on: ${deps.map(esc).join(", ")}\n` : "") +
+          `evidence: ${(t["evidence"] as unknown[] ?? []).length} item(s)\n` +
+          (isSeedTask
+            ? `(read-only — seed-imported checklist item: human attestation, not harness-verified)`
+            : `(read-only — states change only when the harness verifies completion)`);
+        g.children.push(item);
+      }
+      out.push(g);
+    }
+    // Any task in an unexpected state still shows up rather than vanishing.
+    const known = new Set(order);
+    const other = tasks.filter((t) => !known.has(String(t["state"])));
+    if (other.length) {
+      const g = new Group(`other (${other.length})`);
+      for (const t of other) {
+        g.children.push(
+          new Leaf(`? ${esc(t["text"])}`, `state: ${esc(t["state"])}`)
+        );
+      }
+      out.push(g);
+    }
+    return out;
   }
 }

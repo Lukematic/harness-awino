@@ -32,7 +32,7 @@ class TestDiscoverySkill(unittest.TestCase):
             self.assertEqual(intent, "new-task")
             self.assertEqual(chain, ["planning-grill"])
             # The interview procedure must ride along with the grill.
-            self.assertEqual(skills, ["mission-definition", "discovery"])
+            self.assertEqual(skills, ["mission-definition", "discovery", "rigor-distillation", "rigor-laws"])
 
     def test_discovery_procedure_injected_in_contract(self):
         loop = interview_loop([

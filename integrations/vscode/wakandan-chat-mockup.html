@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>A.W.I.N.O. — Wakandan Chat Mockup</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 13px; color: #DCE7F7; background: #0B101B;
+    margin: 0; padding: 0; display: flex; flex-direction: column;
+    width: 400px; height: 860px; overflow: hidden;
+  }
+  /* header */
+  #topbar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 12px; background: #101827;
+    border-bottom: 1px solid #1d2942;
+  }
+  #logo {
+    width: 22px; height: 22px; border-radius: 6px;
+    background: linear-gradient(135deg, #00C6FF 0%, #0B7FA6 60%, #D4A937 130%);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 12px; color: #0B101B;
+  }
+  #title { font-weight: 700; letter-spacing: .4px; }
+  #title small { display: block; font-weight: 400; color: #8B98B0; font-size: 10px; letter-spacing: 1.5px; }
+  #beads { margin-left: auto; display: flex; gap: 5px; align-items: center; }
+  .bead { width: 8px; height: 8px; border-radius: 50%; }
+  .b1 { background: #00C6FF; box-shadow: 0 0 6px #00C6FF; }
+  .b2 { background: #3ddc84; }
+  .b3 { background: #D4A937; }
+  .b4 { background: #6a5acd; }
+  /* mission banner */
+  #banner {
+    padding: 9px 12px; background: #101827;
+    border-bottom: 1px solid #1d2942; font-size: 11px; color: #8B98B0;
+  }
+  .chip {
+    display: inline-block; font-size: 10px; padding: 2px 9px; border-radius: 10px;
+    margin: 2px 4px 2px 0; color: #fff; letter-spacing: .3px;
+  }
+  .chip.mission { background: #162032; border: 1px solid #D4A937; color: #D4A937; }
+  .chip.phase { background: #0B7FA6; }
+  .chip.mode { background: #6a5acd; }
+  .chip.persona { background: #8a6d1c; }
+  /* messages */
+  #messages { flex: 1; overflow: hidden; padding: 10px 10px 4px 10px; }
+  .msg {
+    margin-bottom: 10px; padding: 9px 11px; border-radius: 8px;
+    background: #101827; border: 1px solid #1d2942;
+  }
+  .msg.user { background: #162032; border-left: 3px solid #D4A937; }
+  .msg.turn { border-left: 3px solid #00C6FF; }
+  .msg .said { white-space: pre-wrap; word-break: break-word; line-height: 1.45; }
+  .who { font-size: 10px; color: #8B98B0; letter-spacing: 1px; margin-bottom: 5px; }
+  /* thinking trace */
+  .thinking {
+    border: 1px dotted #D4A937; border-radius: 6px;
+    margin: 8px 0; overflow: hidden; background: #0B101B;
+  }
+  .thinking summary {
+    cursor: pointer; padding: 7px 10px; font-size: 11px; color: #D4A937;
+    letter-spacing: .4px; list-style: none;
+  }
+  .thinking summary::before { content: "◈ "; }
+  .thinking .tbody { padding: 2px 12px 10px 12px; font-size: 12px; color: #aeb9d0; line-height: 1.5; }
+  .thinking .tbody p { margin: 6px 0; }
+  /* harness checks */
+  .checks { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0 2px 0; }
+  .check {
+    font-size: 10px; padding: 2px 9px; border-radius: 10px;
+    background: #0e2a38; border: 1px solid #00C6FF; color: #00C6FF;
+  }
+  .check.warn { border-color: #D4A937; color: #D4A937; background: #2a230e; }
+  /* code block */
+  pre.code {
+    background: #070b13; border: 1px solid #1d2942; border-radius: 6px;
+    padding: 8px 10px; font-size: 11px; overflow-x: auto; color: #c9d6f2;
+    font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  }
+  .codebar {
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 10px; color: #8B98B0; margin: 8px 0 -4px 0;
+  }
+  .codebar button {
+    background: #162032; color: #D4A937; border: 1px solid #2a3a5c;
+    font-size: 10px; padding: 2px 10px; border-radius: 4px; cursor: pointer;
+  }
+  /* tool row */
+  .toolrow {
+    display: flex; align-items: center; gap: 8px; font-size: 11px;
+    color: #8B98B0; background: #0B101B; border: 1px solid #1d2942;
+    border-radius: 6px; padding: 6px 10px; margin-top: 8px;
+  }
+  .toolrow .dot { width: 7px; height: 7px; border-radius: 50%; background: #3ddc84; box-shadow: 0 0 5px #3ddc84; }
+  .toolrow code { color: #00C6FF; font-size: 11px; }
+  /* approval card */
+  .approval {
+    border: 1px solid #2a3a5c; border-radius: 8px; margin: 0 0 10px 0;
+    background: #101827; overflow: hidden;
+  }
+  .approval .chevron {
+    height: 5px;
+    background: repeating-linear-gradient(135deg, #D4A937 0 8px, #0B101B 8px 16px);
+  }
+  .approval .abody { padding: 9px 11px; }
+  .approval h4 { margin: 0 0 4px 0; font-size: 12px; color: #D4A937; letter-spacing: .3px; }
+  .approval p { margin: 4px 0 8px 0; font-size: 11px; color: #8B98B0; }
+  pre.diff {
+    background: #070b13; border-radius: 6px; padding: 8px 10px;
+    font-size: 11px; overflow-x: auto; white-space: pre-wrap;
+    font-family: ui-monospace, Consolas, monospace; margin: 0 0 8px 0;
+  }
+  pre.diff .add { color: #3ddc84; }
+  pre.diff .del { color: #f14c4c; }
+  .btnrow { display: flex; gap: 8px; }
+  button.act {
+    border: none; padding: 7px 20px; border-radius: 5px; cursor: pointer;
+    font-size: 12px; font-weight: 600;
+  }
+  button.approve { background: linear-gradient(135deg, #00C6FF, #0B7FA6); color: #06121f; }
+  button.deny { background: #2a3348; color: #DCE7F7; }
+  /* input */
+  #inputbar { display: flex; padding: 10px; border-top: 1px solid #1d2942; background: #0B101B; gap: 8px; }
+  #input {
+    flex: 1; background: #162032; color: #DCE7F7;
+    border: 1px solid #2a3a5c; border-radius: 6px; padding: 9px; font: inherit; resize: none;
+  }
+  #input:focus { outline: none; border-color: #00C6FF; }
+  #send {
+    background: linear-gradient(135deg, #D4A937, #8a6d1c); color: #0B101B;
+    border: none; padding: 0 18px; border-radius: 6px; cursor: pointer; font-weight: 700;
+  }
+  #statusline {
+    padding: 5px 12px; font-size: 10px; color: #8B98B0;
+    border-top: 1px solid #1d2942; display: flex; gap: 6px; align-items: center;
+    background: #0B101B; letter-spacing: .3px;
+  }
+</style>
+</head>
+<body>
+  <div id="topbar">
+    <div id="logo">A</div>
+    <div id="title">A.W.I.N.O.<small>LOOP OWNER</small></div>
+    <div id="beads" title="link / turn / approval / mode">
+      <span class="bead b1"></span><span class="bead b2"></span><span class="bead b3"></span><span class="bead b4"></span>
+    </div>
+  </div>
+
+  <div id="banner">
+    <span class="chip mission">MISSION · Ship 0.4.0</span>
+    <span class="chip phase">BUILD</span>
+    <span class="chip mode">architect</span>
+    <span class="chip persona">verified skill</span>
+  </div>
+
+  <div id="messages">
+    <div class="msg user">
+      <div class="who">YOU</div>
+      <div class="said">Give the chat a Wakandan flavor — smooth, and let me see the model thinking.</div>
+    </div>
+
+    <div class="msg turn">
+      <div class="who">LOOP OWNER · TURN 12</div>
+      <details class="thinking" open>
+        <summary>Thinking · 3 steps</summary>
+        <div class="tbody">
+          <p><b>1.</b> The request has three parts: a visual theme, streaming smoothness, and an exposed reasoning trace. Theme is pure webview work; streaming needs sidecar protocol events; the trace needs the provider to expose thinking.</p>
+          <p><b>2.</b> Risk: providers that don't expose thinking must not fake it — honest "not exposed" notice instead. Streaming must stay backwards compatible with the existing JSON-lines protocol.</p>
+          <p><b>3.</b> Plan: restyle chat first (visible win), then protocol streaming, then the trace UI. Each step independently testable.</p>
+        </div>
+      </details>
+      <div class="checks">
+        <span class="check">✓ contract compiled</span>
+        <span class="check">✓ judge · architect</span>
+        <span class="check">✓ validation</span>
+        <span class="check warn">◷ approval gate · waiting</span>
+      </div>
+      <div class="said">Here's the plan, broken into steps with done-criteria:</div>
+      <div class="codebar"><span>python</span><button>Copy</button></div>
+      <pre class="code">steps = [
+  ("restyle",  "tokens + layout, no logic"),
+  ("stream",   "said_delta events, back-compat"),
+  ("trace",    "thinking_delta, honest null"),
+]</pre>
+      <div class="toolrow"><span class="dot"></span><span><code>write_file</code> webview/chat.html · done in 41s</span></div>
+    </div>
+
+    <div class="approval">
+      <div class="chevron"></div>
+      <div class="abody">
+        <h4>Approval requested · write_file</h4>
+        <p>webview/chat.js — streaming state machine + renderers</p>
+        <pre class="diff"><span class="add">+ function onSaidDelta(ev) { appendToken(ev.text); }</span>
+<span class="del">- messages.innerHTML += renderTurn(ev); // block mode</span></pre>
+        <div class="btnrow">
+          <button class="act approve">Approve</button>
+          <button class="act deny">Deny</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="inputbar">
+    <textarea id="input" rows="2" placeholder="Message the loop owner…"></textarea>
+    <button id="send">Send</button>
+  </div>
+  <div id="statusline"><span class="bead b1"></span> connected · bedrock · us-east-1 · turn 12</div>
+</body>
+</html>

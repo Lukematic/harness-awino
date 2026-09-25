@@ -3,24 +3,77 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>A.W.I.N.O.: Models &amp; Providers</title>
+<!-- Restrictive CSP per VS Code webview guidance: scripts may only load from
+     this webview's own resource origin (the placeholder below is replaced with
+     webview.cspSource at serve time); styles are inline; no network, no
+     plugins, no inline scripts. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src {{CSP_SOURCE}}; style-src 'unsafe-inline'; img-src data: https:; font-src data:; connect-src 'none';">
+<title>Awino: Models &amp; Providers</title>
 <style>
-  :root { color-scheme: dark; }
+  /* Awino Wakandan tokens (§1.1) — scoped to this panel.
+     :root covers the default (dark/Vibranium); body.awino-vibranium pins the
+     Vibranium variant, body.vscode-light / body.awino-savanna the Savanna one. */
+  :root, body.awino-vibranium {
+    --awino-vibranium: #00C6FF; --awino-vibranium-deep: #0B7FA6;
+    --awino-vibranium-dim: rgba(0,198,255,.12);
+    --awino-gold: #D4A937; --awino-gold-bright: #F0C94A;
+    --awino-ok: #4EC9B0;
+    --awino-text: #DCE7F7; --awino-muted: #8B98B0;
+  }
+  body.vscode-light, body.awino-savanna {
+    --awino-vibranium: #0B7FA6; --awino-vibranium-deep: #0B5A78;
+    --awino-vibranium-dim: rgba(11,127,166,.10);
+    --awino-gold: #8A6D1F; --awino-gold-bright: #8A6D1F;
+    --awino-ok: #1E7E5A;
+    --awino-text: var(--vscode-foreground); --awino-muted: var(--vscode-descriptionForeground);
+  }
   body { font-family: var(--vscode-font-family, system-ui); font-size: 13px;
-    color: var(--vscode-foreground); background: var(--vscode-editor-background);
+    color: var(--awino-text, var(--vscode-foreground));
+    background: var(--vscode-editor-background);
     margin: 0; padding: 16px; max-width: 640px; }
-  h2 { margin-top: 0; }
+  h2 { margin-top: 0; padding-bottom: 8px; position: relative; }
+  h2::after { /* 3px gold chevron band (§1.2) */
+    content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+    background: repeating-linear-gradient(135deg,
+      var(--awino-gold, #D4A937) 0 2px, transparent 2px 9px);
+  }
+  h3 { color: var(--awino-gold, #D4A937); font-size: 12px; text-transform: uppercase;
+    letter-spacing: .06em; margin: 20px 0 8px 0; }
   .row { margin-bottom: 12px; }
-  label { display: block; margin-bottom: 4px; color: var(--vscode-descriptionForeground); }
+  label { display: block; margin-bottom: 4px; color: var(--awino-muted, var(--vscode-descriptionForeground)); }
   input, select { width: 100%; box-sizing: border-box; padding: 8px;
     background: var(--vscode-input-background); color: var(--vscode-input-foreground);
     border: 1px solid var(--vscode-input-border); border-radius: 4px; font: inherit; }
-  button { background: var(--vscode-button-background); color: var(--vscode-button-foreground);
+  input:focus, select:focus { outline: none;
+    box-shadow: 0 0 0 1px var(--awino-vibranium, #00C6FF); }
+  button { background: linear-gradient(180deg,
+      var(--awino-vibranium, #00C6FF), var(--awino-vibranium-deep, #0B7FA6));
+    color: #04222E;
     border: none; padding: 8px 18px; border-radius: 4px; cursor: pointer; margin-right: 8px; }
-  button.secondary { background: var(--vscode-button-secondaryBackground); }
-  .note { font-size: 12px; color: var(--vscode-descriptionForeground); margin: 8px 0; }
+  button.secondary { background: var(--vscode-button-secondaryBackground);
+    color: var(--vscode-button-secondaryForeground); }
+  .note { font-size: 12px; color: var(--awino-muted, var(--vscode-descriptionForeground)); margin: 8px 0; }
+  .note code { color: var(--awino-vibranium, #00C6FF); }
   #status { margin: 12px 0; padding: 10px; border: 1px solid var(--vscode-panel-border); border-radius: 6px; }
   .warn { color: var(--vscode-testing-iconFailed, #f14c4c); }
+  .key-stored { color: var(--awino-ok, #4EC9B0); }
+  .key-unset { color: var(--awino-muted, var(--vscode-descriptionForeground)); }
+  .keyrow { display: flex; gap: 8px; }
+  .keyrow input[type="password"] { flex: 1; min-width: 0; }
+  .keylabel { flex: 0 0 150px; width: 150px; }
+  .keyactions { margin-top: 6px; }
+  .keyactions button { padding: 5px 12px; font-size: 12px; }
+  .docslink { float: right; font-size: 12px;
+    color: var(--awino-vibranium, #00C6FF); text-decoration: none; }
+  .docslink:hover { text-decoration: underline; }
+  .docslink[hidden] { display: none; }
+  #modelIntel { margin-top: 6px; }
+  #modelIntel[hidden] { display: none; }
+  #fetchRow { margin-top: 6px; display: flex; gap: 8px; align-items: center; }
+  #fetchRow[hidden] { display: none; }
+  #fetchModels { white-space: nowrap; }
+  #fetchNote { margin: 0; flex: 1; }
+  #modelSelect[hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -28,7 +81,7 @@
 <div id="status"><i>loading…</i></div>
 
 <div class="row">
-  <label for="provider">Provider</label>
+  <label for="provider">Provider <a id="providerDocs" class="docslink" href="#" hidden>Provider Docs</a></label>
   <select id="provider">
     <option value="echo">echo (safe default, no model)</option>
     <option value="ollama">ollama (local, no key)</option>
@@ -48,6 +101,12 @@
 <div class="row">
   <label for="model">Model (empty = provider default)</label>
   <input id="model" type="text" placeholder="qwen2.5:1.5b">
+  <select id="modelSelect" hidden></select>
+  <div id="modelIntel" class="note" hidden></div>
+  <div id="fetchRow" hidden>
+    <button id="fetchModels" class="secondary">Fetch models</button>
+    <span id="fetchNote" class="note"></span>
+  </div>
 </div>
 <div class="row">
   <label for="timeout">Timeout (seconds)</label>
@@ -55,15 +114,27 @@
 </div>
 <div class="row">
   <label for="openaiKey">OpenAI-compatible API key <span id="openaiKeyState"></span></label>
-  <input id="openaiKey" type="password" autocomplete="off" placeholder="stored in VS Code SecretStorage — never in settings">
+  <div class="keyrow">
+    <input id="openaiKey" type="password" autocomplete="off" placeholder="stored in VS Code SecretStorage — never in settings">
+    <input id="openaiKeyLabel" type="text" class="keylabel" maxlength="40" placeholder="Label (e.g. Work)" aria-label="Label for the OpenAI-compatible API key">
+  </div>
+  <div class="keyactions"><button id="openaiGetKey" class="secondary">Get OpenAI API Key</button></div>
 </div>
 <div class="row">
   <label for="anthropicKey">Anthropic API key <span id="anthropicKeyState"></span></label>
-  <input id="anthropicKey" type="password" autocomplete="off" placeholder="stored in VS Code SecretStorage — never in settings">
+  <div class="keyrow">
+    <input id="anthropicKey" type="password" autocomplete="off" placeholder="stored in VS Code SecretStorage — never in settings">
+    <input id="anthropicKeyLabel" type="text" class="keylabel" maxlength="40" placeholder="Label (e.g. Personal)" aria-label="Label for the Anthropic API key">
+  </div>
+  <div class="keyactions"><button id="anthropicGetKey" class="secondary">Get Anthropic API Key</button></div>
 </div>
 <div class="row">
   <label for="bedrockKey">Bedrock API key <span id="bedrockKeyState"></span></label>
-  <input id="bedrockKey" type="password" autocomplete="off" placeholder="from the Bedrock console → API keys → Generate API key">
+  <div class="keyrow">
+    <input id="bedrockKey" type="password" autocomplete="off" placeholder="from the Bedrock console → API keys → Generate API key">
+    <input id="bedrockKeyLabel" type="text" class="keylabel" maxlength="40" placeholder="Label (e.g. Prod)" aria-label="Label for the Bedrock API key">
+  </div>
+  <div class="keyactions"><button id="bedrockGetKey" class="secondary">Get Bedrock API Key</button></div>
 </div>
 <div class="note">Bedrock connects through its OpenAI-compatible endpoint
 (<code>https://bedrock-runtime.{region}.amazonaws.com/openai/v1</code>) with the Bedrock API key as the
@@ -90,6 +161,7 @@ project B's key. Keys stay in secret storage; only key <i>references</i> live in
 </div>
 <div id="envResult" class="note"></div>
 
+<script src="{{SETUP_SHARED_JS}}"></script>
 <script src="{{MODELS_JS}}"></script>
 </body>
 </html>

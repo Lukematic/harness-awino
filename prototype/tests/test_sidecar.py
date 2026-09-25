@@ -47,12 +47,13 @@ def _turn(**kw):
 
 
 class SidecarClient:
-    def __init__(self, env=None):
-        self.ws = tempfile.mkdtemp(prefix="awino-sidecar-test-")
+    def __init__(self, env=None, ws=None, home=None):
+        self.ws = ws or tempfile.mkdtemp(prefix="awino-sidecar-test-")
         merged = dict(os.environ)
         merged.update(env or {})
         # isolate harness state per test
-        merged["AWINO_HOME"] = tempfile.mkdtemp(prefix="awino-home-test-")
+        merged["AWINO_HOME"] = home or tempfile.mkdtemp(
+            prefix="awino-home-test-")
         self.home = merged["AWINO_HOME"]
         self.p = subprocess.Popen(
             ["python3", SIDECAR], stdin=subprocess.PIPE,
@@ -105,8 +106,11 @@ class SidecarClient:
                    "provider": provider, **kw})
         return self.recv()
 
-    def cmd(self, name, args=None, timeout=30):
-        self.send({"cmd": "command", "name": name, "args": args or {}})
+    def cmd(self, name, args=None, timeout=30, cmd_id=None):
+        payload = {"cmd": "command", "name": name, "args": args or {}}
+        if cmd_id is not None:
+            payload["id"] = cmd_id
+        self.send(payload)
         return self.recv(timeout)
 
     def close(self):
@@ -132,21 +136,32 @@ class ProtocolTest(unittest.TestCase):
         self.assertIn("mcp", e)
 
     def test_hello_auto_inits_fresh_workspace(self):
-        # Track A/H: session start in a fresh dir runs the full init flow
-        # automatically — no `awino init` was ever typed — and the ready
-        # event carries the one brief plain-language summary.
+        # Track A/H: session start in a fresh dir runs the init flow
+        # automatically in the background — no `awino init` was ever typed.
+        # The ready event is emitted immediately (must not block on init);
+        # auto_init is None in ready, and the workspace is initialized
+        # asynchronously. In sidecar mode (AWINO_SIDECAR=1) no .venv is
+        # created — the sidecar ships its own bundled Python.
         e = self.c.hello()
         self.assertEqual(e["event"], "ready")
-        summary = e.get("auto_init")
-        self.assertIsInstance(summary, list, "ready event must carry auto_init")
-        joined = "\n".join(summary)
-        self.assertIn("Set up this project", joined)
-        self.assertNotIn("Traceback", joined)
+        self.assertIsNone(e.get("auto_init"),
+                          "ready must not block on auto-init")
         ws = self.c.ws
-        self.assertTrue(os.path.isfile(os.path.join(ws, ".awino", "project.yaml")))
-        self.assertTrue(os.path.isdir(os.path.join(ws, ".venv")))
-        self.assertTrue(os.path.isfile(os.path.join(ws, "justfile")))
+        # Wait for the background auto-init thread (up to 30s).
+        deadline = time.time() + 30
+        proj_yaml = os.path.join(ws, ".awino", "project.yaml")
+        while time.time() < deadline:
+            if os.path.isfile(proj_yaml):
+                break
+            time.sleep(0.5)
+        self.assertTrue(os.path.isfile(proj_yaml),
+                        "background auto-init must create project.yaml")
+        # Sidecar mode skips the task runner (justfile) — it's a CLI
+        # workstation concern. The sidecar's auto-init never creates one.
         self.assertTrue(os.path.isdir(os.path.join(ws, ".awino", "registry")))
+        # Sidecar mode: no .venv (bundled Python is used instead).
+        self.assertFalse(os.path.isdir(os.path.join(ws, ".venv")),
+                         "sidecar must not create a project venv")
         # second hello in the same workspace: already a project -> silent
         e2 = self.c.hello()
         self.assertEqual(e2["event"], "ready")
@@ -179,6 +194,30 @@ class ProtocolTest(unittest.TestCase):
         r = self.c.cmd("status")
         self.assertEqual(r["event"], "command_result")
         self.assertTrue(r["ok"])
+
+    def test_command_result_echoes_request_id(self):
+        # RISK 3: concurrent same-name commands route by request id, not by
+        # name alone — the sidecar must echo the id it was given.
+        self.c.hello()
+        r = self.c.cmd("status", {}, cmd_id="q42")
+        self.assertEqual(r["event"], "command_result")
+        self.assertEqual(r["name"], "status")
+        self.assertEqual(r["id"], "q42")
+
+    def test_command_result_echoes_request_id_on_unknown_command(self):
+        self.c.hello()
+        r = self.c.cmd("no_such_command_xyz", {}, cmd_id="q7")
+        self.assertEqual(r["event"], "command_result")
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["id"], "q7")
+
+    def test_command_without_id_still_resolves(self):
+        # Backward compatibility: no id sent -> null echoed, still routes.
+        self.c.hello()
+        r = self.c.cmd("status")
+        self.assertEqual(r["event"], "command_result")
+        self.assertTrue(r["ok"])
+        self.assertIsNone(r.get("id"))
 
     def test_approve_unknown_id(self):
         self.c.hello(provider="scripted", script=[])
@@ -498,6 +537,98 @@ class ContextSeedsTest(unittest.TestCase):
         self.assertEqual(st["result"]["status"]["mission"],
                          "Fix the login bug")
 
+    def test_seed_save_reports_task_registered(self):
+        # RISK 2: the result says whether registry tracking succeeded.
+        r = self.c.cmd("mission", {"text": "Track me",
+                                   "criteria": ["manual"]})
+        self.assertTrue(r["ok"], r)
+        r = self.c.cmd("seed_save", {"name": "Reg Seed"})
+        self.assertTrue(r["ok"], r)
+        self.assertTrue(r["result"]["task_registered"])
+
+    def test_seed_save_reports_task_registration_failure(self):
+        # RISK 2 (in-process): a mission exists but the registry never
+        # attached (e.g. hello-time re-attach failed) — the save succeeds
+        # but task_registered must read False, not clean.
+        import shutil
+        import tempfile
+        import types
+        from pathlib import Path
+        import awino_sidecar
+
+        class _FakeState:
+            def __init__(self):
+                self.snapshot = {"mission": {
+                    "text": "Do things",
+                    "done_criteria": [{"kind": "manual"}]}}
+
+            def record(self, *a, **k):
+                pass
+
+            def persist_snapshot(self):
+                pass
+
+        tmp = tempfile.mkdtemp(prefix="awino-seedreg-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        s = awino_sidecar.Sidecar()
+        s.workspace = Path(tmp)
+        s.loop = types.SimpleNamespace(registry=None, state=_FakeState())
+        r = s._cmd_seed_save({"name": "No Registry Seed"})
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(r["seed"], "no-registry-seed.md")
+        # FIX: With lazy-attach, the registry is attached on-demand, so
+        # task_registered is now True (the bug was that it was False).
+        self.assertTrue(r["task_registered"])
+        self.assertIsNone(r["registry_error"])
+        # The seed file itself still saved.
+        self.assertTrue((Path(tmp) / ".awino" / "seeds" /
+                         "no-registry-seed.md").exists())
+
+    def test_seed_save_reports_registry_attach_failure_detail(self):
+        # MAJOR 3: a corrupt/unreadable registry must not read as a clean
+        # save — task_registered is False with the reason in registry_error,
+        # while the seed file still saves and status stays "ok".
+        import shutil
+        import tempfile
+        import types
+        from pathlib import Path
+        from unittest import mock
+        import awino_sidecar
+        import registry
+
+        class _FakeState:
+            def __init__(self):
+                self.snapshot = {"mission": {
+                    "text": "Do things",
+                    "done_criteria": [{"kind": "manual"}]}}
+
+            def record(self, *a, **k):
+                pass
+
+            def persist_snapshot(self):
+                pass
+
+        tmp = tempfile.mkdtemp(prefix="awino-seedregfail-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        s = awino_sidecar.Sidecar()
+        s.workspace = Path(tmp)
+        s.loop = types.SimpleNamespace(registry=None, state=_FakeState())
+
+        class _BrokenRegistry:
+            def __init__(self, *a, **k):
+                raise RuntimeError("registry store is corrupt")
+
+        with mock.patch.object(registry, "Registry", _BrokenRegistry):
+            r = s._cmd_seed_save({"name": "Broken Registry Seed"})
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(r["seed"], "broken-registry-seed.md")
+        self.assertFalse(r["task_registered"])
+        self.assertTrue(r["registry_error"])
+        self.assertIn("corrupt", r["registry_error"])
+        # The seed file itself still saved despite the registry failure.
+        self.assertTrue((Path(tmp) / ".awino" / "seeds" /
+                         "broken-registry-seed.md").exists())
+
     def test_bad_seed_reported(self):
         seeds_dir = os.path.join(self.c.ws, ".awino", "seeds")
         os.makedirs(seeds_dir, exist_ok=True)
@@ -770,6 +901,172 @@ class McpClientTest(unittest.TestCase):
             self.assertTrue(r["ok"])
         finally:
             c.close()
+
+
+
+class TasksAndResumeTest(unittest.TestCase):
+    """0.4.1: tasks_list + session_resume sidecar queries.
+
+    Back the VS Code Tasks panel (read-only mirror of the task registry),
+    the persistent mission header, and the session-focus/resume block.
+    """
+
+    def setUp(self):
+        self.c = SidecarClient()
+
+    def tearDown(self):
+        self.c.close()
+
+    def test_tasks_list_empty_before_mission(self):
+        self.c.hello()
+        r = self.c.cmd("tasks_list")
+        self.assertTrue(r["ok"], r)
+        res = r["result"]
+        self.assertEqual(res["tasks"], [])
+        # honestly reports attachment instead of fabricating tasks
+        self.assertIn("attached", res)
+
+    def test_tasks_list_mirrors_seed_registered_task(self):
+        self.c.hello()
+        r = self.c.cmd("mission", {"text": "Wire the tasks panel",
+                                   "criteria": ["manual", "manual"]})
+        self.assertTrue(r["ok"], r)
+        r = self.c.cmd("seed_save", {"name": "Panel Seed"})
+        self.assertTrue(r["ok"], r)
+        r = self.c.cmd("tasks_list")
+        self.assertTrue(r["ok"], r)
+        tasks = r["result"]["tasks"]
+        # mission creation seeds dag:initial tasks; the saved seed adds one
+        seed_tasks = [t for t in tasks
+                      if t["source"] == "seed:panel-seed"]
+        self.assertEqual(len(seed_tasks), 1)
+        t = seed_tasks[0]
+        self.assertEqual(t["text"],
+                         "execute seed 'Panel Seed' (panel-seed.md)")
+        self.assertEqual(t["state"], "open")
+        # every task carries the fields the Tasks view needs
+        for task in tasks:
+            self.assertIn("id", task)
+            self.assertIn("text", task)
+            self.assertIn("state", task)
+            self.assertIn("source", task)
+        # read-only mirror: repeated reads are identical
+        r2 = self.c.cmd("tasks_list")
+        self.assertEqual(r2["result"]["tasks"], tasks)
+
+    def test_tasks_list_has_no_write_path(self):
+        # The Tasks view is a read-only mirror: there is no query that
+        # lets the UI mark tasks done; only registry state can.
+        self.c.hello()
+        r = self.c.cmd("tasks_set_state", {"id": "t-1", "state": "done"})
+        self.assertFalse(r["ok"], r)
+
+    def test_session_resume_empty_before_mission(self):
+        self.c.hello()
+        r = self.c.cmd("session_resume")
+        self.assertTrue(r["ok"], r)
+        s = r["result"]
+        self.assertIsNone(s["mission"])
+        self.assertEqual(s["phase"], "IDLE")
+        self.assertEqual(s["criteria_total"], 0)
+        self.assertEqual(s["criteria_verified"], 0)
+        self.assertEqual(s["turns"], 0)
+        self.assertEqual(s["recent_milestones"], [])
+
+    def test_session_resume_reconstructs_mission(self):
+        self.c.hello()
+        self.c.cmd("mission", {"text": "Wire the tasks panel",
+                               "criteria": ["manual", "manual"]})
+        r = self.c.cmd("session_resume")
+        self.assertTrue(r["ok"], r)
+        s = r["result"]
+        self.assertEqual(s["mission"], "Wire the tasks panel")
+        self.assertIn(s["phase"],
+                      ("DEFINE", "PLAN", "BUILD", "VERIFY", "DONE"))
+        self.assertEqual(s["criteria_total"], 2)
+        self.assertEqual(s["criteria_verified"], 0)
+        self.assertIn("mission_revision", s)
+        self.assertIn("next_action", s)
+
+    def test_status_exposes_mission_revision(self):
+        # The persistent mission header's revision counter.
+        self.c.hello()
+        st = self.c.cmd("status")["result"]["status"]
+        self.assertIn("mission_revision", st)
+        rev = st["mission_revision"]
+        self.assertIsInstance(rev, int)
+        self.assertGreaterEqual(rev, 0)
+
+    def test_registry_reattaches_after_reconnect(self):
+        # A reconnect (fresh sidecar process) must re-attach the file-backed
+        # registry — otherwise tasks_list goes empty and seed_save silently
+        # drops the task after every reconnect.
+        self.c.hello()
+        self.c.cmd("mission", {"text": "Reconnect registry test",
+                               "criteria": ["manual", "manual"]})
+        self.c.cmd("seed_save", {"name": "reconnect-seed"})
+        before = self.c.cmd("tasks_list")["result"]
+        self.assertEqual(len(before["tasks"]), 7)
+        # Simulate a reconnect: new sidecar process, same workspace + home.
+        ws, home = self.c.ws, self.c.home
+        self.c.close()
+        self.c = SidecarClient(ws=ws, home=home)
+        self.c.hello()
+        after = self.c.cmd("tasks_list")["result"]
+        self.assertTrue(after["attached"], after)
+        self.assertEqual(len(after["tasks"]), 7)
+        self.assertTrue(any("reconnect-seed" in t["text"]
+                            for t in after["tasks"]), after)
+
+
+class _FakeRegistry:
+    """Minimal stand-in for registry.Registry for in-process tests."""
+    def __init__(self, tasks):
+        self._tasks = tasks
+
+    def tasks(self):
+        return self._tasks
+
+
+class TasksListAttachErrorTest(unittest.TestCase):
+    """RISK 1 (in-process): a hello-time registry re-attach failure must
+    surface as an explicit error from tasks_list — never a misleadingly
+    empty list, and distinct from 'no registry attached yet'."""
+
+    def _sidecar(self, attach_error=None, tasks=None):
+        import types
+        import awino_sidecar
+        s = awino_sidecar.Sidecar()
+        s.loop = types.SimpleNamespace(
+            registry=None if tasks is None else _FakeRegistry(tasks))
+        s._registry_attach_error = attach_error
+        return s
+
+    def test_attach_failure_reported_as_error(self):
+        s = self._sidecar(attach_error="OSError: simulated disk failure")
+        r = s._cmd_tasks_list({})
+        self.assertEqual(r["tasks"], [])
+        self.assertFalse(r["attached"])
+        self.assertEqual(r["error"], "OSError: simulated disk failure")
+
+    def test_no_registry_no_error_is_not_a_failure(self):
+        # No .awino dir yet: attached False, error None — the "no registry
+        # attached yet" empty state, not the failure state.
+        s = self._sidecar(attach_error=None)
+        r = s._cmd_tasks_list({})
+        self.assertEqual(r["tasks"], [])
+        self.assertFalse(r["attached"])
+        self.assertIsNone(r["error"])
+
+    def test_attached_registry_lists_tasks_cleanly(self):
+        tasks = [{"id": "t-1", "text": "x", "state": "open",
+                  "source": "manual", "done_criteria": "",
+                  "depends_on": [], "evidence": []}]
+        s = self._sidecar(tasks=tasks)
+        r = s._cmd_tasks_list({})
+        self.assertTrue(r["attached"])
+        self.assertEqual(len(r["tasks"]), 1)
+        self.assertIsNone(r.get("error"))
 
 
 if __name__ == "__main__":

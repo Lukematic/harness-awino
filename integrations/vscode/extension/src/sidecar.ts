@@ -52,6 +52,7 @@ export class SidecarClient extends EventEmitter {
   private buf = "";
   private exited = false;
   private closing = false; // set while close() intentionally shuts the proc down
+  private readySeen = false; // set once the sidecar emits `ready`
   private stderrTail: string[] = [];
 
   get running(): boolean {
@@ -80,6 +81,9 @@ export class SidecarClient extends EventEmitter {
           stdio: ["pipe", "pipe", "pipe"],
           env,
           cwd: opts.workspace,
+          // Windows: without this, every sidecar start pops a visible
+          // console window out of GUI VS Code. Ignored on non-Windows.
+          windowsHide: true,
         });
       } catch (e) {
         reject(e);
@@ -87,6 +91,8 @@ export class SidecarClient extends EventEmitter {
       }
       this.proc = proc;
       this.closing = false; // a fresh process is not an intentional shutdown
+      this.readySeen = false;
+      this.stderrTail = [];
 
       proc.stderr?.on("data", (d: Buffer) => {
         const s = d.toString();
@@ -99,17 +105,31 @@ export class SidecarClient extends EventEmitter {
 
       proc.on("error", (e) => {
         this.exited = true;
-        this.emit("event", { event: "error", message: `sidecar spawn failed: ${e}` });
-        reject(e);
+        // Name the interpreter: on Windows the default `python3` does not
+        // exist (stock installs provide `py`/`python`), and a bare ENOENT
+        // otherwise reads as a mysterious "not connected".
+        const detail = e instanceof Error ? e.message : String(e);
+        const msg = `sidecar spawn failed: ${detail} (interpreter "${opts.python}")`;
+        // Fatal: the process never started — the UI must drop the session,
+        // never sit falsely "connected".
+        this.emit("event", { event: "error", fatal: true, message: msg });
+        reject(new Error(msg));
       });
       proc.on("exit", (code, signal) => {
         this.exited = true;
         if (this.closing) {
           return; // intentional close (reconnect) — not an error
         }
+        const tail = this.stderrTail.slice(-20).join("").trim().slice(0, 500);
+        const when = this.readySeen ? "exited" : "exited immediately";
         const ev = {
           event: "error",
-          message: `sidecar exited (code=${code}, signal=${signal})`,
+          // Fatal: the process died — the UI must drop the session, never
+          // sit falsely "connected".
+          fatal: true,
+          message:
+            `sidecar ${when} (code=${code}, signal=${signal}, interpreter "${opts.python}")` +
+            (tail ? `: ${tail}` : ""),
         };
         this.emit(`event:${ev.event}`, ev);
         this.emit("event", ev);
@@ -146,6 +166,7 @@ export class SidecarClient extends EventEmitter {
       }, timeoutMs);
       const onReady = (ev: SidecarEvent) => {
         clearTimeout(timer);
+        this.readySeen = true;
         resolve(ev);
       };
       this.once("event:ready", onReady);
@@ -200,8 +221,13 @@ export class SidecarClient extends EventEmitter {
     this.send({ cmd: "approve", id, decision });
   }
 
-  command(name: string, args: Record<string, unknown> = {}): void {
-    this.send({ cmd: "command", name, args });
+  /**
+   * Send a `command` verb. `id` is a client-chosen request id the sidecar
+   * echoes in its command_result so concurrent same-name commands route to
+   * the right waiter; omit it and routing falls back to the command name.
+   */
+  command(name: string, args: Record<string, unknown> = {}, id?: string): void {
+    this.send(id === undefined ? { cmd: "command", name, args } : { cmd: "command", name, args, id });
   }
 
   cancel(): void {

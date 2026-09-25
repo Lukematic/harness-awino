@@ -160,3 +160,311 @@ from `~/workspace/awino-rebuild/integrations/vscode/extension/`,
   contract, approvals, journal, and phase gates are the real code paths.
 - No Marketplace publication, signing, or release was performed — install
   and proof only, per the publish gate.
+
+---
+
+# 0.4.0 — Wakandan chat UI + competitor-teardown setup UX (2026-09-23)
+
+**Status: PROVEN — 43/44 GUI checks green.** The single failure
+(`040_approval_card_appears`) is pre-existing: the scripted approval flow
+was already red before this work (the mission never reaches BUILD in the
+GUI run), and it is unrelated to the six teardown items below.
+
+## Environment
+
+- **VS Code (official):** same Xvfb `:99` + Playwright harness as above.
+- **Extension:** `awino-loop-owner-0.4.0.vsix` (73 files, 270,791 bytes,
+  SHA-256 `090237460ac8195d2b48ccfaa8fa7459ecf9f6f91668ec080f8e09c32b0d87b6`),
+  installed into `~/workspace/vscode-test-env/ext-official`
+  (extracted from the VSIX; the `code --install-extension` CLI hangs
+  headless in this environment, so the equivalent manual extract was used
+  and verified: `webview/setup-shared.js` present,
+  `out/extension.js` contains the wizard code).
+- **Backend:** echo for the regression surface; openai-with-no-key for the
+  wizard/setup-card surface; scripted for the approval attempt. No real
+  provider keys, no network calls to paid providers.
+
+## Direct automated proof (no GUI)
+
+- `npx tsc -p ./` — clean.
+- `npm test` — all suites green (290 Node/webview tests), including two
+  new suites:
+  - `test/setupShared.js` (14): provider catalogue URLs, `needsKey`,
+    `fetchableProvider`, model-intel lines marked `(est.)`, honest
+    unknown-model fallback, and `ensureSelectedOption` with a
+    select-faithful stub (assigning an unmatched value leaves a real
+    select blank — the 0.3.0 bug only reproduces with true semantics).
+  - `test/chatSetup.js` (34): provider pill states + click, wizard
+    show/hide, provider/docs/get-key wiring, `wizardFetch`/`wizardModels`
+    success + failure paths, inline key validation, `wizardSave`,
+    `wizardDismiss`.
+  - `test/modelsPanel.js` extended to 48: (b) three Get-key buttons post
+    `openExternal` with the key-creation URLs, (c) Provider Docs link
+    follows the provider and hides for echo, (d) legacy `scripted`
+    binding renders as a labeled `(current)` option instead of blank,
+    (e) intel line for known/unknown/empty models.
+  - `test/providerKeys.js` extended: `scripted` is keyless (it replays
+    canned test turns and makes no API call).
+- `prototype/tests` — **468/468 passed** on the feature branch
+  (`TMPDIR=/home/hatch/tmp-test`).
+
+## What the GUI run proves (driver `gui_test_040.py`, log `/tmp/gui041_run.log`)
+
+### (a) First-run onboarding wizard
+
+With a fresh profile (`awino.onboarded` unset) and `awino.provider:
+"openai"` (no key), `Awino: Reconnect Sidecar` shows the wizard as the
+sidebar: provider select preselected to **openai (not blank)**, "Get
+OpenAI API Key" button, Provider Docs link, API-key step, model step;
+the input bar is parked while it is active. **Skip** dismisses it and
+the setup card takes over (key still missing). Screenshot
+`23_040_wizard.png` (wizard) and `24_040_setup_card.png` (after Skip).
+
+### (b) "Get {Provider} API Key" buttons
+
+Models & Providers shows **Get OpenAI API Key / Get Anthropic API Key /
+Get Bedrock API Key**; the wizard shows the per-provider button too.
+Unit tests prove each posts `openExternal` with the right key-creation
+URL; the extension host allowlists exactly
+`platform.openai.com`, `console.anthropic.com`, `docs.anthropic.com`,
+`console.aws.amazon.com`, `docs.aws.amazon.com`, `ollama.com` (https
+only) and refuses everything else.
+
+### (c) Provider Docs link
+
+Beside the provider dropdown in Models & Providers, and in the wizard
+header. Follows the provider (OpenAI → `platform.openai.com/docs`,
+Anthropic → `docs.anthropic.com`, …), hidden for echo. Click posts
+`openExternal` with the docs URL.
+
+### (d) Provider dropdown never blank (must-fix)
+
+The stored provider is rendered through `ensureSelectedOption`: a
+binding id with no matching `<option>` (0.3.0 left `scripted` behind)
+becomes a labeled `scripted (current)` option instead of a blank
+select. Proven in the panel, in the wizard, and by the select-faithful
+unit test.
+
+### (e) Model-intelligence line
+
+Under the model picker (panel and wizard): `Context 128K · $2.50/M in ·
+$10.00/M out (est.)` for gpt-4o — context window plus input/output
+$/M, always marked `(est.)`; local Ollama models say "no per-token
+cost"; unlisted models get the honest `Context/pricing unknown for this
+model — check the provider docs.` Screenshot `25_040_models_new.png`.
+
+### (f) Provider-status pill
+
+In the chat input area: **No provider** when the key is missing,
+**`echo · echo`** when connected; click opens Models & Providers
+(the GUI run opens the panel via the pill). Verified under Vibranium
+(`26_040_pill_vibranium.png`) and Savanna (`27_040_pill_savanna.png`).
+
+### Regression surface (still green)
+
+Vibranium default + Savanna toggle both directions, 5-bead statusline
+cluster, setup card hidden for echo, streaming echo turn with the
+honest `not exposed by this provider` thinking null, model-discovery
+fallback to manual entry, no orphan sidecar.
+
+## Screenshots (`proof/vscode_gui/`, all visually inspected)
+
+- `16_040_launch.png`, `17_040_vibranium_chat.png`,
+  `18_040_savanna_chat.png` — launch + themes (existing set)
+- `23_040_wizard.png` — onboarding wizard on first run
+- `24_040_setup_card.png` — setup card after wizard Skip
+- `25_040_models_new.png` — Models & Providers: docs link, Get-key
+  buttons, intel line
+- `26_040_pill_vibranium.png`, `27_040_pill_savanna.png` — provider
+  pill in both themes
+- `20_040_streaming_turn.png` — streaming echo turn regression
+- `22_040_final.png` — final state
+
+## Reproduce
+
+```bash
+cd ~/workspace/vscode-test-env
+DISPLAY=:99 ./pwvenv/bin/python gui_test_040.py   # ~12 min; 43/44 (approval pre-existing red)
+```
+
+## Honest gaps (unchanged)
+
+- The scripted approval GUI flow is still red (pre-existing; the mission
+  never reaches BUILD in the run). The approval *protocol* remains
+  proven by `test/harness.js`.
+- No real Windows GUI environment; Windows interpreter behavior is
+  unit-tested only.
+- No paid provider calls were made; Bedrock/Ollama discovery is
+  unit-tested, not live-proven.
+
+---
+
+# 0.4.1 — Tasks panel, persistent mission header, session resume, Python recovery (2026-09-24)
+
+**Status: PROVEN — 27/27 GUI checks green, process exit 0.**
+
+## What 0.4.1 adds
+
+1. **Python-not-found recovery** — on `ENOENT` the extension offers
+   **Locate Python…**, lists per-platform install locations, names the
+   failed interpreter, saves the pick, and retries.
+2. **Connection-import transparency** — import results name the inspected
+   paths (no secret values).
+3. **Tasks panel** (`awino.tasks`) — read-only TreeView mirroring the
+   Python registry: doing `◐`, open `○`, blocked `✕`, done `☑`.
+   The extension cannot mark tasks done.
+4. **Persistent mission header** — mission, phase, verified criteria `x/y`,
+   mission revision; hidden when no mission exists.
+5. **Session resume** — read-only reconstruction (mission, phase/revision,
+   verified criteria, progress, next action, stop point, milestones);
+   auto-posted on reconnect and `Awino: Show Session Resume` command.
+6. **Sidecar queries** — `tasks_list`, `session_resume`,
+   `mission_revision` in `Loop.status()`.
+
+## Bugs found and fixed during this proof
+
+- **Natural-language done criteria rejected.** The New-Mission prompt asked
+  for comma-separated criteria ("bug reproduced, fix verified by test")
+  but the sidecar only accepted the internal `manual`/`artifact:`/`event:`
+  grammar. Fixed: the prompt now says
+  "Done criteria (comma-separated plain language, e.g. bug reproduced, …
+  — or manual, artifact:<path>, event:<type>)", and the sidecar maps any
+  other text to a manual criterion preserving the user's label.
+  (`prototype/awino_sidecar.py::_parse_criteria`.)
+- **Silent seed-save failure.** `awino.saveSeed` showed "seed saved"
+  even when the sidecar returned an error. Fixed: the error is surfaced
+  and the success path refreshes the Tasks view.
+  (`integrations/vscode/extension/src/extension.ts`.)
+- **Registry lost on reconnect.** `loop.registry` was attached only on
+  mission start; after a reconnect the fresh sidecar had `registry = None`,
+  so `tasks_list` went empty and `seed_save` silently dropped the task.
+  Fixed: the hello handler re-attaches the file-backed registry when
+  `<workspace>/.awino` exists. Regression test
+  `test_registry_reattaches_after_reconnect` in
+  `prototype/tests/test_sidecar.py` proves a fresh sidecar on the same
+  workspace sees all 7 tasks.
+
+## Environment
+
+- **VS Code (official):** 1.139.0 under Xvfb `:99`, Playwright-driven
+  (`~/workspace/vscode-test-env/gui_test_041.py`).
+- **Extension:** `awino-loop-owner-0.4.1.vsix`
+  (69 files, 271,788 bytes,
+  SHA-256 `28b276b5ef05d05146bccf159583047f572a005a3bd3010a1d5810329b447e97`),
+  extracted into `~/workspace/vscode-test-env/ext-official`
+  (the `code --install-extension` CLI hangs headless; manual extract is
+  the documented equivalent and the manifest was rewritten to 0.4.1).
+- **Backend:** scripted provider (deterministic), isolated `AWINO_HOME`,
+  fresh test workspace. No network, no model keys.
+
+## Direct automated proof (no GUI)
+
+- `npx tsc --noEmit -p tsconfig.json` — clean, exit 0.
+- `npm test` — exit 0, **428 checks** across 14 suites (incl. 6 new
+  `test/bundleSidecar.js` bundler guards: no generated `awino-*` dirs,
+  no `.pytest_cache`, no `.pyc`, < 150 files).
+- `TMPDIR=~/workspace/.tmp python3 -m unittest discover -s tests -t .`
+  — 474 tests OK (468 existing + 6 new direct sidecar tests for
+  `tasks_list`/`session_resume`/`mission_revision`, plus the reconnect
+  regression test above).
+
+## GUI proof (real VS Code, 27/27)
+
+Driver: `~/workspace/vscode-test-env/gui_test_041.py`, exit 0.
+Screenshots: `proof/vscode_gui/28_041_*`–`33_041_*`
+(older `28_041`–`33_041` shots from red runs were overwritten).
+
+| Check | Result |
+|---|---|
+| VS Code launches, workbench visible | PASS |
+| Awino container in activity bar | PASS |
+| Chat webview renders | PASS |
+| Reconnect (scripted provider) via palette | PASS |
+| Resume block hidden with no mission | PASS |
+| Mission header hidden with no mission | PASS |
+| New mission via palette (`manual, manual` criteria) | PASS |
+| Header visible: `DEFINE · 041 tasks mission · 0/2 done · rev 1` | PASS |
+| Header names mission / shows 0/2 / shows DEFINE / shows rev 1 | PASS (×4) |
+| Reconnect again → resume auto-posted (`Session resume / Mission: 041 tasks mission / Phase: PLAN · rev 1 / Verified: 0/2`) | PASS (×3) |
+| `Awino: Show Session Resume` renders the block | PASS (×2) |
+| Save seed `gui-task-seed` via palette | PASS |
+| Tasks view registered in the Awino container | PASS |
+| Tasks panel lists the seed task `execute seed 'gui-task-seed' (gui-task-seed.md)` under `open (7)` | PASS |
+| Reconnect with bogus `awino.pythonPath` → recovery dialog appears, lists per-platform locations, names the failed interpreter | PASS (×4) |
+| Reconnect after restoring settings | PASS |
+| No orphan sidecar processes at exit | PASS |
+
+Key screenshot: `proof/vscode_gui/31_041_tasks_panel.png` shows the Tasks
+panel with `open (7)` — six DAG tasks plus
+`◐ execute seed 'gui-task-seed' (gui-task-seed.md)` — the persistent header
+`PLAN · 041 tasks mission · 0/2 done · rev 1`, and the session-resume block.
+
+## Honest gaps
+
+- No Windows GUI test; Windows interpreter behavior is unit-tested only.
+- No paid-provider calls; Bedrock/Ollama discovery is unit-tested.
+- The suite-wide temp-dir cleanup defect remains (`TMPDIR=~/workspace/.tmp`
+  is required; `/tmp` is a 512 MB tmpfs).
+- 0.4.0's approval-card GUI path was not proven (scripted mission never
+  reached BUILD); protocol tests remain green.
+
+## 0.5.0 — bundled Python, zero setup
+
+### Runtime pins (verified 2026-09-24)
+
+Release `20260901` from `astral-sh/python-build-standalone`, CPython
+`3.12.14`, variant `install_only_stripped`. Every archive below was
+SHA-256-verified against the publisher's `SHA256SUMS` before unpacking:
+
+| RID | Archive SHA-256 |
+|---|---|
+| darwin-arm64 | `81a359f1cfadd4da11766534c5913791cea55f26e1bb902cacd2a531bb1e4b2b` |
+| darwin-x64 | `65b195c9cedc1fef6767f044f9822069adbd1bd9204d424ece4628776fdc04bb` |
+| win32-x64 | `7c45c9622400d578709a9b2cddbe8124cc21d382409d9f13406d706d28e31b14` |
+| linux-x64 | `72748da13197c1fb161e3afeef20a6a385ff24f2165e6e2758e47008e7faba4c` |
+
+Linux spot-check: the bundled `python/linux-x64/bin/python3` runs as
+`Python 3.12.14` and imports the sidecar's stdlib set. Interpreter
+resolution order is now: explicit `awino.pythonPath` → bundled runtime →
+system detection → Locate-Python recovery.
+
+### Linux zero-setup GUI proof
+
+**Status: 13/16 passed 2026-09-24; 3 webview checks failed on a real
+0.5.0 regression (fixed, re-proving).** The driver
+(`vscode-test-env/gui_test_050.py`) launched real VS Code with system
+Python removed from PATH and proved the extension selects the bundled
+`python/linux-x64/bin/python3` (sidecar command line observed), connects,
+creates a mission, approves the contract, saves a seed, and lists it in the
+Tasks panel — 13/16 green.
+
+The 3 failures (mission header, turn rendering, and a spuriously-passing
+"connected" check) root-caused to a CSP bug: the 0.5.0 webview HTML gained
+a restrictive CSP whose `{{CSP_SOURCE}}` placeholder appeared TWICE — once
+in an explanatory comment, once in the real meta tag. `String.replace`
+with a string pattern replaces only the FIRST occurrence, so the comment
+ate the replacement and the served CSP kept the literal
+`{{CSP_SOURCE}}` (invalid source, ignored by the browser). The chat
+webview went deaf: no state messages, no header, no turns — while the
+host-side tree views kept working. Fix: placeholder removed from the
+comment, replacement changed to a global regex, regression test
+`test/cspPlaceholders.js` (8 checks) added. The driver's `"connected" in
+status` assertion was also fixed (it matched "not connected"); it now
+requires `"connected ·"` and rejects `"not connected"`.
+
+### Windows zero-setup GUI proof
+
+**Status: pending first green CI run.** See
+`proof/windows_test_checklist_050.md` and the driver
+`.github/workflows/scripts/win_gui_proof.py` run by
+`.github/workflows/windows-gui-test.yml`. Driver fixes applied 2026-09-24:
+install and launch now share `--extensions-dir`/`--user-data-dir`, and the
+connected assertion requires `"connected ·"` (not a substring).
+
+### Honest gaps (0.5.0)
+
+- Linux GUI proof not yet run (this section).
+- Windows GUI proof not yet green (CI pending).
+- No paid-provider calls; Bedrock/Ollama discovery is unit-tested.
+- The suite-wide temp-dir cleanup defect remains (`TMPDIR=~/workspace/.tmp`
+  is required; `/tmp` is a 512 MB tmpfs).

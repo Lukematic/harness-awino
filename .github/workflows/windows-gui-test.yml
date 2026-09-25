@@ -1,0 +1,135 @@
+# windows-gui-test — proves Awino zero-setup on real Windows.
+#
+# Triggers on pushes to the bundled-python branch (and manually). The job:
+#  1. checks out, installs Node 20, npm ci
+#  2. fetches the portable CPython runtimes via the SAME committed script
+#     local packaging uses (scripts/fetch-python-runtimes.js — pinned
+#     release + SHA-256, hard fail on mismatch; no duplicated URL lists)
+#  3. tsc + full node suite
+#  4. vsce package; asserts the win32 runtime tree is inside the VSIX
+#     and the .pbs-cache tarball cache is NOT (would double the size)
+#  5. installs VS Code stable, installs the VSIX, and runs the GUI proof
+#     (.github/workflows/scripts/win_gui_proof.py) with NO system Python
+#     on the VS Code process PATH — the sidecar MUST spawn from the
+#     bundled python/win32-x64/python.exe (proven via its command line)
+#  6. uploads screenshots + the proof log as artifacts
+#
+# This workflow exists because Windows binaries cannot execute on the Linux
+# build host: a green run here is the real Windows execution proof.
+
+name: windows-gui-test
+
+on:
+  push:
+    branches: [feature/bundled-python-050]
+  workflow_dispatch:
+
+jobs:
+  windows-gui-test:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: npm ci
+        working-directory: integrations/vscode/extension
+        run: npm ci
+
+      - name: Fetch Python runtimes (pinned + SHA-256 verified)
+        working-directory: integrations/vscode/extension
+        run: node scripts/fetch-python-runtimes.js
+
+      - name: TypeScript build
+        # NOTE: must EMIT (no --noEmit). Ten test files require(../out/*.js);
+        # out/ is gitignored, so on a fresh runner --noEmit leaves nothing for
+        # npm test and the suite dies with MODULE_NOT_FOUND. npx tsc still
+        # fails the step on type errors.
+        working-directory: integrations/vscode/extension
+        run: npx tsc
+
+      - name: Set up Python (unit tests + GUI driver; scrubbed from PATH for the GUI proof)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Sidecar hello smoke test (Windows diagnostic)
+        # Runs the sidecar directly with a hello command and shows exactly
+        # where it stalls on Windows (stdout/stderr captured, 30s cap) —
+        # so a hello->ready failure stops being a blind timeout.
+        run: python .github/workflows/scripts/win_sidecar_smoke.py
+
+      - name: Node unit tests
+        # Runs each test file separately (same files/order as `npm test`) so
+        # a failure names the file AND its tail output in the error
+        # annotation — full step logs are not always retrievable, but
+        # annotations are.
+        working-directory: integrations/vscode/extension
+        run: |
+          $files = @("harness","bedrock","connection_importer","markdown","streaming","python","pythonRecovery","tasksView","providerKeys","modelDiscovery","modelsPanel","setupShared","chatSetup","bundleSidecar","bundledPython","bundlePython","connectGuard","cspPlaceholders","vsixContents")
+          $failed = @()
+          foreach ($f in $files) {
+            Write-Host "===== test/$f.js ====="
+            $out = node ./test/$f.js 2>&1 | Out-String
+            Write-Host $out
+            if ($LASTEXITCODE -ne 0) {
+              $tail = (($out -split "`r?`n" | Select-Object -Last 12) -join " | ").Substring(0, [Math]::Min(600, (($out -split "`r?`n" | Select-Object -Last 12) -join " | ").Length))
+              $failed += "$f (exit $LASTEXITCODE :: $tail)"
+            }
+          }
+          if ($failed.Count -gt 0) { Write-Output "::error::NODE TEST FAILURES: $($failed -join ' ;; ')"; exit 1 }
+          Write-Host "ALL NODE TEST FILES PASSED"
+
+      - name: Package VSIX
+        working-directory: integrations/vscode/extension
+        run: npx --yes @vscode/vsce package
+
+      - name: Assert VSIX contents (win32 runtime in, .pbs-cache out)
+        working-directory: integrations/vscode/extension
+        run: |
+          $matches = @(Get-Item awino-loop-owner-*.vsix)
+          if ($matches.Count -ne 1) { throw "expected exactly one VSIX, found $($matches.Count)" }
+          $vsix = $matches[0]
+          $entries = tar -tf $vsix.FullName
+          $hits = @($entries | Where-Object { $_ -like 'extension/python/win32-x64/*' })
+          if ($hits.Count -lt 100) { throw "win32 runtime tree missing/too small in VSIX ($($hits.Count) entries)" }
+          if (-not ($entries -contains 'extension/python/win32-x64/python.exe')) { throw 'python.exe missing from VSIX' }
+          if (-not ($entries -contains 'extension/bundled-sidecar/awino_sidecar.py')) { throw 'bundled sidecar missing from VSIX' }
+          $cached = @($entries | Where-Object { $_ -like '*pbs-cache*' })
+          if ($cached.Count -gt 0) { throw "runtime tarball cache shipped in VSIX: $($cached[0])" }
+          "VSIX OK: $($vsix.Name) ($($vsix.Length) bytes), win32 runtime entries: $($hits.Count), no .pbs-cache"
+          "AWINO_VSIX=$($vsix.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Install Playwright (GUI driver)
+        run: pip install playwright
+
+      - name: Download VS Code stable
+        run: |
+          $zip = "$env:RUNNER_TEMP\vscode.zip"
+          Invoke-WebRequest -Uri 'https://update.code.visualstudio.com/latest/win32-x64-archive/stable' -OutFile $zip
+          Expand-Archive $zip -DestinationPath "$env:RUNNER_TEMP\vscode"
+          $code = Get-ChildItem -Recurse -Path "$env:RUNNER_TEMP\vscode" -Filter Code.exe | Select-Object -First 1
+          if (-not $code) { throw 'Code.exe not found after extract' }
+          "CODE_EXE=$($code.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Windows zero-setup GUI proof
+        run: >
+          python .github/workflows/scripts/win_gui_proof.py
+          --code "$env:CODE_EXE"
+          --vsix "$env:AWINO_VSIX"
+          --out proof/win_gui
+          --work "$env:RUNNER_TEMP\win-gui-proof"
+
+      - name: Upload proof artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-gui-proof
+          path: proof/win_gui/

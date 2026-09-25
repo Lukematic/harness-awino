@@ -20,7 +20,11 @@ TOOL_DEFS = {
 
 class Sandbox:
     def __init__(self, root: str | Path, venv_bin: str | Path | None = None):
-        self.root = Path(root)
+        # Resolve the root: on Windows, Temp paths may use 8.3 short names
+        # (e.g. RUNNER~1) while Path.resolve() returns the long form. If
+        # root is unresolved, _resolve()'s parent check compares short vs
+        # long and falsely rejects every path as "escapes sandbox".
+        self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self._manifest: dict[str, str] = {}  # Phase B: path -> sha256 of writes
         # Track A (project bootstrap): when a project .venv exists, every

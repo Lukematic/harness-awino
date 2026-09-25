@@ -390,6 +390,8 @@ def parse_criteria(spec) -> dict:
     s = spec.strip()
     if s == "manual":
         return {"kind": "manual"}
+    if s.startswith("manual:"):
+        return {"kind": "manual", "label": s[len("manual:"):].strip()}
     if s.startswith("artifact:"):
         return {"kind": "artifact_exists", "path": s[len("artifact:"):]}
     if s.startswith("event:"):
@@ -398,7 +400,12 @@ def parse_criteria(spec) -> dict:
         if len(parts) > 1:
             c["tool"] = parts[1]
         return c
-    raise ValueError(f"unknown criterion spec: {spec!r}")
+    # Plain language (or anything else the grammar doesn't know): a manual
+    # criterion carrying the operator's own words as its label. The harness
+    # can never auto-verify a manual criterion — only an explicit operator
+    # /done closes it — so this stays fail-closed while accepting natural
+    # language instead of refusing the mission.
+    return {"kind": "manual", "label": s}
 
 
 def criterion_status(criterion: dict, snapshot: dict, events: list,
@@ -418,7 +425,10 @@ def criterion_status(criterion: dict, snapshot: dict, events: list,
         label = f"event:{et}" + (f":{tool}" if tool else "")
         return (found, label)
     if kind == "manual":
-        return (manual_ok, "manual: operator /done required")
+        label = criterion.get("label")
+        return (manual_ok,
+                f"manual: {label} (operator /done required)" if label
+                else "manual: operator /done required")
     return (False, f"unknown criterion kind: {kind}")
 
 

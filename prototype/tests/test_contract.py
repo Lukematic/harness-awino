@@ -36,7 +36,7 @@ class TestContract(unittest.TestCase):
         # backend asked for "admin"; harness routed build/first-principles from intent
         self.assertEqual(s["mode"], "build")
         self.assertEqual(s["stance_chain"], ["first-principles"])
-        self.assertEqual(s["skills"], ["repo", "code"])
+        self.assertEqual(s["skills"], ["repo", "code", "rigor-iteration", "rigor-proof-cycles"])
         hints = [e for e in loop.state.events if e["type"] == "turn_hint_ignored"]
         self.assertEqual(len(hints), 1)
 
@@ -54,7 +54,7 @@ class TestContract(unittest.TestCase):
         r = loop.run_user_turn("fix the login bug")
         self.assertEqual(r["status"], "ok")
         s = loop.state.snapshot
-        self.assertEqual(s["skills"], ["repo", "code"])
+        self.assertEqual(s["skills"], ["repo", "code", "rigor-iteration", "rigor-proof-cycles"])
         block = compile_contract(loop.state)
         self.assertIn("PROCEDURE code", block)
         self.assertIn("PROCEDURE repo", block)
@@ -134,6 +134,54 @@ class TestTypedContract(unittest.TestCase):
         loop, _ = make_loop(backend=backend)
         r = loop.run_user_turn("hi")
         self.assertEqual(r["status"], "ok")
+
+
+class TestNaturalLanguageCriteria(unittest.TestCase):
+    """Plain-language done criteria become labeled manual criteria (the
+    0.5.0 beta found natural language was refused with
+    'unknown criterion spec'). Manual criteria are never auto-verified —
+    only an explicit operator /done closes them — so this stays fail-closed
+    while accepting plain language."""
+
+    def test_natural_language_maps_to_manual_with_label(self):
+        from contract import parse_criteria
+        c = parse_criteria("hello.txt exists, contains the greeting line")
+        self.assertEqual(c["kind"], "manual")
+        self.assertEqual(c["label"],
+                         "hello.txt exists, contains the greeting line")
+
+    def test_explicit_forms_unchanged(self):
+        from contract import parse_criteria
+        self.assertEqual(parse_criteria("manual"), {"kind": "manual"})
+        self.assertEqual(parse_criteria("artifact:hello.txt"),
+                         {"kind": "artifact_exists", "path": "hello.txt"})
+        self.assertEqual(parse_criteria("event:turn"),
+                         {"kind": "event", "event_type": "turn"})
+        self.assertEqual(parse_criteria("manual:my words"),
+                         {"kind": "manual", "label": "my words"})
+
+    def test_manual_label_shown_and_never_auto_ok(self):
+        from contract import criterion_status
+        ok, label = criterion_status(
+            {"kind": "manual", "label": "hello.txt exists"},
+            {}, [], [], manual_ok=False)
+        self.assertFalse(ok)
+        self.assertIn("hello.txt exists", label)
+        # even with manual_ok=True the label survives
+        ok2, label2 = criterion_status(
+            {"kind": "manual", "label": "hello.txt exists"},
+            {}, [], [], manual_ok=True)
+        self.assertTrue(ok2)
+        self.assertIn("hello.txt exists", label2)
+
+    def test_set_mission_accepts_natural_language(self):
+        loop, _ = make_loop()
+        r = loop.set_mission("Create hello.txt",
+                             ["hello.txt exists, contains the greeting line"])
+        self.assertNotIn("error", r.get("status", ""))
+        crit = loop.state.snapshot["mission"]["done_criteria"]
+        self.assertEqual(crit[0]["kind"], "manual")
+        self.assertIn("hello.txt exists", crit[0]["label"])
 
 
 if __name__ == "__main__":

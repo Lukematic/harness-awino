@@ -3,62 +3,837 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>A.W.I.N.O. Mission Chat</title>
+<!-- Restrictive CSP per VS Code webview guidance: scripts may only load from
+     this webview's own resource origin (the placeholder below is replaced with
+     webview.cspSource at serve time); styles are inline; no network, no
+     plugins, no inline scripts. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src {{CSP_SOURCE}}; style-src 'unsafe-inline'; img-src data: https:; font-src data:; connect-src 'none';">
+<title>Awino Mission Chat</title>
 <style>
-  :root { color-scheme: dark; }
+  /* ============================================================
+   * Awino Wakandan chat theme — design tokens (§1.1).
+   * All custom properties are --awino-*. Concrete hex values live
+   * ONLY in these token blocks. Every rule below pairs
+   * var(--vscode-*, <concrete fallback>) — zero bare hex outside.
+   * Motifs frozen per §1.2: 3px gold chevron band (approval cards
+   * only), 8px Kimoyo beads (statusline), 2px dotted gold left
+   * border (thinking sections). Nothing else decorative.
+   * ============================================================ */
+  :root {
+    color-scheme: dark;
+    --awino-bg: #111A2E;
+    --awino-bg-2: #172036;
+    --awino-bg-3: #1E2A45;
+    --awino-vibranium: #00C6FF;
+    --awino-vibranium-deep: #0B7FA6;
+    --awino-vibranium-dim: rgba(0,198,255,.12);
+    --awino-gold: #D4A937;
+    --awino-on-gold: #231A05;
+    --awino-gold-bright: #F0C94A;
+    --awino-gold-dim: rgba(212,169,55,.12);
+    --awino-text: #DCE7F7;
+    --awino-muted: #8B98B0;
+    --awino-ok: #4EC9B0;
+    --awino-danger: #F14C4C;
+    --awino-warn: #CCA700;
+    --awino-thinking-bg: rgba(212,169,55,.05);
+    --awino-diff-add: rgba(78,201,176,.14);
+    --awino-diff-del: rgba(241,76,76,.14);
+    --awino-ok-dim: rgba(78,201,176,.14);
+    --awino-danger-dim: rgba(241,76,76,.14);
+    --awino-on-vibranium: #04222E;
+    --awino-chevron: repeating-linear-gradient(135deg, var(--awino-gold) 0 2px, transparent 2px 9px);
+  }
+  body.vscode-dark {
+    color-scheme: dark;
+    --awino-bg: #111A2E;
+    --awino-bg-2: #172036;
+    --awino-bg-3: #1E2A45;
+    --awino-vibranium: #00C6FF;
+    --awino-vibranium-deep: #0B7FA6;
+    --awino-vibranium-dim: rgba(0,198,255,.12);
+    --awino-gold: #D4A937;
+    --awino-on-gold: #231A05;
+    --awino-gold-bright: #F0C94A;
+    --awino-gold-dim: rgba(212,169,55,.12);
+    --awino-text: #DCE7F7;
+    --awino-muted: #8B98B0;
+    --awino-ok: #4EC9B0;
+    --awino-danger: #F14C4C;
+    --awino-warn: #CCA700;
+    --awino-thinking-bg: rgba(212,169,55,.05);
+    --awino-diff-add: rgba(78,201,176,.14);
+    --awino-diff-del: rgba(241,76,76,.14);
+    --awino-ok-dim: rgba(78,201,176,.14);
+    --awino-danger-dim: rgba(241,76,76,.14);
+    --awino-on-vibranium: #04222E;
+  }
+  body.vscode-light {
+    color-scheme: light;
+    --awino-bg: #F6F1E5;
+    --awino-bg-2: #FFFEFA;
+    --awino-bg-3: #ECE4D0;
+    --awino-vibranium: #0B7FA6;
+    --awino-vibranium-deep: #0B5A78;
+    --awino-vibranium-dim: rgba(11,127,166,.12);
+    --awino-gold: #8A6D1F;
+    --awino-on-gold: #FFFFFF;
+    --awino-gold-bright: #8A6D1F;
+    --awino-gold-dim: rgba(138,109,31,.14);
+    --awino-text: #2B2517;
+    --awino-muted: #77694F;
+    --awino-ok: #1E7E5A;
+    --awino-danger: #C42B2B;
+    --awino-warn: #8A6D00;
+    --awino-thinking-bg: rgba(138,109,31,.06);
+    --awino-diff-add: rgba(30,126,90,.14);
+    --awino-diff-del: rgba(196,43,43,.12);
+    --awino-ok-dim: rgba(30,126,90,.14);
+    --awino-danger-dim: rgba(196,43,43,.12);
+    --awino-on-vibranium: #FFFFFF;
+  }
+  /* ---------- explicit theme variants (user refinement 2026-09-23) ----------
+   * .awino-vibranium: lifted dark ("a little lighter", no pitch-black).
+   * .awino-savanna: warm light variant. Same design language (beads,
+   * chevrons, geometric motifs), different light. Later in the sheet than
+   * the vscode-* blocks, so a manual toggle overrides the VS Code default
+   * at equal specificity. */
+  body.awino-vibranium {
+    color-scheme: dark;
+    --awino-bg: #111A2E;
+    --awino-bg-2: #172036;
+    --awino-bg-3: #1E2A45;
+    --awino-vibranium: #00C6FF;
+    --awino-vibranium-deep: #0B7FA6;
+    --awino-vibranium-dim: rgba(0,198,255,.12);
+    --awino-gold: #D4A937;
+    --awino-on-gold: #231A05;
+    --awino-gold-bright: #F0C94A;
+    --awino-gold-dim: rgba(212,169,55,.12);
+    --awino-text: #DCE7F7;
+    --awino-muted: #8B98B0;
+    --awino-ok: #4EC9B0;
+    --awino-danger: #F14C4C;
+    --awino-warn: #CCA700;
+    --awino-thinking-bg: rgba(212,169,55,.05);
+    --awino-diff-add: rgba(78,201,176,.14);
+    --awino-diff-del: rgba(241,76,76,.14);
+    --awino-ok-dim: rgba(78,201,176,.14);
+    --awino-danger-dim: rgba(241,76,76,.14);
+    --awino-on-vibranium: #04222E;
+    --awino-chevron: repeating-linear-gradient(135deg, var(--awino-gold) 0 2px, transparent 2px 9px);
+  }
+  body.awino-savanna {
+    color-scheme: light;
+    --awino-bg: #F6F1E5;
+    --awino-bg-2: #FFFEFA;
+    --awino-bg-3: #ECE4D0;
+    --awino-vibranium: #0B7FA6;
+    --awino-vibranium-deep: #0B5A78;
+    --awino-vibranium-dim: rgba(11,127,166,.12);
+    --awino-gold: #8A6D1F;
+    --awino-on-gold: #FFFFFF;
+    --awino-gold-bright: #8A6D1F;
+    --awino-gold-dim: rgba(138,109,31,.14);
+    --awino-text: #2B2517;
+    --awino-muted: #77694F;
+    --awino-ok: #1E7E5A;
+    --awino-danger: #C42B2B;
+    --awino-warn: #8A6D00;
+    --awino-thinking-bg: rgba(138,109,31,.06);
+    --awino-diff-add: rgba(30,126,90,.14);
+    --awino-diff-del: rgba(196,43,43,.12);
+    --awino-ok-dim: rgba(30,126,90,.14);
+    --awino-danger-dim: rgba(196,43,43,.12);
+    --awino-on-vibranium: #FFFFFF;
+    --awino-chevron: repeating-linear-gradient(135deg, var(--awino-gold) 0 2px, transparent 2px 9px);
+  }
+  body.vscode-high-contrast {
+    color-scheme: dark;
+    --awino-bg: var(--vscode-editor-background, #000000);
+    --awino-bg-2: var(--vscode-editor-background, #000000);
+    --awino-bg-3: var(--vscode-input-background, #0A0A0A);
+    --awino-vibranium: var(--vscode-textLink-foreground, #00C6FF);
+    --awino-vibranium-deep: var(--vscode-textLink-foreground, #0B7FA6);
+    --awino-vibranium-dim: rgba(0,198,255,.12);
+    --awino-gold: var(--vscode-editorWarning-foreground, #D4A937);
+    --awino-on-gold: #000000;
+    --awino-gold-bright: var(--vscode-editorWarning-foreground, #F0C94A);
+    --awino-gold-dim: rgba(212,169,55,.12);
+    --awino-text: var(--vscode-foreground, #FFFFFF);
+    --awino-muted: var(--vscode-descriptionForeground, #9E9E9E);
+    --awino-ok: var(--vscode-testing-iconPassed, #4EC9B0);
+    --awino-danger: var(--vscode-testing-iconFailed, #F14C4C);
+    --awino-warn: var(--vscode-testing-iconQueued, #CCA700);
+    --awino-thinking-bg: rgba(212,169,55,.05);
+    --awino-diff-add: rgba(78,201,176,.14);
+    --awino-diff-del: rgba(241,76,76,.14);
+    --awino-ok-dim: rgba(78,201,176,.14);
+    --awino-danger-dim: rgba(241,76,76,.14);
+    --awino-on-vibranium: #000000;
+  }
+
+  /* ---------- base ---------- */
+  * { box-sizing: border-box; }
+  html { height: 100%; }
   body {
     font-family: var(--vscode-font-family, system-ui);
     font-size: var(--vscode-font-size, 13px);
-    color: var(--vscode-foreground);
-    background: var(--vscode-sideBar-background, #1e1e1e);
+    color: var(--awino-text, var(--vscode-foreground, #DCE7F7));
+    background: var(--awino-bg, var(--vscode-sideBar-background, #111A2E));
     margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh;
+    position: relative;
   }
+
+  /* ---------- setup card: provider needs an API key ---------- */
+  #setup-card {
+    margin: 8px 10px 0;
+    border: 1px solid var(--awino-gold, #D4A937);
+    border-left: 4px solid var(--awino-gold, #D4A937);
+    border-radius: 10px;
+    background: var(--awino-surface-1, var(--vscode-sideBar-background, #172036));
+    flex: 0 0 auto;
+  }
+  #setup-card[hidden] { display: none; }
+  .setup-card-body { display: flex; align-items: center; gap: 10px; padding: 10px 12px; }
+  .setup-copy { flex: 1; min-width: 0; }
+  .setup-title {
+    font-weight: 700; font-size: 12.5px; letter-spacing: .02em;
+    color: var(--awino-gold, #D4A937);
+  }
+  .setup-sub { font-size: 11.5px; opacity: .8; margin-top: 3px; }
+  #setup-btn {
+    background: var(--awino-gold, #D4A937);
+    color: var(--awino-on-gold, #231A05);
+    border: none; border-radius: 8px; padding: 7px 12px;
+    font-weight: 700; cursor: pointer; white-space: nowrap;
+  }
+  #setup-btn:hover { filter: brightness(1.08); }
+
+  /* ---------- banner (§2.9) ---------- */
   #banner {
-    display: none; padding: 12px; background: var(--vscode-inputValidation-infoBackground, #063b4d);
-    border-bottom: 1px solid var(--vscode-panel-border); font-size: 12px;
+    display: none; padding: 12px; font-size: 12px;
+    background: var(--awino-vibranium-dim, rgba(0,198,255,.12));
+    border-bottom: 2px solid var(--awino-vibranium-deep, var(--vscode-panel-border, #0B7FA6));
+    color: var(--awino-text, var(--vscode-foreground, #DCE7F7));
   }
   #banner.show { display: block; }
-  #messages { flex: 1; overflow-y: auto; padding: 10px; }
-  .msg { margin-bottom: 10px; padding: 8px 10px; border-radius: 6px; background: var(--vscode-editor-background, #252526); }
-  .msg.user { background: var(--vscode-input-background, #3c3c3c); border-left: 3px solid var(--vscode-button-background, #0e639c); }
-  .msg.turn { border-left: 3px solid var(--vscode-testing-iconPassed, #4ec9b0); }
-  .msg.error { border-left: 3px solid var(--vscode-testing-iconFailed, #f14c4c); }
-  .msg.warn { border-left: 3px solid var(--vscode-testing-iconQueued, #cca700); }
+
+  /* ---------- chat header (theme toggle; refinement 2026-09-23) ---------- */
+  #chatheader {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 10px;
+    background: var(--awino-bg, var(--vscode-sideBar-background, #111A2E));
+    border-bottom: 1px solid var(--vscode-panel-border, #232F45);
+    color: var(--awino-text, var(--vscode-foreground, #DCE7F7));
+    flex: 0 0 auto;
+  }
+  #chatheader .brand {
+    font-weight: 600; font-size: 12px; letter-spacing: .02em;
+    color: var(--awino-gold-bright, var(--vscode-editorWarning-foreground, #F0C94A));
+  }
+  #chatheader .deco { display: inline-flex; gap: 4px; align-items: center; }
+  #chatheader .spacer { flex: 1; }
+  /* Persistent mission header (0.4.1): one line — mission, phase,
+   * verified done-criteria x/y, mission revision. Rendered from the live
+   * sidecar status query; hidden when there is no mission. */
+  #mission-header {
+    flex: 0 0 auto;
+    padding: 5px 10px;
+    font-size: 11px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    color: var(--awino-text, var(--vscode-foreground, #DCE7F7));
+    background: var(--awino-bg-2, var(--vscode-sideBar-background, #172036));
+    border-bottom: 1px solid var(--vscode-panel-border, #232F45);
+  }
+  #mission-header .mh-phase { color: var(--awino-gold-bright, var(--vscode-editorWarning-foreground, #F0C94A)); font-weight: 700; }
+  #mission-header .mh-crit { color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF)); }
+  /* Session-focus/resume block (0.4.1): read-only reconstruction from the
+   * event log — mission, verified criteria, last progress, next action.
+   * Rendered once on (re)connect and on demand via the command palette. */
+  #session-resume {
+    flex: 0 0 auto;
+    margin: 6px 10px; padding: 8px 10px;
+    font-size: 11px; line-height: 1.5;
+    color: var(--awino-text, var(--vscode-foreground, #DCE7F7));
+    background: var(--awino-bg-2, var(--vscode-sideBar-background, #172036));
+    border: 1px solid var(--vscode-panel-border, #232F45);
+    border-radius: 6px;
+  }
+  #session-resume .sr-title { font-weight: 700; margin-bottom: 4px; }
+  #session-resume .sr-row { margin: 2px 0; color: var(--awino-muted, var(--vscode-descriptionForeground, #8B98B0)); }
+  #session-resume .sr-row b { color: var(--awino-text, var(--vscode-foreground, #DCE7F7)); font-weight: 600; }
+  #theme-toggle {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 11px; padding: 3px 9px; border-radius: 10px;
+    background: transparent; cursor: pointer;
+    border: 1px solid var(--awino-vibranium-deep, var(--vscode-textLink-foreground, #0B7FA6));
+    color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+  }
+  #theme-toggle:hover {
+    background: var(--awino-vibranium-dim, rgba(0,198,255,.12));
+  }
+  #models-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 26px; height: 26px; font-size: 14px; border-radius: 8px;
+    background: transparent; cursor: pointer;
+    border: 1px solid var(--awino-vibranium-deep, var(--vscode-textLink-foreground, #0B7FA6));
+    color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+  }
+  #models-btn:hover {
+    background: var(--awino-vibranium-dim, rgba(0,198,255,.12));
+  }
+  #theme-toggle:focus-visible, button:focus-visible, #chat:focus-visible {
+    outline: 2px solid var(--awino-vibranium, #00C6FF); outline-offset: 1px;
+  }
+
+  /* ---------- messages (§2.1) ---------- */
+  /* min-height: 0 is mandatory — without it the flex child refuses to
+   * shrink and the input bar gets pushed out of view (Spec 1.3). */
+  #messages { flex: 1 1 auto; overflow-y: auto; padding: 10px; min-height: 0; }
+  .msg {
+    margin-bottom: 12px; padding: 10px 12px; border-radius: 8px;
+    background: var(--awino-bg-2, var(--vscode-editor-background, #172036));
+    color: var(--awino-text, var(--vscode-foreground, #DCE7F7));
+  }
+  .msg.user {
+    background: var(--awino-bg-3, var(--vscode-input-background, #1E2A45));
+    border-left: 3px solid var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+  }
+  .msg.turn { border-left: 3px solid var(--awino-vibranium-deep, var(--vscode-textLink-foreground, #0B7FA6)); }
+  .msg.error { border-left: 3px solid var(--awino-danger, var(--vscode-testing-iconFailed, #F14C4C)); }
+  .msg.warn { border-left: 3px solid var(--awino-warn, var(--vscode-testing-iconQueued, #CCA700)); }
+  .said { white-space: pre-wrap; word-break: break-word; line-height: 1.45; }
+
+  /* ---------- chips (§2.2) ---------- */
   .chips { margin: 6px 0; }
   .chip {
     display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 10px; margin-right: 6px;
-    background: var(--vscode-badge-background, #4d4d4d); color: var(--vscode-badge-foreground, #fff);
+    background: var(--vscode-badge-background, #4D4D4D);
+    color: var(--vscode-badge-foreground, #FFFFFF);
   }
-  .chip.phase { background: #0e639c; }
-  .chip.mode { background: #6a5acd; }
-  .chip.persona { background: #b8860b; }
+  .chip.phase {
+    background: var(--awino-vibranium-dim, rgba(0,198,255,.12));
+    color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+    border: 1px solid var(--awino-vibranium-deep, var(--vscode-textLink-foreground, #0B7FA6));
+    text-transform: uppercase; font-size: 10px; letter-spacing: .04em;
+  }
+  .chip.mode {
+    background: var(--awino-gold-dim, rgba(212,169,55,.12));
+    color: var(--awino-gold-bright, var(--vscode-editorWarning-foreground, #F0C94A));
+    border: 1px solid var(--awino-gold, var(--vscode-editorWarning-foreground, #D4A937));
+    font-size: 10px; letter-spacing: .04em;
+  }
+  .chip.persona {
+    background: transparent;
+    border: 1px dashed var(--awino-gold, var(--vscode-editorWarning-foreground, #D4A937));
+    color: var(--awino-gold, var(--vscode-editorWarning-foreground, #D4A937));
+  }
+
+  /* ---------- approval cards (§2.3) ---------- */
+  .approval {
+    position: relative; overflow: hidden;
+    background: var(--awino-bg-2, var(--vscode-editor-background, #172036));
+    border: 1px solid var(--vscode-panel-border, #232F45);
+    border-radius: 8px; padding: 12px; padding-top: 15px; margin: 8px 0;
+  }
+  .approval::before {
+    content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+    background: var(--awino-chevron);
+  }
+  .approval h4 { margin: 0 0 6px 0; font-size: 12px; }
+  .approval h4 code {
+    color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+    font-family: var(--vscode-editor-font-family, monospace);
+  }
   pre.diff {
-    background: #111; color: #d4d4d4; padding: 8px; border-radius: 4px; overflow-x: auto;
+    background: var(--awino-bg, var(--vscode-editor-background, #111A2E));
+    color: var(--awino-text, var(--vscode-foreground, #DCE7F7));
+    padding: 8px; border-radius: 4px; overflow-x: auto;
     font-size: 11px; max-height: 240px; overflow-y: auto; white-space: pre-wrap;
+    font-family: var(--vscode-editor-font-family, monospace);
   }
-  .approval { border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 8px; margin: 8px 0; }
-  .approval h4 { margin: 0 0 6px 0; }
-  .btnrow { margin-top: 8px; }
+  .btnrow { margin-top: 8px; display: flex; gap: 8px; }
   button {
-    background: var(--vscode-button-background, #0e639c); color: var(--vscode-button-foreground, #fff);
-    border: none; padding: 6px 14px; border-radius: 4px; cursor: pointer; margin-right: 8px;
+    background: var(--vscode-button-background, #0E639C);
+    color: var(--vscode-button-foreground, #FFFFFF);
+    border: none; padding: 6px 14px; border-radius: 4px; cursor: pointer; font: inherit;
   }
-  button.secondary { background: var(--vscode-button-secondaryBackground, #3a3d41); }
-  button:disabled { opacity: 0.5; cursor: default; }
+  button.secondary {
+    background: var(--vscode-button-secondaryBackground, #3A3D41);
+    color: var(--vscode-button-secondaryForeground, #FFFFFF);
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  .approval button[data-act="approve"] {
+    background: linear-gradient(180deg,
+      var(--awino-vibranium, var(--vscode-button-background, #00C6FF)),
+      var(--awino-vibranium-deep, var(--vscode-button-hoverBackground, #0B7FA6)));
+    color: var(--awino-on-vibranium, #04222E);
+    font-weight: 600;
+  }
+
+  /* ---------- thinking trace (§2.4) ---------- */
+  .thinking {
+    border-left: 2px dotted var(--awino-gold, var(--vscode-editorWarning-foreground, #D4A937));
+    background: var(--awino-thinking-bg, rgba(212,169,55,.05));
+    border-radius: 0 6px 6px 0; margin: 8px 0; overflow: hidden;
+    font-size: 11px; color: var(--awino-muted, var(--vscode-descriptionForeground, #8B98B0));
+  }
+  .thinking > summary {
+    cursor: pointer; padding: 6px 10px; list-style: none;
+    color: var(--awino-gold, var(--vscode-editorWarning-foreground, #D4A937));
+    letter-spacing: .03em; user-select: none;
+  }
+  .thinking > summary::-webkit-details-marker { display: none; }
+  .thinking > summary::before { content: "\25B8  "; }
+  .thinking[open] > summary::before { content: "\25BE  "; }
+  .thinking .thinking-head { display: inline-flex; align-items: center; gap: 6px; }
+  .thinking .thinking-body { padding: 2px 12px 10px 12px; white-space: pre-wrap; line-height: 1.5; }
+
+  /* ---------- harness checks (§2.5) ---------- */
+  .checks { margin: 8px 0 2px 0; }
+  .checks > summary {
+    cursor: pointer; padding: 6px 10px; list-style: none; font-size: 11px;
+    color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+    letter-spacing: .03em; user-select: none;
+  }
+  .checks > summary::-webkit-details-marker { display: none; }
+  .checks > summary::before { content: "\25B8  "; }
+  .checks[open] > summary::before { content: "\25BE  "; }
+  .check-row { display: flex; align-items: baseline; gap: 8px; padding: 3px 10px; font-size: 11px; }
+  .check-name {
+    font-family: var(--vscode-editor-font-family, monospace);
+    color: var(--awino-text, var(--vscode-foreground, #DCE7F7));
+  }
+  .check-detail { color: var(--awino-muted, var(--vscode-descriptionForeground, #8B98B0)); }
+  .verdict {
+    font-size: 10px; padding: 1px 8px; border-radius: 10px; flex: none;
+    text-transform: uppercase; letter-spacing: .04em;
+  }
+  .verdict.pass {
+    background: var(--awino-vibranium-dim, rgba(0,198,255,.12));
+    color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+  }
+  .verdict.fail {
+    background: var(--awino-danger-dim, rgba(241,76,76,.14));
+    color: var(--awino-danger, var(--vscode-testing-iconFailed, #F14C4C));
+  }
+  .verdict.warn {
+    background: var(--awino-gold-dim, rgba(212,169,55,.12));
+    color: var(--awino-gold, var(--vscode-editorWarning-foreground, #D4A937));
+  }
+
+  /* ---------- tool progress rows (§2.6) ---------- */
+  .tools-live { margin: 6px 0; }
+  .tool-row {
+    display: flex; align-items: center; gap: 8px; padding: 4px 8px; margin: 4px 0;
+    background: var(--awino-vibranium-dim, rgba(0,198,255,.12));
+    border-radius: 6px; font-size: 11px;
+  }
+  .tool-row .tname {
+    font-family: var(--vscode-editor-font-family, monospace);
+    color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+  }
+  .tool-row .tsummary {
+    color: var(--awino-muted, var(--vscode-descriptionForeground, #8B98B0));
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .tool-row .tms {
+    margin-left: auto; flex: none;
+    color: var(--awino-muted, var(--vscode-descriptionForeground, #8B98B0));
+  }
   table.tools { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
-  table.tools td, table.tools th { border: 1px solid var(--vscode-panel-border); padding: 4px 6px; text-align: left; }
-  #inputbar { display: flex; padding: 8px; border-top: 1px solid var(--vscode-panel-border); }
-  #input { flex: 1; background: var(--vscode-input-background); color: var(--vscode-input-foreground);
-    border: 1px solid var(--vscode-input-border); border-radius: 4px; padding: 8px; font: inherit; resize: none; }
-  #statusline { padding: 4px 10px; font-size: 11px; color: var(--vscode-descriptionForeground); border-top: 1px solid var(--vscode-panel-border); }
-  .said { white-space: pre-wrap; word-break: break-word; }
-  code { background: #111; padding: 1px 4px; border-radius: 3px; }
+  table.tools td, table.tools th {
+    border: 1px solid var(--vscode-panel-border, #232F45);
+    padding: 4px 6px; text-align: left;
+  }
+  table.tools th {
+    color: var(--awino-muted, var(--vscode-descriptionForeground, #8B98B0));
+    font-weight: 600;
+  }
+  table.tools td code {
+    color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+    font-family: var(--vscode-editor-font-family, monospace);
+  }
+
+  /* ---------- input bar (§2.7) ---------- */
+  /* flex: none pins the input at the bottom (Spec 1.3). The input bar is
+   * NEVER hidden — states only disable it or change the placeholder. */
+  #inputbar {
+    display: flex; padding: 8px; gap: 8px; flex: none;
+    background: var(--awino-bg, var(--vscode-sideBar-background, #111A2E));
+    border-top: 1px solid var(--vscode-panel-border, #232F45);
+  }
+  #input {
+    flex: 1;
+    background: var(--awino-bg-3, var(--vscode-input-background, #1E2A45));
+    color: var(--awino-text, var(--vscode-input-foreground, #DCE7F7));
+    border: 1px solid var(--awino-vibranium-deep, var(--vscode-input-border, #0B7FA6));
+    border-radius: 8px; padding: 8px; font: inherit; resize: none;
+  }
+  #input:focus {
+    outline: none;
+    box-shadow: 0 0 0 1px var(--awino-vibranium, var(--vscode-focusBorder, #00C6FF));
+  }
+  #input::placeholder { color: var(--awino-muted, var(--vscode-input-placeholderForeground, #8B98B0)); }
+  #send {
+    background: linear-gradient(180deg,
+      var(--awino-vibranium, var(--vscode-button-background, #00C6FF)),
+      var(--awino-vibranium-deep, var(--vscode-button-hoverBackground, #0B7FA6)));
+    color: var(--awino-on-vibranium, #04222E);
+    font-weight: 600; border: none; padding: 6px 18px; border-radius: 6px; cursor: pointer;
+  }
+
+  /* ---------- statusline Kimoyo beads (§2.8) ---------- */
+  #statusline {
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 10px; font-size: 11px;
+    color: var(--awino-muted, var(--vscode-descriptionForeground, #8B98B0));
+    background: var(--awino-bg, var(--vscode-sideBar-background, #111A2E));
+    border-top: 1px solid var(--vscode-panel-border, #232F45);
+  }
+  .beads { display: inline-flex; gap: 4px; align-items: center; }
+  .bead {
+    width: 8px; height: 8px; border-radius: 50%; flex: none;
+    border: 1px solid var(--awino-muted, var(--vscode-descriptionForeground, #8B98B0));
+    background: transparent;
+  }
+  .bead.on {
+    background: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+    border-color: transparent;
+    box-shadow: 0 0 6px var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+  }
+  .bead.working {
+    background: var(--awino-gold, var(--vscode-editorWarning-foreground, #D4A937));
+    border-color: transparent;
+    animation: awino-bead-pulse 1.1s ease-in-out infinite;
+  }
+  .bead.done {
+    background: var(--awino-ok, var(--vscode-testing-iconPassed, #4EC9B0));
+    border-color: transparent;
+  }
+  .bead.alert {
+    background: var(--awino-danger, var(--vscode-testing-iconFailed, #F14C4C));
+    border-color: transparent;
+    animation: awino-bead-pulse 1.1s ease-in-out infinite;
+  }
+  .bead.vdim {
+    background: var(--awino-vibranium-dim, rgba(0,198,255,.12));
+    border-color: transparent;
+  }
+  .bead.gdim {
+    background: var(--awino-gold-dim, rgba(212,169,55,.12));
+    border-color: transparent;
+  }
+  @keyframes awino-bead-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+
+  /* ---------- streaming caret ---------- */
+  .streaming-caret::after {
+    content: "\258D";
+    color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+    animation: awino-caret-blink 1s steps(2, start) infinite;
+  }
+  @keyframes awino-caret-blink { 50% { opacity: 0; } }
+
+  /* ---------- connection status dot (Spec 1.4) ---------- */
+  #conn-dot {
+    width: 8px; height: 8px; border-radius: 50%; flex: none;
+    background: var(--awino-muted, var(--vscode-descriptionForeground, #8B98B0));
+  }
+  #conn-dot.on {
+    background: var(--awino-ok, var(--vscode-testing-iconPassed, #4EC9B0));
+    box-shadow: 0 0 6px var(--awino-ok, var(--vscode-testing-iconPassed, #4EC9B0));
+  }
+  /* ---------- provider status pill (Spec 1.4/4.4, Kilo pattern) ----------
+   * Binding state where the user types: "No provider" or "provider · model".
+   * Lives in the chat header; clicking opens Models & Providers. */
+  #provider-pill {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 11px; padding: 3px 12px; border-radius: 12px;
+    background: transparent; cursor: pointer;
+    border: 1px solid var(--awino-vibranium-deep, var(--vscode-textLink-foreground, #0B7FA6));
+    color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+    max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #provider-pill:hover {
+    background: var(--awino-vibranium-dim, rgba(0,198,255,.12));
+  }
+  #provider-pill.stale {
+    border-style: dashed;
+    color: var(--awino-warn, var(--vscode-testing-iconQueued, #CCA700));
+  }
+  /* ---------- mode selector + new-mission button (Spec 1.4) ---------- */
+  #mode-select {
+    font-size: 11px; padding: 3px 6px; border-radius: 8px; max-width: 130px;
+    background: var(--awino-bg-3, var(--vscode-input-background, #1E2A45));
+    color: var(--awino-text, var(--vscode-input-foreground, #DCE7F7));
+    border: 1px solid var(--vscode-panel-border, #232F45);
+  }
+  #mode-select[hidden] { display: none; }
+  #new-mission-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 26px; height: 26px; font-size: 16px; font-weight: 700; border-radius: 8px;
+    background: transparent; cursor: pointer; padding: 0;
+    border: 1px solid var(--awino-vibranium-deep, var(--vscode-textLink-foreground, #0B7FA6));
+    color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+  }
+  #new-mission-btn:hover {
+    background: var(--awino-vibranium-dim, rgba(0,198,255,.12));
+  }
+
+  /* ---------- first-run onboarding wizard (§2.11) ----------
+   * On first activation with no provider key configured, the sidebar IS the
+   * setup flow: Choose provider → API key (+ Get-key button) → Model (with
+   * Fetch) → Done. Replaces the setup card while active; the input bar is
+   * parked until the wizard completes or is skipped. */
+  #wizard {
+    margin: 8px 10px 0;
+    border: 1px solid var(--awino-gold, #D4A937);
+    border-left: 4px solid var(--awino-gold, #D4A937);
+    border-radius: 10px;
+    background: var(--awino-surface-1, var(--vscode-sideBar-background, #172036));
+    flex: 0 0 auto;
+    max-height: 70%; overflow-y: auto;
+  }
+  #wizard[hidden] { display: none; }
+  .wizard-body { padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+  .wizard-title {
+    font-weight: 700; font-size: 13px; letter-spacing: .02em;
+    color: var(--awino-gold-bright, var(--vscode-editorWarning-foreground, #F0C94A));
+  }
+  .wizard-sub { font-size: 11.5px; color: var(--awino-muted, var(--vscode-descriptionForeground, #8B98B0)); }
+  .wlabel {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .06em; font-weight: 700;
+    color: var(--awino-gold, var(--vscode-editorWarning-foreground, #D4A937));
+    margin-bottom: 5px;
+  }
+  #wizard select, #wizard input {
+    width: 100%; box-sizing: border-box; padding: 7px;
+    background: var(--awino-bg-3, var(--vscode-input-background, #1E2A45));
+    color: var(--awino-text, var(--vscode-input-foreground, #DCE7F7));
+    border: 1px solid var(--awino-vibranium-deep, var(--vscode-input-border, #0B7FA6));
+    border-radius: 6px; font: inherit; font-size: 12px;
+  }
+  #wizard select:focus, #wizard input:focus { outline: none;
+    box-shadow: 0 0 0 1px var(--awino-vibranium, var(--vscode-focusBorder, #00C6FF)); }
+  #wizard .wkeyrow { display: flex; gap: 6px; }
+  #wizard .wkeyrow input[type="password"] { flex: 1; min-width: 0; }
+  #wizard #w-keylabel { flex: 0 0 104px; width: 104px; }
+  #wizard .wrow { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+  #wizard .wnote { font-size: 11px; color: var(--awino-muted, var(--vscode-descriptionForeground, #8B98B0)); }
+  #wizard .werror { font-size: 11.5px; color: var(--awino-danger, var(--vscode-testing-iconFailed, #F14C4C)); }
+  #wizard .werror[hidden] { display: none; }
+  #wizard .docslink {
+    font-size: 11.5px; color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+    text-decoration: none; margin-left: 8px;
+  }
+  #wizard .docslink:hover { text-decoration: underline; }
+  #wizard .docslink[hidden] { display: none; }
+  #wizard .wstep[hidden] { display: none; }
+  #wizard .btnrow { display: flex; gap: 8px; }
+  #w-done {
+    background: linear-gradient(180deg,
+      var(--awino-vibranium, var(--vscode-button-background, #00C6FF)),
+      var(--awino-vibranium-deep, var(--vscode-button-hoverBackground, #0B7FA6)));
+    color: var(--awino-on-vibranium, #04222E);
+    font-weight: 600;
+  }
+  #w-modelselect[hidden] { display: none; }
+
+  /* ---------- echo demo banner (Spec 2.3) ----------
+   * One line directly above the input bar when provider == echo. */
+  #echo-banner {
+    display: none; flex: none; padding: 6px 10px; font-size: 11px;
+    color: var(--awino-muted, var(--vscode-descriptionForeground, #8B98B0));
+    background: var(--awino-bg-2, var(--vscode-sideBar-background, #172036));
+    border-top: 1px solid var(--vscode-panel-border, #232F45);
+  }
+  #echo-banner.show { display: block; }
+  #echo-banner a { color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF)); cursor: pointer; }
+
+  /* ---------- jump-to-latest pill (§4.1) ---------- */
+  #jump-latest {
+    position: absolute; left: 50%; transform: translateX(-50%); bottom: 108px; z-index: 10;
+    background: var(--awino-bg-3, var(--vscode-input-background, #1E2A45));
+    color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+    border: 1px solid var(--awino-vibranium-deep, var(--vscode-textLink-foreground, #0B7FA6));
+    border-radius: 14px; padding: 4px 14px; font-size: 11px; cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0,0,0,.35);
+  }
+  #jump-latest[hidden] { display: none; }
+
+  /* ---------- markdown content (§4.2–4.4) ---------- */
+  code {
+    font-family: var(--vscode-editor-font-family, monospace); font-size: 11px;
+    background: var(--awino-bg, var(--vscode-editor-background, #111A2E));
+    color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+    padding: 1px 4px; border-radius: 3px;
+  }
+  .md { line-height: 1.5; word-break: break-word; }
+  .md p { margin: 6px 0; }
+  .md p:first-child { margin-top: 0; }
+  .md p:last-child { margin-bottom: 0; }
+  .md h3, .md h4, .md h5 {
+    margin: 10px 0 4px 0;
+    color: var(--awino-text, var(--vscode-foreground, #DCE7F7));
+  }
+  .md h3 { font-size: 15px; }
+  .md h4 { font-size: 14px; }
+  .md h5 { font-size: 13px; }
+  .md ul, .md ol { margin: 6px 0; padding-left: 20px; }
+  .md li { margin: 2px 0; }
+  .md a { color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF)); }
+  .md hr {
+    border: none;
+    border-top: 1px solid var(--vscode-panel-border, #232F45);
+    margin: 10px 0;
+  }
+  .md blockquote {
+    border-left: 2px dotted var(--awino-gold, var(--vscode-editorWarning-foreground, #D4A937));
+    margin: 8px 0; padding: 2px 0 2px 10px;
+    color: var(--awino-muted, var(--vscode-descriptionForeground, #8B98B0));
+  }
+  .md blockquote p { margin: 4px 0; }
+  .md code {
+    font-family: var(--vscode-editor-font-family, monospace); font-size: 11px;
+    background: var(--awino-bg, var(--vscode-editor-background, #111A2E));
+    color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+    padding: 1px 4px; border-radius: 3px;
+  }
+  .codeblock {
+    margin: 8px 0;
+    border: 1px solid var(--vscode-panel-border, #232F45);
+    border-radius: 6px; overflow: hidden;
+  }
+  .codeblock-header {
+    display: flex; align-items: center; justify-content: space-between;
+    background: var(--awino-bg-3, var(--vscode-input-background, #1E2A45));
+    padding: 4px 8px;
+  }
+  .codeblock-lang {
+    font-family: var(--vscode-editor-font-family, monospace); font-size: 11px;
+    color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+  }
+  .copy-btn {
+    background: transparent; margin: 0;
+    color: var(--awino-muted, var(--vscode-descriptionForeground, #8B98B0));
+    border: 1px solid var(--vscode-panel-border, #232F45);
+    font-size: 11px; padding: 2px 10px; border-radius: 4px; cursor: pointer;
+  }
+  .copy-btn:hover { color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF)); }
+  .copy-btn.copied {
+    color: var(--awino-ok, var(--vscode-testing-iconPassed, #4EC9B0));
+    border-color: var(--awino-ok, var(--vscode-testing-iconPassed, #4EC9B0));
+  }
+  pre.codeblock-body {
+    margin: 0; padding: 8px 10px; font-size: 12px;
+    overflow-x: auto; max-height: 400px; overflow-y: auto;
+    font-family: var(--vscode-editor-font-family, monospace); white-space: pre;
+    background: var(--awino-bg, var(--vscode-editor-background, #111A2E));
+    color: var(--awino-text, var(--vscode-foreground, #DCE7F7));
+  }
+  .diff-add { display: block; background: var(--awino-diff-add, rgba(78,201,176,.14)); }
+  .diff-add .dm {
+    color: var(--awino-ok, var(--vscode-testing-iconPassed, #4EC9B0));
+    font-weight: 700;
+  }
+  .diff-del { display: block; background: var(--awino-diff-del, rgba(241,76,76,.14)); }
+  .diff-del .dm {
+    color: var(--awino-danger, var(--vscode-testing-iconFailed, #F14C4C));
+    font-weight: 700;
+  }
+  .diff-hunk {
+    display: block;
+    color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+    font-weight: 700;
+  }
+  .diff-ctx { display: block; color: var(--awino-muted, var(--vscode-descriptionForeground, #8B98B0)); }
 </style>
 </head>
 <body>
+<div id="chatheader">
+  <span id="conn-dot" class="dot off" title="Not connected"></span>
+  <span class="brand">◈ Awino</span>
+  <button id="provider-pill" class="none" title="No provider connected — open Models &amp; Providers">No provider</button>
+  <select id="mode-select" title="Active mode — switch at the point of use" hidden></select>
+  <span class="spacer"></span>
+  <button id="new-mission-btn" title="New mission">+</button>
+  <button id="theme-toggle" title="Switch Savanna / Vibranium theme">◐ <span id="theme-name">Vibranium</span></button>
+  <button id="models-btn" title="Models &amp; Providers — API keys and model selection">⚙</button>
+</div>
+<div id="mission-header" hidden></div>
+<div id="session-resume" hidden></div>
+<div id="setup-card" hidden>
+  <div class="setup-card-body">
+    <div class="setup-copy">
+      <div class="setup-title">No model connected</div>
+      <div class="setup-sub" id="setup-sub"></div>
+    </div>
+    <button id="setup-btn">Set up provider</button>
+  </div>
+</div>
 <div id="banner"></div>
 <div id="messages"></div>
+<button id="jump-latest" hidden>&#8595; jump to latest</button>
 <div id="statusline">not connected</div>
+<div id="echo-banner"></div>
+<div id="wizard" hidden>
+  <div class="wizard-body">
+    <div>
+      <div class="wizard-title">Set up Awino</div>
+      <div class="wizard-sub">Choose a provider, add an API key, pick a model — about a minute. You can change any of this later.</div>
+    </div>
+    <div class="wstep">
+      <div class="wlabel">1 · Choose provider<a id="w-docs" class="docslink" href="#" hidden>Provider Docs</a></div>
+      <select id="w-provider"></select>
+      <div id="w-blurb" class="wnote"></div>
+    </div>
+    <div class="wstep" id="w-keystep">
+      <div class="wlabel">2 · API key</div>
+      <div class="wkeyrow">
+        <input id="w-key" type="password" autocomplete="off" placeholder="Paste API key">
+        <input id="w-keylabel" type="text" maxlength="40" placeholder="Label (e.g. Work)" aria-label="Label for the API key">
+      </div>
+      <div class="wrow">
+        <button id="w-getkey" class="secondary">Get API Key</button>
+      </div>
+      <div class="wnote">Keys are stored in VS Code SecretStorage — never in settings, logs, or screenshots.</div>
+    </div>
+    <div class="wstep">
+      <div class="wlabel">3 · Model</div>
+      <input id="w-model" type="text" placeholder="Model id (empty = provider default)">
+      <select id="w-modelselect" hidden></select>
+      <div id="w-intel" class="wnote"></div>
+      <div class="wrow" id="w-regionrow" hidden>
+        <label class="wnote" for="w-region">Bedrock region</label>
+        <select id="w-region"></select>
+      </div>
+      <div class="wrow">
+        <input id="w-endpoint" type="text" placeholder="Endpoint (empty = provider default)" aria-label="Endpoint (empty = provider default)">
+      </div>
+      <div class="wrow" id="w-fetchrow" hidden>
+        <button id="w-fetch" class="secondary">Fetch models</button>
+        <span id="w-fetchnote" class="wnote"></span>
+      </div>
+    </div>
+    <div class="wstep btnrow">
+      <button id="w-done">Save &amp; Connect</button>
+      <button id="w-skip" class="secondary">Skip for now</button>
+    </div>
+    <!-- Spec 2.1 Step 3: Prove it. Shown after Save & Connect; the test
+         message is sent through the live sidecar and onboarding completes
+         only after a successful reply. -->
+    <div class="wstep" id="w-provestep" hidden>
+      <div class="wlabel">4 · Prove it</div>
+      <div class="wnote">I'll send "Hello — reply in one short sentence." through your new provider. Setup finishes when it answers.</div>
+      <div class="wrow">
+        <button id="w-prove">Send test message</button>
+        <span id="w-provenote" class="wnote"></span>
+      </div>
+    </div>
+    <div id="w-error" class="werror" hidden></div>
+  </div>
+</div>
 <div id="inputbar">
   <textarea id="input" rows="2" placeholder="Message the loop owner… (a mission starts with the discovery interview)"></textarea>
   <div style="display:flex;flex-direction:column;gap:6px;margin-left:8px;">
@@ -66,6 +841,7 @@
     <button id="stop" class="secondary">Stop</button>
   </div>
 </div>
+<script src="{{SETUP_SHARED_JS}}"></script>
 <script src="{{CHAT_JS}}"></script>
 </body>
 </html>

@@ -89,6 +89,22 @@ class RegistryTest(unittest.TestCase):
         states = {t["text"]: t["state"] for t in self.reg.tasks()}
         self.assertEqual(states, {"task one": "open", "task two": "done"})
 
+    def test_import_seed_tasks_done_carries_attestation_evidence(self):
+        # BUG 2: a checked seed box is human attestation, not harness
+        # verification — done imports must say so in evidence, or the
+        # Tasks panel (which presents completed states as verified) would
+        # mislead.
+        seeds = [{"text": "done thing", "done": True, "source": "seed:plan"},
+                 {"text": "open thing", "done": False, "source": "seed:plan"}]
+        self.assertEqual(self.reg.import_seed_tasks(seeds), 2)
+        by_text = {t["text"]: t for t in self.reg.tasks()}
+        self.assertEqual(
+            by_text["done thing"]["evidence"],
+            ["seed:plan checklist [x] (human attestation, not verified)"])
+        self.assertEqual(by_text["done thing"]["state"], "done")
+        self.assertEqual(by_text["open thing"]["evidence"], [])
+        self.assertEqual(by_text["open thing"]["state"], "open")
+
     def test_audit_flags_outdated_and_assumptions(self):
         import time
         old = time.time() - 60 * 86400  # 60 days ago
