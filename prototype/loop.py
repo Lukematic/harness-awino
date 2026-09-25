@@ -10,6 +10,7 @@ dict; everything else is code.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import json
 import re
@@ -241,6 +242,52 @@ def _judge_check_rows(judge, jv: dict):
     verdict = jv.get("verdict") if isinstance(jv, dict) else None
     reason = jv.get("reason") if isinstance(jv, dict) else ""
     yield (str(name), verdict == "PASS", str(reason or ""))
+
+
+class FanoutFailed(Exception):
+    """Fail-closed fan-out error: at least one worker did not succeed.
+
+    Carries .details = {"objective": str, "workers": [{"worker_id": str,
+    "status": "ok"|"failed", "result": dict|None, "error": str|None}]}.
+    Successful workers' results are included explicitly — never silent,
+    never partial without saying so.
+    """
+
+    def __init__(self, message: str, details: dict):
+        super().__init__(message)
+        self.details = details
+
+
+def _owned_overlap(a: list, b: list) -> str | None:
+    """Return a representative overlapping owned-file entry, or None.
+
+    Uses the same prefix semantics as the worker scope check in
+    _execute_single: owned entries are prefixes, so "docs/" owns
+    "docs/api/x.txt" and overlaps "docs/api/".
+    """
+    norm = lambda p: str(p).rstrip("/")
+    for x in a:
+        for y in b:
+            nx, ny = norm(x), norm(y)
+            if nx == ny or nx.startswith(ny + "/") or ny.startswith(nx + "/"):
+                return str(x)
+    return None
+
+
+def _worker_hit_scope_violation(wloop) -> bool:
+    """True if the worker's journal holds a ScopeViolation tool result."""
+    for e in wloop.state.events:
+        if e.get("type") == "tool_result":
+            if "ScopeViolation" in str(e.get("data", {}).get("result", "")):
+                return True
+    return False
+
+
+def _default_fanout_runner(wloop, subtask: dict) -> dict:
+    """Default fanout worker runner: set the subtask as the worker's
+    mission and drive one turn through the worker's own pipeline."""
+    wloop.set_mission(subtask["objective"], ["manual"])
+    return wloop.run_user_turn(subtask["objective"])
 
 
 class Loop:
@@ -1010,8 +1057,18 @@ class Loop:
 
         Computed BEFORE the backend acts; the backend's tool calls are
         validated against exactly this set.
+
+        Fanout (Track H): a worker Loop carrying ``parent_mode_tools`` in
+        its snapshot has its offered tools clamped to the parent's mode
+        policy. Even if per-turn routing escalates the worker's own mode,
+        the worker can never wield a tool its parent's mode forbids.
+        Regular loops never set ``parent_mode_tools`` and are unaffected.
         """
-        return list(MODES[self.state.snapshot["mode"]]["tools"])
+        offered = list(MODES[self.state.snapshot["mode"]]["tools"])
+        parent_tools = self.state.snapshot.get("parent_mode_tools")
+        if parent_tools is not None:
+            offered = [t for t in offered if t in parent_tools]
+        return offered
 
     def _refuse_turn(self, breaks: list, stage: str) -> dict:
         """Structured contract refusal: named breaks, recorded in the event
@@ -1913,6 +1970,176 @@ class Loop:
                           {"worker_id": worker_id, "artifacts": artifacts})
         return {"status": "collected", "worker_id": worker_id,
                 "artifacts": artifacts}
+
+    # -------------------------------------------- Track H: fan-out primitive
+    # Parallel fan-out with a synthesize barrier, built on spawn_worker.
+    # One worker per subtask, disjoint file ownership (checked atomically
+    # up front), shared budget pool (checked atomically up front), threads
+    # for parallel execution, and a fail-closed barrier: any worker
+    # failure fails the whole fan-out, with explicit per-worker status.
+    def fanout(self, objective: str, subtasks: list,
+               run_worker=None, backend_factory=None,
+               synthesize=None) -> dict:
+        """Spawn one worker per subtask, run them in parallel, and merge
+        their structured results at a barrier.
+
+        subtasks: list of {"objective": str, "owned_files": [str],
+        "budget_share": {"max_turns": int, ...}}.
+
+        Pre-flight is atomic and runs BEFORE any worker spawns:
+        - owned_files must be pairwise disjoint (overlap -> ValueError)
+        - total budget shares must fit the shared pool (shortfall ->
+          RuntimeError). The pool counter is untouched on refusal.
+        There are no partial fan-outs.
+
+        run_worker(wloop, subtask) -> dict runs one worker; the default
+        sets the subtask as the worker's mission and drives one turn
+        through the worker's own pipeline. A worker succeeds iff the
+        runner returns {"status": "ok", ...}; a raise or any other status
+        fails that worker. As defense in depth, a ScopeViolation recorded
+        in the worker's journal fails the worker even if the runner
+        claimed success.
+
+        backend_factory(subtask, index) -> backend optionally gives each
+        worker its own backend (recommended under threads; the default
+        shares the parent's backend).
+
+        synthesize(workers) -> merged optionally customizes the merge;
+        the default maps worker_id -> result.
+
+        Failure is fail-closed: any worker failure raises FanoutFailed
+        carrying explicit per-worker status (successful workers' results
+        included, never silent).
+
+        Mode inheritance: each worker starts at the parent's mode and
+        its offered tools are clamped to the parent's mode policy (see
+        _permission_gate) — a worker can never wield a tool its parent's
+        mode forbids.
+        """
+        # ---- pre-flight (atomic; no state mutated before this passes) ----
+        if not subtasks:
+            raise ValueError("fanout requires at least one subtask")
+        for i, st in enumerate(subtasks):
+            for key in ("objective", "owned_files", "budget_share"):
+                if not isinstance(st, dict) or key not in st:
+                    raise ValueError(
+                        f"fanout refused: subtask {i} missing required key "
+                        f"{key!r}")
+        for i in range(len(subtasks)):
+            for j in range(i + 1, len(subtasks)):
+                overlap = _owned_overlap(subtasks[i]["owned_files"],
+                                         subtasks[j]["owned_files"])
+                if overlap:
+                    self.state.record(
+                        "fanout_refused",
+                        {"reason": "owned_files overlap",
+                         "subtasks": (i, j), "overlap": overlap})
+                    self.state.persist_snapshot()
+                    raise ValueError(
+                        f"fanout refused: subtask {i} and subtask {j} "
+                        f"overlap on {overlap!r}; owned_files must be "
+                        f"disjoint. No worker spawned.")
+        s = self.state.snapshot
+        allocated = s.get("worker_budget_allocated", 0)
+        limit = self.config.get("max_turns", 50)
+        total = sum(st["budget_share"].get("max_turns", 0)
+                    for st in subtasks)
+        if allocated + total > limit:
+            self.state.record(
+                "fanout_refused",
+                {"reason": "budget shortfall", "allocated": allocated,
+                 "requested": total, "limit": limit})
+            self.state.persist_snapshot()
+            raise RuntimeError(
+                f"fanout refused: worker budget exhausted (allocated "
+                f"{allocated}, requested {total}, parent limit {limit}). "
+                f"No worker spawned; pool unchanged.")
+        # ---- spawn (spawn_worker enforces the per-spawn budget again) ----
+        parent_mode = s.get("mode", "observe")
+        parent_tools = list(MODES[parent_mode]["tools"])
+        self.state.record(
+            "fanout_started",
+            {"objective": objective,
+             "parent_mode": parent_mode,
+             "subtasks": [{"objective": st["objective"],
+                           "owned_files": list(st["owned_files"]),
+                           "budget_share": dict(st["budget_share"])}
+                          for st in subtasks]})
+        workers = []
+        for idx, st in enumerate(subtasks):
+            spawn = self.spawn_worker(
+                st["objective"],
+                owned_files=list(st["owned_files"]),
+                budget_share=dict(st["budget_share"]))
+            wloop = spawn["loop"]
+            # mode inheritance: start at the parent's mode; the gate
+            # clamps offered tools to the parent's policy from here on.
+            wloop.state.snapshot["mode"] = parent_mode
+            wloop.state.snapshot["parent_mode_tools"] = parent_tools
+            if backend_factory is not None:
+                wloop.backend = backend_factory(st, idx)
+            workers.append({"spawn": spawn, "subtask": st})
+        self.state.persist_snapshot()
+        # ---- run in parallel; the barrier joins all threads ----
+        runner = run_worker or _default_fanout_runner
+        results: dict = {}
+
+        def _run_one(w):
+            wid = w["spawn"]["worker_id"]
+            try:
+                res = runner(w["spawn"]["loop"], w["subtask"])
+            except Exception as e:  # noqa: BLE001 — worker failure is data
+                results[wid] = {"worker_id": wid, "status": "failed",
+                                "result": None,
+                                "error": f"{type(e).__name__}: {e}"}
+                return
+            if not isinstance(res, dict) or res.get("status") != "ok":
+                results[wid] = {"worker_id": wid, "status": "failed",
+                                "result": None,
+                                "error": f"runner returned non-ok: {res!r}"[:500]}
+            else:
+                results[wid] = {"worker_id": wid, "status": "ok",
+                                "result": res, "error": None}
+
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=len(workers),
+                thread_name_prefix="fanout") as ex:
+            list(ex.map(_run_one, workers))
+        # ---- defense in depth: a ScopeViolation in the worker's journal
+        # fails the worker even if its runner claimed success ----
+        for w in workers:
+            wid = w["spawn"]["worker_id"]
+            entry = results[wid]
+            if entry["status"] == "ok" and _worker_hit_scope_violation(
+                    w["spawn"]["loop"]):
+                entry["status"] = "failed"
+                entry["result"] = None
+                entry["error"] = ("ScopeViolation in worker journal: worker "
+                                  "attempted out-of-owned-files access")
+        # ---- barrier: record, then fail closed or synthesize ----
+        ordered = [results[w["spawn"]["worker_id"]] for w in workers]
+        for r in ordered:
+            self.state.record("fanout_worker_completed",
+                              {"worker_id": r["worker_id"],
+                               "status": r["status"], "error": r["error"]})
+        failed = [r for r in ordered if r["status"] != "ok"]
+        if failed:
+            self.state.record("fanout_failed",
+                              {"objective": objective, "workers": ordered})
+            self.state.persist_snapshot()
+            raise FanoutFailed(
+                f"fanout failed: {len(failed)}/{len(ordered)} worker(s) "
+                f"failed ({', '.join(r['worker_id'] for r in failed)}); "
+                f"no partial results returned",
+                {"objective": objective, "workers": ordered})
+        merged = (synthesize(ordered) if synthesize is not None
+                  else {r["worker_id"]: r["result"] for r in ordered})
+        self.state.record("fanout_completed",
+                          {"objective": objective,
+                           "worker_ids": [r["worker_id"] for r in ordered]})
+        self.state.persist_snapshot()
+        return {"status": "ok", "objective": objective,
+                "workers": ordered, "merged": merged}
 
     # -------------------------------------------- Track G: verification gate
     # The verifier is a SEPARATE worker with the verifier stance. The builder
