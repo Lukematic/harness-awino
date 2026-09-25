@@ -91,9 +91,18 @@ function boot() {
    "w-model", "w-modelselect", "w-intel", "w-endpoint",
    "w-regionrow", "w-region", "w-fetchrow", "w-fetch", "w-fetchnote",
    "w-done", "w-skip", "w-error", "w-blurb",
+   "w-bedrockauthrow", "w-bedrockprofilerow", "w-bedrockprofile",
+   "w-keyrow", "w-getkeyrow",
    "w-provestep", "w-prove", "w-provenote"].forEach(function (id) {
     ids[id] = new StubEl("div");
     ids[id].id = id;
+  });
+  // bedrock auth select carries the two real options (as shipped in chat.html)
+  ids["w-bedrockauth"] = new SelectStub();
+  ids["w-bedrockauth"].id = "w-bedrockauth";
+  ["api-key", "aws-profile"].forEach(function (v) {
+    const o = new StubEl("option"); o.value = v; o.textContent = v;
+    ids["w-bedrockauth"].appendChild(o);
   });
   ids["wizard"].hidden = true;
   ids["w-provider"] = new SelectStub();
@@ -401,6 +410,34 @@ ok(ids["w-error"].hidden === false, "prove failure shows the error inline (Spec 
 state({ showWizard: false });
 state({ showWizard: true, provider: "echo", keyMissing: false });
 ok(ids["w-blurb"].textContent.indexOf("demo") >= 0, "echo blurb names the demo truthfully (Spec 2.1/2.3)");
+
+// 31. Bedrock wizard: AWS profile / SSO is a real keyless auth path
+state({ showWizard: true, provider: "echo" });
+ids["w-provider"].value = "bedrock";
+ids["w-provider"].fire("change", {});
+ok(ids["w-bedrockauthrow"].hidden === false, "bedrock auth select shown for bedrock");
+ok(ids["w-bedrockprofilerow"].hidden === true, "profile row hidden in api-key mode");
+ids["w-bedrockauth"].value = "aws-profile";
+ids["w-bedrockauth"].fire("change", {});
+ok(ids["w-bedrockprofilerow"].hidden === false, "profile row shown in aws-profile mode");
+ok(ids["w-keyrow"].hidden === true, "key inputs hidden in aws-profile mode");
+// empty profile name is refused inline
+ids["w-bedrockprofile"].value = "";
+posted = [];
+ids["w-done"].fire("click", {});
+ok(ids["w-error"].hidden === false, "inline error when the profile name is empty");
+ok(lastPosted("wizardSave") === null, "no wizardSave posted without a profile name");
+// profile name + no key posts wizardSave with aws-profile mode
+ids["w-bedrockprofile"].value = "sso";
+ids["w-key"].value = "";
+posted = [];
+ids["w-done"].fire("click", {});
+const pws = lastPosted("wizardSave");
+ok(pws && pws.provider === "bedrock" && pws.bedrockAuthMode === "aws-profile" &&
+  pws.bedrockAwsProfile === "sso" && pws.key === "",
+  "wizardSave carries aws-profile mode + profile name, no key required");
+// bedrock blurb no longer claims profiles are unsupported
+ok(ids["w-blurb"].textContent.indexOf("SSO") >= 0, "bedrock blurb mentions profile/SSO support");
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -87,8 +87,21 @@
     <option value="ollama">ollama (local, no key)</option>
     <option value="openai">openai-compatible (endpoint + AWINO_API_KEY)</option>
     <option value="anthropic">anthropic (ANTHROPIC_API_KEY)</option>
-    <option value="bedrock">bedrock (AWS Bedrock API key)</option>
+    <option value="bedrock">bedrock (AWS Bedrock)</option>
   </select>
+</div>
+<div class="row" id="bedrockAuthRow" hidden>
+  <label for="bedrockAuthMode">Bedrock authentication</label>
+  <select id="bedrockAuthMode">
+    <option value="api-key">Bedrock API key (Bearer)</option>
+    <option value="aws-profile">AWS profile / SSO (SigV4 signing — no key needed)</option>
+  </select>
+</div>
+<div class="row" id="bedrockProfileRow" hidden>
+  <label for="bedrockAwsProfile">AWS profile (from ~/.aws/config)</label>
+  <input id="bedrockAwsProfile" type="text" placeholder="my-sso-profile">
+  <div class="note" style="margin-top:4px">For SSO profiles run <code>aws sso login --profile &lt;name&gt;</code> first.
+  Env vars, ~/.aws/credentials, source_profile chaining, and the SSO token cache are all supported.</div>
 </div>
 <div class="row">
   <label for="bedrockRegion">Bedrock region (endpoint is derived from it; empty endpoint = derived)</label>
@@ -137,10 +150,12 @@
   <div class="keyactions"><button id="bedrockGetKey" class="secondary">Get Bedrock API Key</button></div>
 </div>
 <div class="note">Bedrock connects through its OpenAI-compatible endpoint
-(<code>https://bedrock-runtime.{region}.amazonaws.com/openai/v1</code>) with the Bedrock API key as the
-bearer token. The model field accepts a model id, an inference-profile id, or a full ARN
-(foundation-model, inference-profile, application-inference-profile, or provisioned-model).
-AWS SSO / shared-config profiles aren't supported in the extension yet.</div>
+(<code>https://bedrock-runtime.{region}.amazonaws.com/openai/v1</code>). Two auth modes:
+<b>Bedrock API key</b> (sent as the bearer token) or <b>AWS profile / SSO</b>
+(every request signed with AWS SigV4 from your AWS credential chain — env vars,
+~/.aws/credentials, ~/.aws/config with source_profile chaining, and the SSO token cache).
+The model field accepts a model id, an inference-profile id, or a full ARN
+(foundation-model, inference-profile, application-inference-profile, or provisioned-model).</div>
 <div class="note">Keys are written to VS Code SecretStorage and passed to the sidecar
 via environment variables. They never appear in settings JSON, events, logs, or the contract block.</div>
 <div class="row">

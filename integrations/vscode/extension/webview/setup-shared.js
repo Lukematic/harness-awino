@@ -35,10 +35,10 @@
       docsUrl: "https://docs.anthropic.com",
       keyUrl: "https://console.anthropic.com", keyName: "Anthropic",
       blurb: "Anthropic's hosted API. Needs an API key." },
-    { id: "bedrock", label: "Bedrock (AWS Bedrock API key)", needsKey: true,
+    { id: "bedrock", label: "Bedrock (AWS Bedrock)", needsKey: true,
       docsUrl: "https://docs.aws.amazon.com/bedrock/",
       keyUrl: "https://console.aws.amazon.com/bedrock/", keyName: "Bedrock",
-      blurb: "AWS Bedrock via API key. Needs AWS credentials." },
+      blurb: "AWS Bedrock: Bedrock API key, or an AWS profile / SSO (SigV4 signing, no key)." },
   ];
 
   function providerById(id) {

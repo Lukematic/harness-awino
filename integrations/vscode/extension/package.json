@@ -172,6 +172,17 @@
           "description": "AWS region for the Bedrock provider. The OpenAI-compatible endpoint is derived from it (https://bedrock-runtime.{region}.amazonaws.com/openai/v1); awino.endpoint overrides it when set.",
           "type": "string"
         },
+        "awino.bedrockAuthMode": {
+          "default": "api-key",
+          "description": "How the Bedrock provider authenticates: \"api-key\" uses the Bedrock API key from SecretStorage (Bearer); \"aws-profile\" signs every request with AWS SigV4 from the named awino.bedrockAwsProfile via the standard AWS credential chain (env, ~/.aws/credentials, ~/.aws/config incl. source_profile, SSO cache). No key is needed or sent in aws-profile mode.",
+          "enum": ["api-key", "aws-profile"],
+          "type": "string"
+        },
+        "awino.bedrockAwsProfile": {
+          "default": "",
+          "description": "AWS profile name for Bedrock in \"aws-profile\" auth mode (see awino.bedrockAuthMode). Resolved from ~/.aws/credentials and ~/.aws/config; for SSO profiles run `aws sso login --profile <name>` first. Ignored unless bedrockAuthMode is \"aws-profile\".",
+          "type": "string"
+        },
         "awino.pythonPath": {
           "default": "python3",
           "description": "Python interpreter used to launch the Awino sidecar.",

@@ -790,11 +790,22 @@
     </div>
     <div class="wstep" id="w-keystep">
       <div class="wlabel">2 · API key</div>
-      <div class="wkeyrow">
+      <div class="wrow" id="w-bedrockauthrow" hidden>
+        <label class="wnote" for="w-bedrockauth">Bedrock authentication</label>
+        <select id="w-bedrockauth">
+          <option value="api-key">Bedrock API key</option>
+          <option value="aws-profile">AWS profile / SSO (SigV4 — no key needed)</option>
+        </select>
+      </div>
+      <div class="wrow" id="w-bedrockprofilerow" hidden>
+        <input id="w-bedrockprofile" type="text" placeholder="AWS profile name (from ~/.aws/config)" aria-label="AWS profile name">
+        <div class="wnote">For SSO profiles run <code>aws sso login --profile &lt;name&gt;</code> first.</div>
+      </div>
+      <div class="wkeyrow" id="w-keyrow">
         <input id="w-key" type="password" autocomplete="off" placeholder="Paste API key">
         <input id="w-keylabel" type="text" maxlength="40" placeholder="Label (e.g. Work)" aria-label="Label for the API key">
       </div>
-      <div class="wrow">
+      <div class="wrow" id="w-getkeyrow">
         <button id="w-getkey" class="secondary">Get API Key</button>
       </div>
       <div class="wnote">Keys are stored in VS Code SecretStorage — never in settings, logs, or screenshots.</div>

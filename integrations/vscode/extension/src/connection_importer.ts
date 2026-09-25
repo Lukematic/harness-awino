@@ -58,7 +58,7 @@ export interface ScanResult {
 
 /** A concrete awino.* config write proposed by the importer. */
 export interface ConfigWrite {
-  key: "provider" | "endpoint" | "model" | "bedrockRegion";
+  key: "provider" | "endpoint" | "model" | "bedrockRegion" | "bedrockAuthMode" | "bedrockAwsProfile";
   value: string;
 }
 
@@ -179,7 +179,8 @@ function handleEnvPair(
     case "AWS_DEFAULT_PROFILE":
       pushFinding(
         out, source, "bedrock", "awsProfile", value,
-        "AWS profile found. Note: Awino's Bedrock provider uses an API key, not SSO profiles — enter the key yourself in the providers panel."
+        "AWS profile found. Awino supports it for Bedrock: it signs requests with SigV4 from this profile, so no API key is needed. " +
+          "If the profile uses SSO, run `aws sso login --profile " + value + "` first."
       );
       return;
     case "ANTHROPIC_MODEL":
@@ -453,12 +454,14 @@ function dedupeFindings(findings: ImportFinding[]): ImportFinding[] {
 
 /** Findings the user can actually apply (informational kinds excluded). */
 export function applicableFindings(findings: ImportFinding[]): ImportFinding[] {
-  return findings.filter((f) => f.kind === "region" || f.kind === "endpoint" || f.kind === "model");
+  return findings.filter(
+    (f) => f.kind === "region" || f.kind === "endpoint" || f.kind === "model" || f.kind === "awsProfile"
+  );
 }
 
 /** Findings that are information-only (shown, never written). */
 export function informationalFindings(findings: ImportFinding[]): ImportFinding[] {
-  return findings.filter((f) => f.kind === "awsProfile" || f.kind === "credentialRef");
+  return findings.filter((f) => f.kind === "credentialRef");
 }
 
 /** Turn selected findings into concrete awino.* config writes. Pure. */
@@ -481,6 +484,11 @@ export function buildConfigWrites(selected: ImportFinding[]): ConfigWrite[] {
     } else if (f.kind === "model") {
       add("provider", f.provider === "unknown" ? "openai" : f.provider);
       add("model", f.value);
+    } else if (f.kind === "awsProfile") {
+      // An imported AWS profile becomes real SigV4 auth: no API key needed.
+      add("provider", "bedrock");
+      add("bedrockAuthMode", "aws-profile");
+      add("bedrockAwsProfile", f.value);
     }
   }
   return writes;

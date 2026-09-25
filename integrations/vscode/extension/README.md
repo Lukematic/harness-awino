@@ -41,12 +41,25 @@ is a surface and cannot bypass the harness.
 ## AWS Bedrock
 
 The `bedrock` provider connects through Bedrock's OpenAI-compatible endpoint —
-no native Bedrock client, no new sidecar backend: the sidecar speaks the OpenAI
+no native Bedrock client: the sidecar speaks the OpenAI
 chat-completions protocol to `https://bedrock-runtime.{region}.amazonaws.com/openai/v1`
-with the Bedrock API key as the bearer token.
 
-- **Setup:** run `Awino: Set Up AWS Bedrock` (or the panel's
-  *Bedrock region* + *Bedrock API key* fields). The endpoint is derived from
+Two auth modes, both real and working:
+
+- **Bedrock API key** (default): the key authenticates the OpenAI-compatible endpoint.
+  `awino.bedrockAuthMode: "api-key"`.
+- **AWS profile / SSO**: every request is signed with AWS SigV4 inside the
+  sidecar (stdlib-only - no boto3 dependency) from the standard AWS credential
+  chain: env vars, `~/.aws/credentials`, `~/.aws/config` (including
+  `source_profile` role chaining), and the SSO token cache. Set
+  `awino.bedrockAuthMode: "aws-profile"` and `awino.bedrockAwsProfile`.
+  No key is needed, none is sent, and the sidecar refuses to connect with a
+  named error (`AWS_SSO_TOKEN_EXPIRED`, `AWS_PROFILE_NOT_FOUND`, ...)
+  rather than silently falling back. For SSO profiles run
+  `aws sso login --profile <name>` first.
+
+- **Setup:** run `Awino: Set Up AWS Bedrock` (or the Models & Providers panel's
+  *Bedrock authentication* / *AWS profile* / *Bedrock region* fields). The endpoint is derived from
   the region; setting `awino.endpoint` explicitly overrides it.
 - **Model field** accepts a model id (`anthropic.claude-…`), an
   inference-profile id (`us.anthropic.claude-…`), or a full ARN in any of the
@@ -55,11 +68,6 @@ with the Bedrock API key as the bearer token.
   Bad ARNs are rejected with a plain-language error before anything is sent.
 - **Keys** live in VS Code SecretStorage, reach the sidecar via env only, and
   never appear in settings, events, logs, or error text.
-- **SSO / shared config (honest gap):** AWS SSO and `~/.aws` profile auth need
-  per-request SigV4 signing, which the sidecar doesn't do — so the extension
-  does not offer them as working options. Use a Bedrock API key here, or use
-  Claude Code's Bedrock integration (it speaks SSO natively) with the
-  Awino skill.
 
 ## Importing connections from other tools
 

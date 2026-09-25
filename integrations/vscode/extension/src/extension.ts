@@ -22,11 +22,14 @@ import { keyMissingForProvider } from "./providerKeys";
 import { discoverModels } from "./modelDiscovery";
 import {
   BEDROCK_REGIONS,
+  BedrockAuthMode,
   bedrockEndpointForRegion,
   isValidRegion,
+  parseAwsProfileNames,
   parseBedrockModelRef,
   resolveBedrockConnection,
   probeBedrockModels,
+  validateBedrockSetup,
 } from "./bedrock";
 import {
   scanSources,
@@ -100,6 +103,10 @@ interface AwinoConfig {
   model: string;
   /** AWS region for provider "bedrock"; endpoint is derived from it. */
   bedrockRegion: string;
+  /** Auth mode for provider "bedrock": "api-key" or "aws-profile" (SigV4). */
+  bedrockAuthMode: BedrockAuthMode;
+  /** AWS profile name for provider "bedrock" in "aws-profile" mode. */
+  bedrockAwsProfile: string;
   timeout: number;
   pythonPath: string;
   mcpServers: Array<{ name: string; command: string; args?: string[]; env?: Record<string, string> }>;
@@ -126,6 +133,13 @@ function readKeyLabels(): Record<string, string> {
   return out;
 }
 
+function readBedrockAuthMode(
+  c: vscode.WorkspaceConfiguration
+): BedrockAuthMode {
+  const raw = c.get<string>("bedrockAuthMode", "api-key");
+  return raw === "aws-profile" ? "aws-profile" : "api-key";
+}
+
 function readConfig(): AwinoConfig {
   const c = vscode.workspace.getConfiguration("awino");
   return {
@@ -133,6 +147,8 @@ function readConfig(): AwinoConfig {
     endpoint: c.get<string>("endpoint", ""),
     model: c.get<string>("model", ""),
     bedrockRegion: c.get<string>("bedrockRegion", ""),
+    bedrockAuthMode: readBedrockAuthMode(c),
+    bedrockAwsProfile: c.get<string>("bedrockAwsProfile", ""),
     timeout: c.get<number>("timeout", 180),
     pythonPath: c.get<string>("pythonPath", "python3"),
     mcpServers: c.get<Array<{ name: string; command: string; args?: string[]; env?: Record<string, string> }>>(
@@ -676,6 +692,14 @@ async function saveWizardSettings(
   if (provider === "bedrock" && typeof m.bedrockRegion === "string" && m.bedrockRegion) {
     await cfg.update("bedrockRegion", m.bedrockRegion, vscode.ConfigurationTarget.Workspace);
   }
+  if (provider === "bedrock") {
+    await cfg.update(
+      "bedrockAuthMode",
+      m.bedrockAuthMode === "aws-profile" ? "aws-profile" : "api-key",
+      vscode.ConfigurationTarget.Workspace
+    );
+    await cfg.update("bedrockAwsProfile", String(m.bedrockAwsProfile ?? ""), vscode.ConfigurationTarget.Workspace);
+  }
   // Spec 2.1 Step 3 ("Prove it"): do NOT mark onboarded yet. The wizard
   // advances to the prove-it step; onboarding completes only after a
   // successful test-message reply (see wizardProve/awaitingProveIt).
@@ -1111,6 +1135,8 @@ const SIDECAR_SETTINGS = [
   "awino.timeout",
   "awino.mcpServers",
   "awino.bedrockRegion",
+  "awino.bedrockAuthMode",
+  "awino.bedrockAwsProfile",
   "awino.pythonPath",
 ] as const;
 
@@ -1233,6 +1259,8 @@ async function doConnectInner(
   // as the Bearer token. See src/bedrock.ts for the full rationale.
   let sidecarProvider = cfg.provider;
   let sidecarEndpoint = cfg.endpoint || undefined;
+  /** AWS profile name forwarded to the sidecar (bedrock SigV4 mode). */
+  let sidecarAwsProfile: string | undefined;
   let displayProvider: string | undefined;
 
   // Read all three keys up front (SecretStorage only — never settings JSON)
@@ -1241,21 +1269,29 @@ async function doConnectInner(
   const anthropicKey = await secrets.get(KEY_ANTHROPIC);
   const bedrockKey = await secrets.get(KEY_BEDROCK);
   const userProvider = String(cfg.provider ?? "echo");
+  const bedrockProfileAuth =
+    userProvider === "bedrock" && cfg.bedrockAuthMode === "aws-profile";
   lastKeyMissing = {
-    missing: keyMissingForProvider(userProvider, {
-      openai: !!openaiKey,
-      anthropic: !!anthropicKey,
-      bedrock: !!bedrockKey,
-    }),
+    missing: keyMissingForProvider(
+      userProvider,
+      {
+        openai: !!openaiKey,
+        anthropic: !!anthropicKey,
+        bedrock: !!bedrockKey,
+      },
+      { bedrockProfileAuth }
+    ),
     provider: userProvider,
   };
   lastShowWizard = computeShowWizard(context);
 
   if (cfg.provider === "bedrock") {
     const resolved = resolveBedrockConnection({
+      authMode: cfg.bedrockAuthMode,
       endpoint: cfg.endpoint,
       region: cfg.bedrockRegion,
       apiKey: bedrockKey ?? undefined,
+      awsProfile: cfg.bedrockAwsProfile || undefined,
     });
     if (!resolved.ok) {
       vscode.window.showErrorMessage(`Awino: ${resolved.error}`);
@@ -1265,7 +1301,13 @@ async function doConnectInner(
     }
     sidecarProvider = resolved.args.sidecarProvider;
     sidecarEndpoint = resolved.args.endpoint;
-    env[resolved.args.keyEnvVar] = bedrockKey as string;
+    if (resolved.args.keyEnvVar) {
+      // api-key mode only. aws-profile mode deliberately hands the sidecar
+      // no key: SigV4 signs from the AWS chain, and a key on the env would
+      // be a silent fallback waiting to happen.
+      env[resolved.args.keyEnvVar] = bedrockKey as string;
+    }
+    sidecarAwsProfile = resolved.args.awsProfile;
     displayProvider = "bedrock";
   } else {
     if (openaiKey) {
@@ -1315,6 +1357,7 @@ async function doConnectInner(
       provider: sidecarProvider,
       model: cfg.model || undefined,
       endpoint: sidecarEndpoint,
+      awsProfile: sidecarAwsProfile,
       timeout: cfg.timeout,
       env,
       mcpServers: cfg.mcpServers,
@@ -1888,98 +1931,138 @@ function registerCommands(context: vscode.ExtensionContext): void {
       region = typed.trim();
     }
 
-    // 2. auth method — SSO is documented future work, never half-wired.
-    const auth = await vscode.window.showQuickPick(
+    // 2. auth method — both are real, working options.
+    const authPick = await vscode.window.showQuickPick(
       [
         {
-          label: "Bedrock API key (recommended)",
-          description: "Bedrock console → API keys → Generate API key",
+          label: "AWS profile / SSO",
+          description: "~/.aws/config — SigV4 signing, no API key needed",
         },
         {
-          label: "AWS SSO / shared config profile",
-          description: "not supported in the extension yet",
+          label: "Bedrock API key",
+          description: "Bedrock console → API keys → Generate API key",
         },
       ],
       { placeHolder: "How should the extension authenticate to Bedrock?" }
     );
-    if (!auth) {
+    if (!authPick) {
       return;
     }
-    if (auth.label.startsWith("AWS SSO")) {
-      const choice = await vscode.window.showInformationMessage(
-        "Awino: AWS SSO sessions need SigV4 request signing inside the sidecar, which isn't built yet — " +
-          "the extension won't pretend otherwise. For now, use a Bedrock API key here, or use Claude Code's " +
-          "Bedrock setup (it speaks SSO natively) with the Awino skill.",
-        "Enter a Bedrock API key instead",
-        "Cancel"
-      );
-      if (choice !== "Enter a Bedrock API key instead") {
-        return;
-      }
-    }
+    const authMode: BedrockAuthMode = authPick.label.startsWith("AWS profile")
+      ? "aws-profile"
+      : "api-key";
 
-    // 3. key (kept only in SecretStorage)
-    const existing = await context.secrets.get(KEY_BEDROCK);
-    let key = existing ?? undefined;
-    const replace =
-      existing &&
-      (await vscode.window.showQuickPick(["Keep the stored key", "Replace it"], {
-        placeHolder: "A Bedrock API key is already stored",
-      }));
-    if (replace === undefined && existing) {
-      return;
-    }
-    if (!existing || replace === "Replace it") {
-      const typed = await vscode.window.showInputBox({
-        prompt: "Bedrock API key",
-        password: true,
-        placeHolder: "from the Bedrock console → API keys → Generate API key",
-        validateInput: (v) => (v.trim() ? undefined : "The key can't be empty."),
-      });
-      if (!typed) {
-        return;
-      }
-      key = typed.trim();
+    let awsProfile = "";
+    if (authMode === "aws-profile") {
+      // 2b. pick a profile from the user's real ~/.aws/config.
+      const configPath = path.join(os.homedir(), ".aws", "config");
+      let profiles: string[] = [];
       try {
-        await storeSecret(context.secrets, KEY_BEDROCK, key);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        log(`bedrock setup: secret store failed: ${msg}`);
-        vscode.window.showErrorMessage(`Awino: could not store the Bedrock key — ${msg}`);
+        profiles = parseAwsProfileNames(fs.readFileSync(configPath, "utf8"));
+      } catch {
+        profiles = [];
+      }
+      const profileItems = [
+        ...profiles.map((p) => ({ label: p, description: "from ~/.aws/config" })),
+        { label: "Type a profile name…", description: "" },
+      ];
+      const profPick = await vscode.window.showQuickPick(profileItems, {
+        placeHolder:
+          profiles.length > 0
+            ? "AWS profile to sign Bedrock requests with"
+            : "No profiles found in ~/.aws/config — type one (or run `aws configure` / `aws sso login` first)",
+      });
+      if (!profPick) {
         return;
+      }
+      if (profPick.label === "Type a profile name…") {
+        const typed = await vscode.window.showInputBox({
+          prompt: "AWS profile name",
+          placeHolder: "my-sso-profile",
+          validateInput: (v) => (v.trim() ? undefined : "The profile name can't be empty."),
+        });
+        if (!typed) {
+          return;
+        }
+        awsProfile = typed.trim();
+      } else {
+        awsProfile = profPick.label;
+      }
+      vscode.window.showInformationMessage(
+        `Awino: profile "${awsProfile}" — if it uses SSO, run \`aws sso login --profile ${awsProfile}\` first; ` +
+          `the sidecar will refuse to connect with a named error otherwise.`
+      );
+    }
+
+    // 3. key (kept only in SecretStorage) — api-key mode only.
+    let key: string | undefined;
+    if (authMode === "api-key") {
+      const existing = await context.secrets.get(KEY_BEDROCK);
+      key = existing ?? undefined;
+      const replace =
+        existing &&
+        (await vscode.window.showQuickPick(["Keep the stored key", "Replace it"], {
+          placeHolder: "A Bedrock API key is already stored",
+        }));
+      if (replace === undefined && existing) {
+        return;
+      }
+      if (!existing || replace === "Replace it") {
+        const typed = await vscode.window.showInputBox({
+          prompt: "Bedrock API key",
+          password: true,
+          placeHolder: "from the Bedrock console → API keys → Generate API key",
+          validateInput: (v) => (v.trim() ? undefined : "The key can't be empty."),
+        });
+        if (!typed) {
+          return;
+        }
+        key = typed.trim();
+        try {
+          await storeSecret(context.secrets, KEY_BEDROCK, key);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          log(`bedrock setup: secret store failed: ${msg}`);
+          vscode.window.showErrorMessage(`Awino: could not store the Bedrock key — ${msg}`);
+          return;
+        }
       }
     }
 
-    // 4. optional live connection test (lists models; nothing is sent anywhere else)
+    // 4. optional live connection test (api-key mode only: lists models with
+    // the key). For profile auth the connect itself is the test — the
+    // sidecar fails closed with a named error if the profile is unusable.
     const endpoint = bedrockEndpointForRegion(region);
     if (!endpoint.ok) {
       vscode.window.showErrorMessage(`Awino: ${endpoint.error}`);
       return;
     }
-    const testIt = await vscode.window.showQuickPick(["Test the connection", "Skip the test"], {
-      placeHolder: "Verify the key and region against Bedrock now?",
-    });
-    if (testIt === undefined) {
-      return;
-    }
-    if (testIt.startsWith("Test")) {
-      const probe = await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: "Awino: testing Bedrock connection…" },
-        () => probeBedrockModels(endpoint.endpoint, key as string)
-      );
-      if (!probe.ok) {
-        const retry = await vscode.window.showErrorMessage(
-          `Awino: connection test failed — ${probe.error}`,
-          "Continue anyway",
-          "Cancel setup"
+    if (authMode === "api-key") {
+      const testIt = await vscode.window.showQuickPick(["Test the connection", "Skip the test"], {
+        placeHolder: "Verify the key and region against Bedrock now?",
+      });
+      if (testIt === undefined) {
+        return;
+      }
+      if (testIt.startsWith("Test")) {
+        const probe = await vscode.window.withProgress(
+          { location: vscode.ProgressLocation.Notification, title: "Awino: testing Bedrock connection…" },
+          () => probeBedrockModels(endpoint.endpoint, key as string)
         );
-        if (retry !== "Continue anyway") {
-          return;
+        if (!probe.ok) {
+          const retry = await vscode.window.showErrorMessage(
+            `Awino: connection test failed — ${probe.error}`,
+            "Continue anyway",
+            "Cancel setup"
+          );
+          if (retry !== "Continue anyway") {
+            return;
+          }
+        } else {
+          vscode.window.showInformationMessage(
+            `Awino: Bedrock answered — ${probe.models?.length ?? 0} model(s) visible to this key.`
+          );
         }
-      } else {
-        vscode.window.showInformationMessage(
-          `Awino: Bedrock answered — ${probe.models?.length ?? 0} model(s) visible to this key.`
-        );
       }
     }
 
@@ -2014,13 +2097,32 @@ function registerCommands(context: vscode.ExtensionContext): void {
       break;
     }
 
-    // 6. write config and offer reconnect
+    // 6. validate, write config, and offer reconnect
+    const setupErrors = validateBedrockSetup({
+      region,
+      modelRef: model,
+      authMode,
+      keyPresent: !!key,
+      awsProfile,
+    });
+    if (setupErrors.length > 0) {
+      vscode.window.showErrorMessage(`Awino: Bedrock setup is incomplete — ${setupErrors[0]}`);
+      return;
+    }
     const cfg = vscode.workspace.getConfiguration("awino");
     await cfg.update("provider", "bedrock", vscode.ConfigurationTarget.Workspace);
+    await cfg.update("bedrockAuthMode", authMode, vscode.ConfigurationTarget.Workspace);
     await cfg.update("bedrockRegion", region, vscode.ConfigurationTarget.Workspace);
+    await cfg.update(
+      "bedrockAwsProfile",
+      authMode === "aws-profile" ? awsProfile : "",
+      vscode.ConfigurationTarget.Workspace
+    );
     await cfg.update("model", model, vscode.ConfigurationTarget.Workspace);
+    const authDesc =
+      authMode === "aws-profile" ? `AWS profile "${awsProfile}" (SigV4)` : "Bedrock API key";
     const reconnect = await vscode.window.showInformationMessage(
-      `Awino: Bedrock is configured (${region} → ${endpoint.endpoint}). Reconnect the sidecar to apply?`,
+      `Awino: Bedrock is configured (${region} → ${endpoint.endpoint}, ${authDesc}). Reconnect the sidecar to apply?`,
       "Reconnect",
       "Later"
     );
@@ -2332,6 +2434,12 @@ function openModelsPanel(context: vscode.ExtensionContext): void {
         await cfg.update("endpoint", String(m.endpoint ?? ""), vscode.ConfigurationTarget.Workspace);
         await cfg.update("model", String(m.model ?? ""), vscode.ConfigurationTarget.Workspace);
         await cfg.update("bedrockRegion", String(m.bedrockRegion ?? ""), vscode.ConfigurationTarget.Workspace);
+        await cfg.update(
+          "bedrockAuthMode",
+          m.bedrockAuthMode === "aws-profile" ? "aws-profile" : "api-key",
+          vscode.ConfigurationTarget.Workspace
+        );
+        await cfg.update("bedrockAwsProfile", String(m.bedrockAwsProfile ?? ""), vscode.ConfigurationTarget.Workspace);
         await cfg.update("timeout", Number(m.timeout ?? 180), vscode.ConfigurationTarget.Workspace);
         // Secret writes go through the timeout helper: a hanging keyring
         // must surface an error in the panel, never freeze the save.

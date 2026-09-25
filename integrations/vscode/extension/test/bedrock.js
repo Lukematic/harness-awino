@@ -12,6 +12,7 @@ const {
   BEDROCK_REGIONS,
   isValidRegion,
   bedrockEndpointForRegion,
+  parseAwsProfileNames,
   parseBedrockModelRef,
   resolveBedrockConnection,
   validateBedrockSetup,
@@ -134,13 +135,70 @@ async function main() {
   ok(!c.ok && /No Bedrock API key/.test(c.error) && /Set API Key/.test(c.error),
     "missing key errors with the one next action");
 
+  // ---- connection resolution: aws-profile (SigV4) mode -------------------
+  c = resolveBedrockConnection({ region: "us-west-2", authMode: "aws-profile", awsProfile: "sso" });
+  ok(c.ok && c.args.sidecarProvider === "bedrock" &&
+    c.args.endpoint === "https://bedrock-runtime.us-west-2.amazonaws.com/openai/v1" &&
+    c.args.awsProfile === "sso" && c.args.keyEnvVar === undefined,
+    "profile mode: sidecar=bedrock + profile forwarded + NO key env var");
+
+  c = resolveBedrockConnection({ region: "us-west-2", authMode: "aws-profile", awsProfile: "sso", apiKey: "LEFTOVER" });
+  ok(c.ok && c.args.keyEnvVar === undefined,
+    "profile mode never hands the sidecar a key, even when one is stored");
+
+  c = resolveBedrockConnection({ region: "us-west-2", authMode: "aws-profile", awsProfile: "  " });
+  ok(!c.ok && /no profile name is set/.test(c.error) && /bedrockAwsProfile/.test(c.error),
+    "profile mode without a profile name errors with the one next action");
+
+  c = resolveBedrockConnection({ region: "us-west-2", authMode: "aws-profile" });
+  ok(!c.ok && /no profile name is set/.test(c.error),
+    "profile mode without a profile at all errors plainly");
+
   // ---- setup validation ----------------------------------------------------
   let errs = validateBedrockSetup({
     region: "us-east-1",
+    authMode: "api-key",
     modelRef: "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/p",
     keyPresent: true,
   });
-  ok(errs.length === 0, "valid setup has no errors");
+  ok(errs.length === 0, "valid api-key setup has no errors");
+
+  errs = validateBedrockSetup({
+    region: "us-east-1",
+    authMode: "aws-profile",
+    modelRef: "us.anthropic.claude-x",
+    keyPresent: false,
+    awsProfile: "sso",
+  });
+  ok(errs.length === 0, "valid profile setup has no errors (no key needed)");
+
+  errs = validateBedrockSetup({
+    region: "us-east-1",
+    authMode: "aws-profile",
+    modelRef: "us.anthropic.claude-x",
+    keyPresent: false,
+    awsProfile: "",
+  });
+  ok(errs.length === 1 && /No AWS profile was chosen/.test(errs[0]),
+    "profile setup without a profile reports exactly that problem");
+
+  // ---- ~/.aws/config profile parsing ---------------------------------------
+  let names = parseAwsProfileNames(
+    "[default]\nregion = us-east-1\n\n[profile sso]\nsso_start_url = https://x\n\n[profile work]\nregion = eu-west-1\n");
+  ok(JSON.stringify(names) === JSON.stringify(["default", "sso", "work"]),
+    "profile names parsed from ~/.aws/config (default + [profile X])");
+
+  names = parseAwsProfileNames("[profile sso]\n[profile sso]\n");
+  ok(JSON.stringify(names) === JSON.stringify(["sso"]),
+    "duplicate profile sections deduped");
+
+  names = parseAwsProfileNames(
+    "[sso-session my-sso]\nsso_start_url = https://x\n\n[profile sso]\nsso_session = my-sso\n");
+  ok(JSON.stringify(names) === JSON.stringify(["sso"]),
+    "sso-session blocks are not offered as profiles");
+
+  names = parseAwsProfileNames("");
+  ok(names.length === 0, "empty config yields no profiles");
 
   errs = validateBedrockSetup({ region: "nope", modelRef: "", keyPresent: false });
   ok(errs.length === 3, "invalid setup reports all three problems");
