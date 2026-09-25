@@ -354,6 +354,17 @@
     font-family: var(--vscode-editor-font-family, monospace);
   }
   .btnrow { margin-top: 8px; display: flex; gap: 8px; }
+  .targets { margin: 8px 0 0 0; font-size: 11px; }
+  .targets .trow { display: flex; gap: 6px; align-items: baseline; padding: 2px 0; }
+  .targets .trow code { word-break: break-all; }
+  .targets .out { color: var(--vscode-editorWarning-foreground, #D4A937); font-weight: bold; }
+  .targets .in { color: var(--vscode-descriptionForeground, #8A93A6); }
+  .outside-banner {
+    margin: 8px 0 0 0; padding: 8px; border-radius: 4px; font-size: 12px;
+    background: var(--vscode-inputValidation-warningBackground, #3A2E12);
+    border: 1px solid var(--vscode-editorWarning-foreground, #D4A937);
+    color: var(--vscode-editorWarning-foreground, #D4A937);
+  }
   button {
     background: var(--vscode-button-background, #0E639C);
     color: var(--vscode-button-foreground, #FFFFFF);

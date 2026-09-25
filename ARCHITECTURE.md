@@ -100,7 +100,7 @@ Conformance ladder: Context → Interactive → Autonomous-local → Hosted. See
 - Backends: mock (tests), live local model, provider APIs. Provider keys are user-supplied; the harness never configures them unasked.
 - Only provider-exposed thinking is displayed; hidden reasoning is never fabricated.
 - No general prompt/source-file PII scrubber. Ollama offers zero-cloud-egress for the local path.
-- Workspace cwd is not OS-level isolation; there is no dangerous-command blacklist — approved shell commands may address external/absolute resources.
+- Workspace cwd is not OS-level isolation; there is no dangerous-command blacklist — approved shell commands may address external/absolute resources. Visibility, not prohibition: approval cards show the command's cwd-resolved absolute file targets and flag out-of-workspace addressing, and the human still decides.
 - Full-file `write_file` remains a token-heavy operation with no patch tool.
 
 ## 8. Verification

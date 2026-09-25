@@ -2737,6 +2737,10 @@ class Sidecar:
                     a["args"].get("content", ""))
                 item["diff"] = diff
                 item["old_exists"] = old_exists
+            if a.get("shell_targets") is not None:
+                # approval-target visibility: resolved file targets and the
+                # out-of-workspace flag, rendered on the approval card
+                item["shell_targets"] = a["shell_targets"]
             approvals.append(item)
         _emit({"event": "approval_requested",
                "turn_id": result.get("turn_id"),
