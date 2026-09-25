@@ -175,6 +175,7 @@
 
   /* ---------- base ---------- */
   * { box-sizing: border-box; }
+  html { height: 100%; }
   body {
     font-family: var(--vscode-font-family, system-ui);
     font-size: var(--vscode-font-size, 13px);
@@ -287,7 +288,9 @@
   }
 
   /* ---------- messages (§2.1) ---------- */
-  #messages { flex: 1; overflow-y: auto; padding: 10px; }
+  /* min-height: 0 is mandatory — without it the flex child refuses to
+   * shrink and the input bar gets pushed out of view (Spec 1.3). */
+  #messages { flex: 1 1 auto; overflow-y: auto; padding: 10px; min-height: 0; }
   .msg {
     margin-bottom: 12px; padding: 10px 12px; border-radius: 8px;
     background: var(--awino-bg-2, var(--vscode-editor-background, #172036));
@@ -454,8 +457,10 @@
   }
 
   /* ---------- input bar (§2.7) ---------- */
+  /* flex: none pins the input at the bottom (Spec 1.3). The input bar is
+   * NEVER hidden — states only disable it or change the placeholder. */
   #inputbar {
-    display: flex; padding: 8px; gap: 8px;
+    display: flex; padding: 8px; gap: 8px; flex: none;
     background: var(--awino-bg, var(--vscode-sideBar-background, #111A2E));
     border-top: 1px solid var(--vscode-panel-border, #232F45);
   }
@@ -530,33 +535,50 @@
   }
   @keyframes awino-caret-blink { 50% { opacity: 0; } }
 
-  /* ---------- provider status pill (§2.10, Kilo pattern) ----------
-   * Binding state where the user types: "No provider" or "provider · model".
-   * Clicking opens Models & Providers. */
-  #provider-pill-row {
-    display: flex; padding: 6px 8px 0;
-    background: var(--awino-bg, var(--vscode-sideBar-background, #111A2E));
-    flex: 0 0 auto;
+  /* ---------- connection status dot (Spec 1.4) ---------- */
+  #conn-dot {
+    width: 8px; height: 8px; border-radius: 50%; flex: none;
+    background: var(--awino-muted, var(--vscode-descriptionForeground, #8B98B0));
   }
-  #provider-pill-row[hidden] { display: none; }
+  #conn-dot.on {
+    background: var(--awino-ok, var(--vscode-testing-iconPassed, #4EC9B0));
+    box-shadow: 0 0 6px var(--awino-ok, var(--vscode-testing-iconPassed, #4EC9B0));
+  }
+  /* ---------- provider status pill (Spec 1.4/4.4, Kilo pattern) ----------
+   * Binding state where the user types: "No provider" or "provider · model".
+   * Lives in the chat header; clicking opens Models & Providers. */
   #provider-pill {
     display: inline-flex; align-items: center; gap: 7px;
     font-size: 11px; padding: 3px 12px; border-radius: 12px;
     background: transparent; cursor: pointer;
     border: 1px solid var(--awino-vibranium-deep, var(--vscode-textLink-foreground, #0B7FA6));
     color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+    max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   #provider-pill:hover {
     background: var(--awino-vibranium-dim, rgba(0,198,255,.12));
   }
-  #provider-pill::before {
-    content: ""; width: 8px; height: 8px; border-radius: 50%; flex: none;
-    background: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
-    box-shadow: 0 0 6px var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+  #provider-pill.stale {
+    border-style: dashed;
+    color: var(--awino-warn, var(--vscode-testing-iconQueued, #CCA700));
   }
-  #provider-pill.none::before {
-    background: var(--awino-muted, var(--vscode-descriptionForeground, #8B98B0));
-    box-shadow: none;
+  /* ---------- mode selector + new-mission button (Spec 1.4) ---------- */
+  #mode-select {
+    font-size: 11px; padding: 3px 6px; border-radius: 8px; max-width: 130px;
+    background: var(--awino-bg-3, var(--vscode-input-background, #1E2A45));
+    color: var(--awino-text, var(--vscode-input-foreground, #DCE7F7));
+    border: 1px solid var(--vscode-panel-border, #232F45);
+  }
+  #mode-select[hidden] { display: none; }
+  #new-mission-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 26px; height: 26px; font-size: 16px; font-weight: 700; border-radius: 8px;
+    background: transparent; cursor: pointer; padding: 0;
+    border: 1px solid var(--awino-vibranium-deep, var(--vscode-textLink-foreground, #0B7FA6));
+    color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF));
+  }
+  #new-mission-btn:hover {
+    background: var(--awino-vibranium-dim, rgba(0,198,255,.12));
   }
 
   /* ---------- first-run onboarding wizard (§2.11) ----------
@@ -617,7 +639,17 @@
     font-weight: 600;
   }
   #w-modelselect[hidden] { display: none; }
-  #inputbar[hidden] { display: none; }
+
+  /* ---------- echo demo banner (Spec 2.3) ----------
+   * One line directly above the input bar when provider == echo. */
+  #echo-banner {
+    display: none; flex: none; padding: 6px 10px; font-size: 11px;
+    color: var(--awino-muted, var(--vscode-descriptionForeground, #8B98B0));
+    background: var(--awino-bg-2, var(--vscode-sideBar-background, #172036));
+    border-top: 1px solid var(--vscode-panel-border, #232F45);
+  }
+  #echo-banner.show { display: block; }
+  #echo-banner a { color: var(--awino-vibranium, var(--vscode-textLink-foreground, #00C6FF)); cursor: pointer; }
 
   /* ---------- jump-to-latest pill (§4.1) ---------- */
   #jump-latest {
@@ -720,9 +752,12 @@
 </head>
 <body>
 <div id="chatheader">
+  <span id="conn-dot" class="dot off" title="Not connected"></span>
   <span class="brand">◈ Awino</span>
-  <span class="deco" aria-hidden="true"><span class="bead on"></span><span class="bead vdim"></span><span class="bead gdim"></span></span>
+  <button id="provider-pill" class="none" title="No provider connected — open Models &amp; Providers">No provider</button>
+  <select id="mode-select" title="Active mode — switch at the point of use" hidden></select>
   <span class="spacer"></span>
+  <button id="new-mission-btn" title="New mission">+</button>
   <button id="theme-toggle" title="Switch Savanna / Vibranium theme">◐ <span id="theme-name">Vibranium</span></button>
   <button id="models-btn" title="Models &amp; Providers — API keys and model selection">⚙</button>
 </div>
@@ -741,9 +776,7 @@
 <div id="messages"></div>
 <button id="jump-latest" hidden>&#8595; jump to latest</button>
 <div id="statusline">not connected</div>
-<div id="provider-pill-row">
-  <button id="provider-pill" class="none" title="Models &amp; Providers — API keys and model selection">No provider</button>
-</div>
+<div id="echo-banner"></div>
 <div id="wizard" hidden>
   <div class="wizard-body">
     <div>
@@ -753,6 +786,7 @@
     <div class="wstep">
       <div class="wlabel">1 · Choose provider<a id="w-docs" class="docslink" href="#" hidden>Provider Docs</a></div>
       <select id="w-provider"></select>
+      <div id="w-blurb" class="wnote"></div>
     </div>
     <div class="wstep" id="w-keystep">
       <div class="wlabel">2 · API key</div>
@@ -785,6 +819,17 @@
     <div class="wstep btnrow">
       <button id="w-done">Save &amp; Connect</button>
       <button id="w-skip" class="secondary">Skip for now</button>
+    </div>
+    <!-- Spec 2.1 Step 3: Prove it. Shown after Save & Connect; the test
+         message is sent through the live sidecar and onboarding completes
+         only after a successful reply. -->
+    <div class="wstep" id="w-provestep" hidden>
+      <div class="wlabel">4 · Prove it</div>
+      <div class="wnote">I'll send "Hello — reply in one short sentence." through your new provider. Setup finishes when it answers.</div>
+      <div class="wrow">
+        <button id="w-prove">Send test message</button>
+        <span id="w-provenote" class="wnote"></span>
+      </div>
     </div>
     <div id="w-error" class="werror" hidden></div>
   </div>

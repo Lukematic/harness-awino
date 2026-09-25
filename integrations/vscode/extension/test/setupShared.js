@@ -18,10 +18,10 @@ function t(name, fn) {
 }
 
 // ---- provider catalogue ----
-t("five providers, echo first", () => {
-  assert.strictEqual(S.PROVIDERS.length, 5);
+t("six providers, echo first (Spec 2.1)", () => {
+  assert.strictEqual(S.PROVIDERS.length, 6);
   assert.deepStrictEqual(S.PROVIDERS.map((p) => p.id),
-    ["echo", "ollama", "openai", "anthropic", "bedrock"]);
+    ["echo", "ollama", "openai", "openai-compatible", "anthropic", "bedrock"]);
 });
 t("key-creation URLs match the teardown's pages", () => {
   assert.strictEqual(S.providerById("openai").keyUrl, "https://platform.openai.com/api-keys");

@@ -86,6 +86,10 @@
         "title": "Awino: Reconnect Sidecar"
       },
       {
+        "command": "awino.resetOnboarding",
+        "title": "Awino: Reset Onboarding"
+      },
+      {
         "command": "awino.refreshViews",
         "title": "Awino: Refresh Views"
       },
@@ -213,35 +217,50 @@
         {
           "id": "awino.chat",
           "name": "Mission Chat",
-          "type": "webview"
-        },
-        {
-          "id": "awino.contract",
-          "name": "Contract"
-        },
-        {
-          "id": "awino.journal",
-          "name": "Journal"
-        },
-        {
-          "id": "awino.learnings",
-          "name": "Learnings"
-        },
-        {
-          "id": "awino.skills",
-          "name": "Skills"
-        },
-        {
-          "id": "awino.context",
-          "name": "Context"
+          "type": "webview",
+          "initialSize": 3
         },
         {
           "id": "awino.modes",
-          "name": "Modes"
+          "name": "Modes",
+          "visibility": "collapsed",
+          "when": "awino:connected"
         },
         {
           "id": "awino.tasks",
-          "name": "Tasks"
+          "name": "Tasks",
+          "visibility": "collapsed",
+          "when": "awino:connected"
+        },
+        {
+          "id": "awino.contract",
+          "name": "Contract",
+          "visibility": "collapsed",
+          "when": "awino:connected"
+        },
+        {
+          "id": "awino.journal",
+          "name": "Journal",
+          "visibility": "collapsed",
+          "when": "awino:connected"
+        },
+        {
+          "id": "awino.skills",
+          "name": "Skills",
+          "visibility": "collapsed",
+          "when": "awino:connected"
+        },
+        {
+          "id": "awino.learnings",
+          "name": "Learnings",
+          "visibility": "collapsed",
+          "when": "awino:connected"
+        },
+        {
+          "id": "awino.context",
+          "name": "Context",
+          "visibility": "collapsed",
+          "when": "awino:connected"
         }
       ]
     },

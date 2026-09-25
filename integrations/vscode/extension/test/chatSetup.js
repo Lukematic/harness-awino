@@ -86,16 +86,20 @@ function boot() {
    "theme-toggle", "theme-name", "models-btn", "setup-card", "setup-sub",
    "setup-btn", "provider-pill", "inputbar", "wizard",
    "mission-header", "session-resume",
+   "conn-dot", "mode-select", "new-mission-btn", "echo-banner",
    "w-docs", "w-keystep", "w-key", "w-keylabel", "w-getkey",
    "w-model", "w-modelselect", "w-intel", "w-endpoint",
    "w-regionrow", "w-region", "w-fetchrow", "w-fetch", "w-fetchnote",
-   "w-done", "w-skip", "w-error"].forEach(function (id) {
+   "w-done", "w-skip", "w-error", "w-blurb",
+   "w-provestep", "w-prove", "w-provenote"].forEach(function (id) {
     ids[id] = new StubEl("div");
     ids[id].id = id;
   });
   ids["wizard"].hidden = true;
   ids["w-provider"] = new SelectStub();
   ids["w-provider"].id = "w-provider";
+  ids["mode-select"] = new SelectStub();
+  ids["mode-select"].id = "mode-select";
   messageListeners = [];
   posted = [];
   bodyEl = new StubEl("body");
@@ -159,16 +163,20 @@ posted = [];
 ids["provider-pill"].fire("click", {});
 ok(lastPosted("models") !== null, "pill click posts 'models' (opens Models & Providers)");
 
-// 4. wizard shows on first-run state, parks the input bar, hides setup card
+// 4. wizard shows on first-run state, disables (never hides) the input bar, hides setup card
 state({ showWizard: true, provider: "echo", keyMissing: false });
 ok(ids["wizard"].hidden === false, "wizard visible when showWizard is true");
-ok(ids["inputbar"].hidden === true, "input bar parked while the wizard is active");
+// Spec 1.3: the input bar is NEVER hidden — it stays in the DOM and is
+// only disabled (with a state placeholder) while the wizard is active.
+ok(ids["inputbar"].hidden === false, "input bar never hidden while the wizard is active (Spec 1.3)");
+ok(ids["input"].disabled === true, "input disabled while the wizard is active (Spec 1.3)");
 ok(ids["setup-card"].hidden === true, "setup card suppressed while the wizard owns setup");
-ok(ids["w-provider"].children.length === 5, "wizard provider select populated from the catalogue");
-// 5. wizard hides again; input bar returns
+ok(ids["w-provider"].children.length === 6, "wizard provider select populated from the catalogue (Spec 2.1: echo, ollama, openai, openai-compatible, anthropic, bedrock)");
+// 5. wizard hides again; input bar re-enables (never hidden)
 state({ showWizard: false, connected: true });
 ok(ids["wizard"].hidden === true, "wizard hidden when showWizard is false");
-ok(ids["inputbar"].hidden === false, "input bar returns after the wizard");
+ok(ids["inputbar"].hidden === false, "input bar stays in the DOM after the wizard (Spec 1.3)");
+ok(ids["input"].disabled === false, "input enabled after the wizard (Spec 1.3)");
 // 6. wizard never renders the provider select blank (0.4.0d in the wizard too)
 state({ showWizard: true, provider: "scripted" });
 ok(ids["w-provider"].value === "scripted", "wizard provider select shows the binding, never blank");
@@ -293,6 +301,91 @@ messageListeners.forEach(function (fn) {
   fn({ data: { type: "sessionResume", summary: { mission: null, turns: 0 } } });
 });
 ok(ids["session-resume"].hidden === true, "session resume hidden with no mission and no turns");
+
+// 20. Spec 1.4: connection dot reflects connected state
+state({ connected: true, showWizard: false });
+ok(ids["conn-dot"].classList.contains("on"), "conn dot on when connected (Spec 1.4)");
+ok(ids["input"].disabled === false, "input enabled when connected (Spec 1.3)");
+state({ connected: false, showWizard: false });
+ok(!ids["conn-dot"].classList.contains("on"), "conn dot off when disconnected (Spec 1.4)");
+ok(ids["input"].disabled === true, "input disabled when disconnected (Spec 1.3)");
+ok(ids["input"].placeholder.indexOf("not connected") >= 0, "input placeholder names the disconnected state (Spec 1.3)");
+
+// 21. Spec 1.4: mode selector populates from the live mode list
+state({ connected: true, showWizard: false,
+  modes: [{ id: "architect", label: "Architect" }, { id: "debug", label: "Debug" }],
+  activeMode: "debug" });
+ok(ids["mode-select"].hidden === false, "mode selector visible with modes (Spec 1.4)");
+ok(ids["mode-select"].children.length === 2, "mode selector has one option per mode (Spec 1.4)");
+ok(ids["mode-select"].value === "debug" || (function () {
+  // SelectStub may track selection differently; accept any debug selection
+  var found = false;
+  ids["mode-select"].children.forEach(function (o) { if (o.value === "debug" && o.selected) found = true; });
+  return found;
+})(), "mode selector marks the active mode (Spec 1.4)");
+
+// 22. Spec 2.3 + 4.4: echo pill reads "Echo (demo)", model truncated, echo banner shows
+state({ connected: true, showWizard: false,
+  ready: { binding: { provider: "echo", model: "echo-1" } } });
+ok(ids["provider-pill"].textContent.indexOf("Echo (demo)") === 0, "pill reads 'Echo (demo)', never bare 'Echo' (Spec 2.3)");
+ok(ids["echo-banner"].classList.contains("show"), "echo banner shown for the echo provider (Spec 2.3)");
+ok(ids["echo-banner"].innerHTML.indexOf("local demo") >= 0, "echo banner names the no-op demo truthfully (Spec 2.3)");
+state({ connected: true, showWizard: false,
+  ready: { binding: { provider: "openai", model: "gpt-4-turbo-preview-0125-extra-long" } } });
+ok(ids["provider-pill"].textContent.indexOf("…") >= 0, "pill truncates long model names to 24 chars (Spec 4.4)");
+ok(!ids["echo-banner"].classList.contains("show"), "echo banner hidden for real providers (Spec 2.3)");
+
+// 23. Spec 4.3: bindingChanged re-renders the pill from the authoritative binding
+state({ connected: true, showWizard: false,
+  ready: { binding: { provider: "openai", model: "gpt-4o" } } });
+messageListeners.forEach(function (fn) {
+  fn({ data: { type: "bindingChanged",
+    binding: { provider: "anthropic", model: "claude-4" }, settingsDirty: true } });
+});
+ok(ids["provider-pill"].textContent.indexOf("anthropic") >= 0, "bindingChanged updates the pill (Spec 4.3)");
+ok(ids["provider-pill"].textContent.indexOf("(stale)") >= 0, "bindingChanged marks the pill stale when dirty (Spec 4.4)");
+
+// 24. Spec 1.4: new-mission button posts newMission
+posted = [];
+ids["new-mission-btn"].fire("click", {});
+ok(lastPosted("newMission") !== null, "new-mission button posts 'newMission' (Spec 1.4)");
+
+// 25. Spec 1.4: mode selector change posts invokeModeSelect
+posted = [];
+ids["mode-select"].fire("change", {});
+var modePost = lastPosted("invokeModeSelect");
+ok(modePost !== null, "mode selector change posts 'invokeModeSelect' (Spec 1.4)");
+
+// 26. Spec 2.1 Step 3: prove-it step appears on wizardProveReady
+state({ showWizard: true, provider: "openai", keyMissing: false });
+messageListeners.forEach(function (fn) {
+  fn({ data: { type: "wizardProveReady" } });
+});
+ok(ids["w-provestep"].hidden === false, "prove-it step shown after save & connect (Spec 2.1)");
+
+// 27. Spec 2.1: prove button posts wizardProve
+posted = [];
+ids["w-prove"].fire("click", {});
+ok(lastPosted("wizardProve") !== null, "prove button posts 'wizardProve' (Spec 2.1)");
+ok(ids["w-prove"].disabled === true, "prove button disabled while sending (Spec 2.1)");
+
+// 28. Spec 2.1: wizardProved confirms completion
+messageListeners.forEach(function (fn) {
+  fn({ data: { type: "wizardProved" } });
+});
+ok(ids["w-provenote"].textContent.indexOf("complete") >= 0, "wizardProved confirms setup complete (Spec 2.1)");
+
+// 29. Spec 2.1: wizardProveFailed shows the error and re-enables retry
+messageListeners.forEach(function (fn) {
+  fn({ data: { type: "wizardProveFailed", error: "bad key" } });
+});
+ok(ids["w-prove"].disabled === false, "prove button re-enabled after failure (Spec 2.1)");
+ok(ids["w-error"].hidden === false, "prove failure shows the error inline (Spec 2.1)");
+
+// 30. Spec 2.1: provider blurb is truthful (echo = demo)
+state({ showWizard: false });
+state({ showWizard: true, provider: "echo", keyMissing: false });
+ok(ids["w-blurb"].textContent.indexOf("demo") >= 0, "echo blurb names the demo truthfully (Spec 2.1/2.3)");
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

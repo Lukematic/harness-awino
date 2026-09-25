@@ -299,6 +299,11 @@
         showModelInput();
         setFetchNote("Couldn't fetch models: " + (m.error || "unknown error") + " — type a model id manually.", "warn");
       }
+    } else if (m.type === "bindingChanged") {
+      // Spec 4.3: the live binding changed (connect/reconnect/disconnect/
+      // dirty transition) — refresh the full state so the "current binding"
+      // section always matches the authoritative session.binding.
+      vscode.postMessage({ type: "init" });
     } else if (m.type === "reconnected") {
       $("envResult").textContent = m.ok ? "reconnected" : "reconnect failed — see output channel";
       vscode.postMessage({ type: "init" }); // refresh state

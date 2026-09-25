@@ -258,6 +258,12 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
   const setupBtn = document.getElementById("setup-btn");
   const providerPill = document.getElementById("provider-pill");
   const inputbarEl = document.getElementById("inputbar");
+  // Spec 1.4 header elements (status dot, mode selector, new-mission).
+  const connDot = document.getElementById("conn-dot");
+  const modeSelect = document.getElementById("mode-select");
+  const newMissionBtn = document.getElementById("new-mission-btn");
+  // Spec 2.3 echo demo banner (one line above the input bar).
+  const echoBanner = document.getElementById("echo-banner");
   // 0.4.1: persistent mission header + session-resume block (may be absent
   // in older test shims — guarded).
   const missionHeader = document.getElementById("mission-header");
@@ -281,6 +287,12 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
   const wFetchNote = document.getElementById("w-fetchnote");
   const wDone = document.getElementById("w-done");
   const wSkip = document.getElementById("w-skip");
+  // Spec 2.1 Step 3: Prove-it elements.
+  const wProveStep = document.getElementById("w-provestep");
+  const wProve = document.getElementById("w-prove");
+  const wProveNote = document.getElementById("w-provenote");
+  // Spec 2.1: one-line provider blurb under the chooser (echo truthfulness).
+  const wBlurb = document.getElementById("w-blurb");
   const wError = document.getElementById("w-error");
   let turnInFlight = false;
 
@@ -410,13 +422,23 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     var none = true;
     var label = "No provider";
     var title = "No provider connected — open Models & Providers";
+    var isEcho = false;
+    var stale = m.settingsDirty === true;
     if (m.keyMissing !== true && (m.connected === true || (m.ready && m.ready.binding))) {
       var b = (m.ready && m.ready.binding) || {};
-      var p = m.provider || b.provider;
-      var mo = m.model || b.model;
+      // The live binding is authoritative (Spec 4.1); m.provider is only a
+      // fallback for the key-missing setup surface.
+      var p = b.provider || m.provider;
+      var mo = b.model || m.model;
       if (p) {
         none = false;
-        label = p + " · " + (mo || "?");
+        isEcho = String(p).toLowerCase() === "echo";
+        // Spec 2.3: the pill reads "Echo (demo)", never just "Echo".
+        var pLabel = isEcho ? "Echo (demo)" : p;
+        // Spec 4.4: model truncated to 24 chars with ellipsis.
+        var mLabel = mo ? String(mo) : "?";
+        if (mLabel.length > 24) mLabel = mLabel.slice(0, 23) + "…";
+        label = pLabel + " · " + mLabel + (stale ? " (stale)" : "");
         title = "provider: " + p + " · model: " + (mo || "?") + " — open Models & Providers";
       }
     }
@@ -424,6 +446,23 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     providerPill.title = title;
     if (providerPill.classList && providerPill.classList.toggle) {
       providerPill.classList.toggle("none", none);
+      providerPill.classList.toggle("stale", stale && !none);
+    }
+    // Spec 2.3: one-line echo banner directly above the input bar.
+    if (echoBanner) {
+      if (isEcho && !none) {
+        echoBanner.innerHTML = "Echo is a local demo — replies are canned, no AI is involved. " +
+          "<a id=\"echo-switch\" href=\"#\">Switch to a real provider</a>";
+        echoBanner.classList.add("show");
+        var sw = document.getElementById("echo-switch");
+        if (sw) sw.addEventListener("click", function (e) {
+          if (e && e.preventDefault) e.preventDefault();
+          vscode.postMessage({ type: "models" });
+        });
+      } else {
+        echoBanner.classList.remove("show");
+        echoBanner.innerHTML = "";
+      }
     }
   }
 
@@ -579,6 +618,8 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     }
     if (wFetchRow) wFetchRow.hidden = !(sm ? sm.fetchableProvider(pid) : (pid === "openai" || pid === "ollama"));
     if (wRegionRow) wRegionRow.hidden = (pid !== "bedrock");
+    // Spec 2.1: truthful one-line blurb (echo is a demo, never "AI").
+    if (wBlurb) wBlurb.textContent = (p && p.blurb) || "";
     updateWizardIntel();
   }
 
@@ -646,6 +687,10 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     }
     setWizardError("");
     updateWizardForProvider();
+    // Spec 2.1: the prove-it step starts hidden on every fresh wizard open.
+    if (wProveStep) wProveStep.hidden = true;
+    if (wProveNote) wProveNote.textContent = "";
+    if (wProve) wProve.disabled = false;
   }
 
   function setWizard(show, m) {
@@ -654,12 +699,13 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
       wizardActive = true;
       populateWizard(m);
       wizardEl.hidden = false;
-      if (inputbarEl) inputbarEl.hidden = true;
+      // Spec 1.3: input bar stays in the DOM — only disabled, never hidden.
       setSetupCard(false);
+      refreshInput();
     } else if (!show && wizardActive) {
       wizardActive = false;
       wizardEl.hidden = true;
-      if (inputbarEl) inputbarEl.hidden = false;
+      refreshInput();
     }
   }
 
@@ -1050,9 +1096,32 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
   }
 
   function refreshInput() {
-    sendBtn.disabled = turnInFlight;
-    input.disabled = turnInFlight;
+    // Spec 1.3: the input bar is NEVER hidden — states only disable it or
+    // change the placeholder. Wizard showing → disabled; not connected →
+    // disabled; turn in flight → disabled.
+    var blocked = turnInFlight || wizardActive || !chatConnected;
+    sendBtn.disabled = blocked;
+    input.disabled = blocked;
+    if (wizardActive) {
+      input.placeholder = "Finish setup above to start chatting";
+    } else if (!chatConnected) {
+      input.placeholder = "Awino is not connected — check the status bar";
+    } else {
+      input.placeholder = "Message Awino…";
+    }
   }
+
+  function setConnected(connected) {
+    chatConnected = !!connected;
+    if (connDot) {
+      connDot.classList.toggle("on", chatConnected);
+      connDot.classList.toggle("off", !chatConnected);
+      connDot.title = chatConnected ? "Connected" : "Not connected";
+    }
+    refreshInput();
+  }
+  // Connection state for input gating (Spec 1.3). Set from state messages.
+  var chatConnected = false;
 
   function send() {
     const text = input.value.trim();
@@ -1078,6 +1147,44 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
   // Provider status pill: same destination as the gear — the click target
   // a new user actually finds (Kilo pattern).
   if (providerPill) providerPill.addEventListener("click", openModelsPanel);
+
+  // ---------- Spec 1.4: mode selector + new-mission button ----------
+  function setModeOptions(modes, activeId) {
+    if (!modeSelect) return;
+    if (!modes || !modes.length) {
+      modeSelect.hidden = true;
+      return;
+    }
+    modeSelect.hidden = false;
+    var cur = modeSelect.value;
+    modeSelect.innerHTML = "";
+    modes.forEach(function (md) {
+      var o = document.createElement("option");
+      o.value = md.id;
+      o.textContent = md.label || md.id;
+      if (md.id === activeId) o.selected = true;
+      modeSelect.appendChild(o);
+    });
+    // Set the value explicitly: preserves the user's pending selection if
+    // still valid, otherwise reflects the true active mode. (Real DOM syncs
+    // select.value from the selected option; be explicit for safety.)
+    var target = activeId || "";
+    if (cur) {
+      for (var i = 0; i < modes.length; i++) {
+        if (modes[i].id === cur) { target = cur; break; }
+      }
+    }
+    try { modeSelect.value = target; } catch (e) { /* non-DOM stub */ }
+  }
+  if (modeSelect) modeSelect.addEventListener("change", function () {
+    var id = modeSelect.value;
+    if (id) vscode.postMessage({ type: "invokeModeSelect", mode: id });
+    // Reset to the active mode until the host confirms the switch.
+    // The next state/modesList message re-renders the true active mode.
+  });
+  if (newMissionBtn) newMissionBtn.addEventListener("click", function () {
+    vscode.postMessage({ type: "newMission" });
+  });
 
   // ---------- wizard events ----------
   if (wProvider) wProvider.addEventListener("change", updateWizardForProvider);
@@ -1122,7 +1229,7 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     var sm = setupMeta();
     var provider = wProvider.value;
     var needs = sm ? sm.needsKey(provider)
-      : (provider === "openai" || provider === "anthropic" || provider === "bedrock");
+      : (provider === "openai" || provider === "openai-compatible" || provider === "anthropic" || provider === "bedrock");
     if (needs && wKey && !wKey.value) {
       // Roo-style fail-closed inline validation: no silent no-op.
       setWizardError("Enter an API key for this provider \u2014 or choose echo or ollama for the keyless path.");
@@ -1143,6 +1250,13 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
   if (wSkip) wSkip.addEventListener("click", function () {
     vscode.postMessage({ type: "wizardDismiss" });
   });
+  // Spec 2.1 Step 3: send the fixed prove-it message through the live sidecar.
+  if (wProve) wProve.addEventListener("click", function () {
+    wProve.disabled = true;
+    if (wProveNote) wProveNote.textContent = "Sending…";
+    setWizardError("");
+    vscode.postMessage({ type: "wizardProve" });
+  });
   input.addEventListener("keydown", function (e) {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   });
@@ -1152,6 +1266,24 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     if (!m || typeof m !== "object") return;
     if (m.type === "event" && m.payload) {
       renderEvent(m.payload);
+    } else if (m.type === "wizardProveReady") {
+      // Spec 2.1 Step 3: settings saved and sidecar connected — show the
+      // prove-it step. The earlier steps are done; only the test message
+      // remains.
+      if (wProveStep) wProveStep.hidden = false;
+      if (wProveNote) wProveNote.textContent = "";
+      if (wProve) wProve.disabled = false;
+      setWizardError("");
+    } else if (m.type === "wizardProved") {
+      // The provider answered — onboarding is complete. The host already
+      // marked onboarded and re-pushed state; this just confirms in place.
+      if (wProveNote) wProveNote.textContent = "It answered — setup complete.";
+      if (wProve) wProve.disabled = true;
+    } else if (m.type === "wizardProveFailed") {
+      if (wProveNote) wProveNote.textContent = "";
+      if (wProve) wProve.disabled = false;
+      setWizardError("The test message failed: " + (m.error || "unknown error") +
+        " — check the key, endpoint, and model, then try again.");
     } else if (m.type === "wizardModels") {
       // Model discovery results for the onboarding wizard (host-side fetch).
       if (m.ok && m.models && m.models.length) {
@@ -1163,11 +1295,28 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
         if (wFetchNote) wFetchNote.textContent =
           "Couldn't fetch models: " + (m.error || "unknown error") + " \u2014 type a model id manually.";
       }
+    } else if (m.type === "bindingChanged") {
+      // Spec 4.3: single publish path — binding updates arrive here.
+      // Re-render the pill/dot from the authoritative binding.
+      setProviderPill({
+        connected: chatConnected,
+        ready: { binding: m.binding || {} },
+        settingsDirty: m.settingsDirty === true,
+      });
+      if (connDot && m.binding) {
+        connDot.classList.toggle("on", chatConnected);
+        connDot.classList.toggle("off", !chatConnected);
+      }
+    } else if (m.type === "modesList") {
+      // Spec 1.4: mode selector options from the live sidecar.
+      setModeOptions(m.modes || [], m.activeMode || "");
     } else if (m.type === "state") {
       // Provider pill always reflects the binding; the wizard supersedes the
       // setup card while it owns the first-run setup flow.
+      setConnected(m.connected === true);
       setProviderPill(m);
       setWizard(m.showWizard === true, m);
+      setModeOptions(m.modes || [], m.activeMode || "");
       // 0.4.1: persistent mission header from the live sidecar status.
       setMissionHeader(m.status);
       // Missing API key for the active provider -> setup card at the top of
@@ -1199,6 +1348,9 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
       } else if (!(m.connected === false && m.connectError)) {
         banner.classList.remove("show");
       }
+      // Spec 1.3: scroll to bottom after state rehydration (postChatState on
+      // view resolve) so the reloaded chat shows the latest messages.
+      if (messages) messages.scrollTop = messages.scrollHeight;
     } else if (m.type === "sessionResume") {
       // 0.4.1: read-only session-focus summary from the event log,
       // posted on (re)connect and on demand via the command palette.

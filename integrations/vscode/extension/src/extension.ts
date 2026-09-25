@@ -190,9 +190,40 @@ interface Session {
 let chatPanel: vscode.WebviewView | null = null;
 let modelsPanel: vscode.WebviewPanel | null = null;
 
+// Module-level extension context for event handlers (e.g. the prove-it
+// flow in onSidecarEvent) that don't receive it as a parameter.
+let extContext: vscode.ExtensionContext | null = null;
+
 let session: Session | null = null;
 let statusBar: vscode.StatusBarItem;
 let output: vscode.OutputChannel;
+
+// Spec 1.4: cached mode list for the chat header mode selector. Refreshed
+// on connect and after mode_invoke; cleared on disconnect. Included in
+// postChatState so the dropdown renders without an extra round-trip.
+let cachedModes: Array<{ id: string; label: string }> = [];
+let cachedActiveMode = "";
+
+async function refreshModesCache(): Promise<void> {
+  if (!session?.ready) {
+    cachedModes = [];
+    cachedActiveMode = "";
+    return;
+  }
+  try {
+    const r = (await query("mode_list")) as {
+      modes?: Array<{ id: string; label: string }>;
+      active?: { id?: string };
+    };
+    cachedModes = (r.modes ?? []).map((m) => ({ id: m.id, label: m.label || m.id }));
+    cachedActiveMode = r.active?.id ?? "";
+  } catch {
+    // Best effort — the dropdown just stays hidden.
+    cachedModes = [];
+    cachedActiveMode = "";
+  }
+  postToChat({ type: "modesList", modes: cachedModes, activeMode: cachedActiveMode });
+}
 
 function log(s: string): void {
   output.appendLine(`[awino] ${s}`);
@@ -268,13 +299,38 @@ function refreshViews(): void {
 }
 
 function updateStatusBar(): void {
+  // Spec 1.2: tree views (modes/tasks/contract/...) are gated on
+  // `awino:connected` — only the chat view shows before the sidecar is live.
+  void vscode.commands.executeCommand(
+    "setContext",
+    "awino:connected",
+    !!session?.ready
+  );
   if (!session?.ready) {
     statusBar.text = "$(circle-slash) Awino: not connected";
+    statusBar.backgroundColor = undefined;
+    statusBar.command = "awino.openModels";
     statusBar.tooltip = lastConnectError
       ? `Awino sidecar is not running\n\n${lastConnectError}`
       : "Awino sidecar is not running";
     return;
   }
+  // Spec 3.2/3.4: settings changed since connect — persistent warning
+  // surface, one click reconnects. Shows the OLD active binding (the values
+  // the sidecar is actually running) with a stale marker — never the new
+  // settings values, which aren't live yet (Spec 4.1).
+  if (settingsDirty) {
+    const binding = (session.ready["binding"] ?? {}) as Record<string, unknown>;
+    const provider = String(session.displayProvider ?? binding["provider"] ?? "?");
+    const model = String(binding["model"] ?? "?");
+    statusBar.text = `$(sync) Awino: ${provider} · ${model} (stale — reconnect to apply)`;
+    statusBar.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
+    statusBar.command = "awino.reconnect";
+    statusBar.tooltip = ["Settings changed since last connect — the sidecar still runs:", `provider: ${provider}`, `model: ${model}`, "", "Changed:", ...settingsDiffLines()].join("\n");
+    return;
+  }
+  statusBar.backgroundColor = undefined;
+  statusBar.command = "awino.openModels";
   const binding = (session.ready["binding"] ?? {}) as Record<string, unknown>;
   const mode = (session.lastStatus?.["active_mode"] ?? session.ready["active_mode"] ?? {}) as Record<string, unknown>;
   const provider = String(session.displayProvider ?? binding["provider"] ?? session.ready["provider"] ?? "?");
@@ -301,6 +357,29 @@ function updateStatusBar(): void {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+// Post a message to the Models & Providers panel if it is open.
+function postToModelsPanel(m: Record<string, unknown>): void {
+  if (modelsPanel) {
+    void modelsPanel.webview.postMessage(m);
+  }
+}
+
+// Spec 4.1: the single binding publish path. session.binding (live, from
+// the sidecar) is authoritative — no surface may derive the active
+// provider/model from VS Code settings. Called on connect, reconnect,
+// disconnect, binding events, and dirty-state transitions.
+function publishBinding(): void {
+  const binding = (session?.ready?.["binding"] ?? null) as Record<string, unknown> | null;
+  const stale = settingsDirty && !!session?.ready;
+  const display = binding
+    ? { ...binding, provider: session?.displayProvider ?? binding["provider"] }
+    : null;
+  updateStatusBar(); // reads session.ready.binding + settingsDirty directly
+  postToChat({ type: "bindingChanged", binding: display, settingsDirty: stale });
+  postToModelsPanel({ type: "bindingChanged", binding: display, settingsDirty: stale });
+  refreshViews(); // tree views re-render from the live session
 }
 
 // ------------------------------------------------------------------ chat webview
@@ -354,6 +433,9 @@ function postChatState(extra: Record<string, unknown> = {}): void {
     model: String(binding["model"] ?? (session?.ready as Record<string, unknown> | null)?.["model"] ?? ""),
     showWizard: lastShowWizard,
     bedrockRegions: BEDROCK_REGIONS,
+    modes: cachedModes,
+    activeMode: cachedActiveMode,
+    settingsDirty: settingsDirty,
     ...extra,
   });
 }
@@ -432,9 +514,12 @@ async function handleChatMessage(
     await openExternal(m.url);
     return;
   }
-  // Wizard dismissal: record onboarding so the wizard runs once, then
-  // re-render the normal chat surface.
+  // Wizard dismissal via "Skip for now": Spec 2.2 — selects Echo (the safe
+  // local demo) and completes onboarding. The provider is written explicitly
+  // so a skipped onboarding can never leave a half-configured provider.
   if (m.type === "wizardDismiss") {
+    const cfg = vscode.workspace.getConfiguration("awino");
+    await cfg.update("provider", "echo", vscode.ConfigurationTarget.Workspace);
     await context.globalState.update("awino.onboarded", true);
     lastShowWizard = computeShowWizard(context);
     postChatState();
@@ -457,6 +542,17 @@ async function handleChatMessage(
     await saveWizardSettings(context, m);
     return;
   }
+  // Spec 2.1 Step 3 ("Prove it"): send the fixed test message through the
+  // live sidecar. The next turn_result/error settles awaitingProveIt.
+  if (m.type === "wizardProve") {
+    if (!session) {
+      postToChat({ type: "wizardProveFailed", error: "not connected" });
+      return;
+    }
+    awaitingProveIt = true;
+    session.client.userMessage("Hello — reply in one short sentence.");
+    return;
+  }
   if (!session) {
     return;
   }
@@ -466,6 +562,13 @@ async function handleChatMessage(
       break;
     case "stop":
       session.client.cancel();
+      break;
+    // Spec 1.4: chat header buttons.
+    case "newMission":
+      void vscode.commands.executeCommand("awino.newMission");
+      break;
+    case "invokeModeSelect":
+      void invokeModeFlow(typeof m.mode === "string" ? m.mode : undefined);
       break;
     case "approve":
       log(`webview approve: id=${String(m.id)} decision=${m.decision}`);
@@ -485,7 +588,13 @@ async function saveWizardSettings(
   m: { type: string; [k: string]: unknown }
 ): Promise<void> {
   const cfg = vscode.workspace.getConfiguration("awino");
-  const provider = String(m.provider ?? "echo");
+  let provider = String(m.provider ?? "echo");
+  // Spec 2.1: "OpenAI-compatible (custom endpoint)" is a wizard-level
+  // distinction — the sidecar speaks the OpenAI chat API for both, so it
+  // maps to the "openai" backend with the user-supplied endpoint.
+  if (provider === "openai-compatible") {
+    provider = "openai";
+  }
   const key = String(m.key ?? "");
   const keyed = provider === "openai" || provider === "anthropic" || provider === "bedrock";
   if (keyed && key) {
@@ -500,18 +609,32 @@ async function saveWizardSettings(
     }
   }
   await cfg.update("provider", provider, vscode.ConfigurationTarget.Workspace);
-  await cfg.update("endpoint", String(m.endpoint ?? ""), vscode.ConfigurationTarget.Workspace);
+  // Spec 2.1: OpenAI gets its default endpoint unless the wizard supplied one.
+  let endpoint = String(m.endpoint ?? "");
+  if (provider === "openai" && !endpoint && String(m.provider ?? "") === "openai") {
+    endpoint = "https://api.openai.com/v1";
+  }
+  await cfg.update("endpoint", endpoint, vscode.ConfigurationTarget.Workspace);
   await cfg.update("model", String(m.model ?? ""), vscode.ConfigurationTarget.Workspace);
   if (provider === "bedrock" && typeof m.bedrockRegion === "string" && m.bedrockRegion) {
     await cfg.update("bedrockRegion", m.bedrockRegion, vscode.ConfigurationTarget.Workspace);
   }
-  await context.globalState.update("awino.onboarded", true);
+  // Spec 2.1 Step 3 ("Prove it"): do NOT mark onboarded yet. The wizard
+  // advances to the prove-it step; onboarding completes only after a
+  // successful test-message reply (see wizardProve/awaitingProveIt).
+  // Echo is the exception: it has no backend to prove, so it completes now.
+  if (provider === "echo") {
+    await context.globalState.update("awino.onboarded", true);
+  }
   vscode.window.showInformationMessage("Awino: provider saved — reconnecting sidecar…");
   await connect(context);
   // connect() re-pushes chat state on every path; this covers its no-folder
   // early return so the wizard always hides after Done.
   lastShowWizard = computeShowWizard(context);
   postChatState();
+  if (provider !== "echo" && session?.ready) {
+    postToChat({ type: "wizardProveReady" });
+  }
 }
 
 // ------------------------------------------------------- event routing
@@ -522,15 +645,39 @@ async function onSidecarEvent(ev: SidecarEvent): Promise<void> {
       if (session) {
         session.ready = ev;
       }
+      // Spec 3: snapshot sidecar-affecting settings at connect. A later
+      // divergence sets the dirty flag ("reconnect to apply").
+      lastConnectSettings = settingsSnapshot();
+      lastConnectSettingsHash = JSON.stringify(lastConnectSettings);
+      settingsDirty = false;
+      settingsDirtyNotified = false;
+      void vscode.commands.executeCommand("setContext", "awino:settingsDirty", false);
       updateStatusBar();
+      publishBinding(); // Spec 4.2: all surfaces from the new live binding
       postToChat({ type: "event", payload: ev });
       await refreshStatus();
       postChatState(); // after refreshStatus: the header needs fresh status
       await postSessionResume(); // session-focus summary on (re)connect
       refreshViews(); // populate tree views on connect, not just after the first turn
+      void refreshModesCache(); // Spec 1.4: header mode selector options
       break;
     case "turn_result": {
       const result = (ev["result"] ?? {}) as Record<string, unknown>;
+      // Spec 2.1 Step 3: a turn result (without an error) proves the
+      // provider works — complete onboarding.
+      if (awaitingProveIt) {
+        awaitingProveIt = false;
+        if (!result["error"]) {
+          if (extContext) {
+            await extContext.globalState.update("awino.onboarded", true);
+          }
+          lastShowWizard = false; // onboarded → wizard never shows again
+          postToChat({ type: "wizardProved" });
+          postChatState();
+        } else {
+          postToChat({ type: "wizardProveFailed", error: String(result["error"]) });
+        }
+      }
       if (session) {
         // Merge into lastStatus, never replace: a partial turn_result must
         // not wipe fields (mission, phase) that only refreshStatus()
@@ -571,6 +718,11 @@ async function onSidecarEvent(ev: SidecarEvent): Promise<void> {
       break;
     case "error":
       log(`sidecar error: ${String(ev.message)}`);
+      // Spec 2.1 Step 3: a turn error fails the prove-it step.
+      if (awaitingProveIt) {
+        awaitingProveIt = false;
+        postToChat({ type: "wizardProveFailed", error: String(ev.message ?? "unknown error") });
+      }
       if (ev.fatal === true) {
         // Fatal: the sidecar process is dead (spawn failure or unexpected
         // exit). It must not leave the UI falsely "connected": reject the
@@ -582,8 +734,7 @@ async function onSidecarEvent(ev: SidecarEvent): Promise<void> {
         });
         waiters = [];
         session = null;
-        updateStatusBar();
-        refreshViews();
+        publishBinding(); // Spec 4.2: disconnected binding to all surfaces
         postChatState();
         postToChat({ type: "event", payload: ev });
         void vscode.window
@@ -743,6 +894,99 @@ let lastKeyMissing: { missing: boolean; provider: string } | null = null;
 // Computed in connect() next to lastKeyMissing; the chat webview shows the
 // guided flow instead of only the setup card while this is true.
 let lastShowWizard = false;
+
+// Spec 2.1 Step 3 ("Prove it"): after the wizard saves settings and the
+// sidecar connects, onboarding waits for a successful test-message reply
+// before marking onboarded. While true, the next turn_result/error settles it.
+let awaitingProveIt = false;
+
+// Spec 3: "Reconnect to apply" — hash of sidecar-affecting settings at the
+// last successful connect. When the live config diverges, the status bar
+// shows a warning and a one-shot notification offers one-click reconnect.
+let settingsDirty = false;
+let lastConnectSettingsHash = "";
+let lastConnectSettings: Record<string, unknown> = {};
+let settingsDirtyNotified = false;
+let settingsDebounce: ReturnType<typeof setTimeout> | null = null;
+
+// Sidecar-affecting settings (Spec 3.1). awino.keyLabels is cosmetic-only
+// and explicitly excluded — it refreshes the Models panel, no reconnect.
+const SIDECAR_SETTINGS = [
+  "awino.provider",
+  "awino.model",
+  "awino.endpoint",
+  "awino.timeout",
+  "awino.mcpServers",
+  "awino.bedrockRegion",
+  "awino.pythonPath",
+] as const;
+
+function settingsSnapshot(): Record<string, unknown> {
+  const cfg = vscode.workspace.getConfiguration();
+  const snap: Record<string, unknown> = {};
+  for (const key of SIDECAR_SETTINGS) {
+    snap[key] = cfg.get<unknown>(key, undefined);
+  }
+  return snap;
+}
+
+function settingsSnapshotHash(): string {
+  return JSON.stringify(settingsSnapshot());
+}
+
+// Spec 3.1: debounced dirty check. Called 1.5s after the last awino.*
+// change; compares the live settings hash to the connect-time snapshot.
+function checkSettingsDirty(): void {
+  if (!session?.ready) {
+    return; // not connected — nothing for settings to be stale against
+  }
+  const snap = settingsSnapshot();
+  const hash = JSON.stringify(snap);
+  if (hash === lastConnectSettingsHash) {
+    // Reverted to connect-time values — clear the flag.
+    if (settingsDirty) {
+      settingsDirty = false;
+      settingsDirtyNotified = false;
+      void vscode.commands.executeCommand("setContext", "awino:settingsDirty", false);
+      publishBinding();
+    }
+    return;
+  }
+  if (!settingsDirty) {
+    settingsDirty = true;
+    void vscode.commands.executeCommand("setContext", "awino:settingsDirty", true);
+    log("awino.* settings changed — reconnect to apply");
+    publishBinding();
+  }
+  if (!settingsDirtyNotified) {
+    settingsDirtyNotified = true;
+    void vscode.window
+      .showInformationMessage(
+        "Awino settings changed. Reconnect the sidecar to apply them.",
+        "Reconnect now",
+        "Later"
+      )
+      .then((choice) => {
+        if (choice === "Reconnect now") {
+          void vscode.commands.executeCommand("awino.reconnect");
+        }
+      });
+  }
+}
+
+// Spec 3.2: human-readable list of changed keys for the status bar tooltip.
+function settingsDiffLines(): string[] {
+  const cur = settingsSnapshot();
+  const lines: string[] = [];
+  for (const key of SIDECAR_SETTINGS) {
+    const a = JSON.stringify(lastConnectSettings[key]);
+    const b = JSON.stringify(cur[key]);
+    if (a !== b) {
+      lines.push(`• ${key}: ${a ?? "∅"} → ${b ?? "∅"}`);
+    }
+  }
+  return lines;
+}
 
 function computeShowWizard(context: vscode.ExtensionContext): boolean {
   if (context.globalState.get<boolean>("awino.onboarded", false)) {
@@ -968,6 +1212,42 @@ async function disconnect(): Promise<void> {
     }
     session = null;
   }
+  // Spec 1.5: awino:connected must go false on every disconnect path.
+  updateStatusBar();
+}
+
+// Spec 3.3: explicit reconnect — disconnect, then connect with the new
+// settings. Chat history is preserved (the webview is never torn down).
+// On success the ready handler snapshots the new settings hash and clears
+// the dirty flag; on failure the dirty state is kept and recovery offered.
+async function reconnect(context: vscode.ExtensionContext): Promise<void> {
+  await disconnect();
+  publishBinding(); // all surfaces to the disconnected state
+  postChatState();
+  await connect(context).catch((e) => log(`reconnect: ${e instanceof Error ? e.message : String(e)}`));
+  // session.ready arrives via the ready event, asynchronously after
+  // connect() resolves — wait briefly for it.
+  const t0 = Date.now();
+  while (!session?.ready && Date.now() - t0 < 15000) {
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  if (session?.ready) {
+    const binding = (session.ready["binding"] ?? {}) as Record<string, unknown>;
+    const p = String(session.displayProvider ?? binding["provider"] ?? "?");
+    const m = String(binding["model"] ?? "?");
+    vscode.window.showInformationMessage(`Awino reconnected: ${p} / ${m}`);
+  } else {
+    const choice = await vscode.window.showErrorMessage(
+      `Awino reconnect failed: ${lastConnectError ?? "sidecar did not become ready"}`,
+      "Retry",
+      "Open Models & Providers"
+    );
+    if (choice === "Retry") {
+      void reconnect(context);
+    } else if (choice === "Open Models & Providers") {
+      void vscode.commands.executeCommand("awino.openModels");
+    }
+  }
 }
 
 // -------------------------------------------------------------- commands
@@ -979,11 +1259,71 @@ function mustSession(): Session {
   return session;
 }
 
+// Spec 1.4: the chat header mode selector posts a preset mode id —
+// Module-level so handleChatMessage (chat webview) can call it.
+// same flow, skips the mode quickpick, still asks scope.
+async function invokeModeFlow(presetModeId?: string): Promise<void> {
+  mustSession();
+  const modes = (await query("mode_list")) as {
+    modes?: Array<{ id: string; label: string; custom: boolean }>;
+    active?: { id?: string };
+  };
+  const list = modes.modes ?? [];
+  let modeId = presetModeId;
+  if (modeId && !list.some((m) => m.id === modeId)) {
+    vscode.window.showWarningMessage(`Awino: unknown mode "${modeId}"`);
+    return;
+  }
+  if (!modeId) {
+    const items = list.map((m) => ({
+      label: `${m.id === modes.active?.id ? "● " : ""}${m.label}`,
+      description: m.id,
+      id: m.id,
+    }));
+    const pick = await vscode.window.showQuickPick(items, { placeHolder: "Invoke mode (overlay — stage default stays underneath)" });
+    if (!pick) {
+      return;
+    }
+    modeId = pick.id;
+  }
+  const scope = await vscode.window.showQuickPick(["mission", "project", "turns"], { placeHolder: "Overlay scope" });
+  if (!scope) {
+    return;
+  }
+  let turns: number | undefined;
+  if (scope === "turns") {
+    const n = await vscode.window.showInputBox({ prompt: "Number of turns", value: "5" });
+    turns = Number(n);
+    if (!Number.isInteger(turns) || turns < 1) {
+      vscode.window.showErrorMessage("Awino: turns must be a positive integer");
+      return;
+    }
+  }
+  const r = (await query("mode_invoke", { mode: modeId, scope, ...(turns ? { turns } : {}) })) as Record<string, unknown>;
+  if (r["status"] === "refused") {
+    vscode.window.showWarningMessage(`Awino: mode refused — ${String(r["code"] ?? "")}`);
+  } else {
+    vscode.window.showInformationMessage(`Awino: mode invoked — ${modeId} (${scope})`);
+  }
+  refreshViews();
+  // The header dropdown needs the new active mode.
+  void refreshModesCache();
+}
+
 function registerCommands(context: vscode.ExtensionContext): void {
   const reg = (id: string, fn: (...args: unknown[]) => unknown) =>
     context.subscriptions.push(vscode.commands.registerCommand(id, (...a) => fn(...a)));
 
-  reg("awino.reconnect", () => connect(context));
+  reg("awino.reconnect", () => reconnect(context));
+  // Spec 2.4: Reset Onboarding — clears the onboarded flag so the wizard
+  // runs again on the next chat state push. Does not touch provider keys
+  // (SecretStorage) or settings; it only re-opens the first-run flow.
+  reg("awino.resetOnboarding", async () => {
+    await context.globalState.update("awino.onboarded", false);
+    lastShowWizard = true;
+    postChatState();
+    vscode.window.showInformationMessage("Awino: onboarding reset — the setup wizard is showing in the chat.");
+  });
   reg("awino.refreshViews", () => refreshViews());
   reg("awino.sessionResume", async () => {
     mustSession();
@@ -1222,42 +1562,8 @@ function registerCommands(context: vscode.ExtensionContext): void {
     vscode.window.showInformationMessage(`Awino: key cleared from secret storage.`);
   });
 
-  reg("awino.invokeMode", async () => {
-    mustSession();
-    const modes = (await query("mode_list")) as {
-      modes?: Array<{ id: string; label: string; custom: boolean }>;
-      active?: { id?: string };
-    };
-    const items = (modes.modes ?? []).map((m) => ({
-      label: `${m.id === modes.active?.id ? "● " : ""}${m.label}`,
-      description: m.id,
-      id: m.id,
-    }));
-    const pick = await vscode.window.showQuickPick(items, { placeHolder: "Invoke mode (overlay — stage default stays underneath)" });
-    if (!pick) {
-      return;
-    }
-    const scope = await vscode.window.showQuickPick(["mission", "project", "turns"], { placeHolder: "Overlay scope" });
-    if (!scope) {
-      return;
-    }
-    let turns: number | undefined;
-    if (scope === "turns") {
-      const n = await vscode.window.showInputBox({ prompt: "Number of turns", value: "5" });
-      turns = Number(n);
-      if (!Number.isInteger(turns) || turns < 1) {
-        vscode.window.showErrorMessage("Awino: turns must be a positive integer");
-        return;
-      }
-    }
-    const r = (await query("mode_invoke", { mode: pick.id, scope, ...(turns ? { turns } : {}) })) as Record<string, unknown>;
-    if (r["status"] === "refused") {
-      vscode.window.showWarningMessage(`Awino: mode refused — ${String(r["code"] ?? "")}`);
-    } else {
-      vscode.window.showInformationMessage(`Awino: mode invoked — ${pick.id} (${scope})`);
-    }
-    refreshViews();
-  });
+  reg("awino.invokeMode", () => invokeModeFlow());
+
 
   reg("awino.dismissMode", async () => {
     mustSession();
@@ -1845,6 +2151,7 @@ function openModelsPanel(context: vscode.ExtensionContext): void {
 // ---------------------------------------------------------------- activate
 
 export function activate(context: vscode.ExtensionContext): void {
+  extContext = context;
   output = vscode.window.createOutputChannel("Awino");
   context.subscriptions.push(output);
   log("activating");
@@ -1895,9 +2202,17 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration("awino")) {
-        log("awino.* settings changed — reconnect to apply");
+      if (!e.affectsConfiguration("awino")) {
+        return;
       }
+      // Spec 3.1: debounce 1.5s so typing in settings.json doesn't spam.
+      if (settingsDebounce) {
+        clearTimeout(settingsDebounce);
+      }
+      settingsDebounce = setTimeout(() => {
+        settingsDebounce = null;
+        checkSettingsDirty();
+      }, 1500);
     })
   );
 }
