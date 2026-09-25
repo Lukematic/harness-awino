@@ -36,7 +36,7 @@ model acts. Stances never widen it.
 | triage | vague agent complaint ("you're not working", "misbehaving") | plan | read-only; diagnosis, not repair | named failure mode; falsifier stated |
 | verifier | Track G — independent verification of builder work | verify | **no tool calls at all** (read-only judge) | per-criterion verdict shape (criterion / needed_evidence / accomplished / proof_link); never grades own builder work |
 
-## Skills (49) — prototype `contract.py::SKILLS` (harness-injected bodies)
+## Skills (50) — prototype `contract.py::SKILLS` (harness-injected bodies)
 
 Pinned by sha256 in `prototype/skills/manifest.json` and verified at load by
 `prototype/skills.py::SkillStore`. The model never fetches them; the router
@@ -68,6 +68,12 @@ critical-thinking, completion-summary, dora-metrics.
 (loop-owner counterpart of the old `awino-bootstrap` repo skill).
 
 **Contract helper (1):** verify.
+
+**Memory (1):** durable-memory — MemPalace cherry-pick: local-first
+JSONL store (`.awino/memory.jsonl`), chunked entries, content-hash dedup,
+offline keyword search. Routed on DEFINE + the new-task path (recall before
+planning); the body teaches persist-at-closure. No compression (measured
+2.7x with fidelity loss, not 30x), no daemon, no vector search.
 
 ## Intent table — prototype `stances.py::INTENT_TABLE` (first match wins)
 
@@ -115,7 +121,7 @@ model this rebuild replaces. Mapping to the loop-owner:
 | awino-rpi | — | gap |
 | awino-delegate | `Loop.fanout` — parallel workers, atomic overlap/budget preflight, fail-closed synthesis barrier | **done (merged)** |
 | awino-ralph | the harness loop itself | superseded |
-| awino-memory | — | gap |
+| awino-memory | durable-memory skill + `prototype/memory_store.py` (MemPalace cherry-pick: local-first JSONL, chunking, content-hash dedup) | **done (2026-09-25)** |
 | awino-visualize | — | gap |
 | awino-reproducibility | — | gap |
 | awino-self-update | — | gap |
@@ -134,9 +140,13 @@ model this rebuild replaces. Mapping to the loop-owner:
 3. **rpi** — multi-file change workflow still has no loop-owner form.
    (Delegate is done: the fan-out primitive merged — `Loop.fanout` with
    atomic overlap/budget preflight and a fail-closed synthesis barrier.)
-4. **memory** — no durable-memory skill in the harness; currently handled
-   outside the loop. (A MemPalace head-to-head evaluation is running to
-   decide: adopt wholesale, cherry-pick, or pass.)
+4. **~~memory~~ resolved 2026-09-25** — MemPalace head-to-head verdict:
+   cherry-pick, not wholesale adoption. `prototype/memory_store.py`
+   implements the three winners (local-first JSONL indexing, word-boundary
+   chunking with byte-identical reassembly, content-hash dedup) as
+   store/recall/search, and the `durable-memory` skill (routed on DEFINE and
+   the new-task path) teaches recall-before-planning and persist-at-closure.
+   Compression deliberately not built.
 
 ## Standards (merged)
 

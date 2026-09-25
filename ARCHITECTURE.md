@@ -72,7 +72,7 @@ Named break reasons (`MODE_UNKNOWN`, `NO_PLAN`, `CONTRACT_STALE`,
 
 - **Modes (5)** are permission profiles enforced at the tool boundary: observe, plan, build, verify, ship. The permission gate computes the offered tool set from the mode alone, before the model acts. Stances never widen it.
 - **Stances (9)** are reasoning procedures with rubrics: steel-man, feynman, planning-grill, first-principles, premortem, devil's-advocate, advisor, triage, verifier. If it needs no rubric, it's a skill, not a stance.
-- **Skills (49)** are injected knowledge — full bodies, never fetched by the model. SHA-256 pinned in `skills/manifest.json`, verified at load (fail-closed). Families: core loop, rigor coach, osmani port, agent personas, references.
+- **Skills (50)** are injected knowledge — full bodies, never fetched by the model. SHA-256 pinned in `skills/manifest.json`, verified at load (fail-closed). Families: core loop, rigor coach, osmani port, agent personas, references, durable-memory.
 
 Full inventory: `CAPABILITY_REGISTRY.md`.
 
