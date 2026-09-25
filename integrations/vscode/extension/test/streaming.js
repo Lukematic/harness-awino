@@ -63,7 +63,7 @@ function boot(bodyClasses, initialState) {
   ids = {};
   ["messages", "input", "send", "stop", "statusline", "banner", "jump-latest",
    "theme-toggle", "theme-name", "models-btn", "setup-card", "setup-sub",
-   "setup-btn"].forEach(function (id) {
+   "setup-btn", "provider-pill"].forEach(function (id) {
     const e = new StubEl("div");
     e.id = id;
     if (id === "jump-latest") e.hidden = true; // chat.html ships it hidden
@@ -244,6 +244,14 @@ ok(subtreeHtml(legacy).indexOf("<table") >= 0, "legacy tool table fallback prese
 const postedBeforeStop = posted.length;
 ids["stop"].fire("click", {});
 ok(posted.length === postedBeforeStop + 1 && posted[posted.length - 1].type === "stop", "stop button posts {type:stop}");
+
+// 12b. header model picker: provider pill posts pickModel (not models);
+// the gear keeps posting models (Models & Providers panel).
+const postedBeforePill = posted.length;
+ids["provider-pill"].fire("click");
+ok(posted.length === postedBeforePill + 1 && posted[posted.length - 1].type === "pickModel", "provider pill posts {type:pickModel} (header model picker)");
+ids["models-btn"].fire("click");
+ok(posted.length === postedBeforePill + 2 && posted[posted.length - 1].type === "models", "gear button still posts {type:models}");
 
 // 13. theme variants (refinement 2026-09-23): vibranium default, toggle, savanna, persistence
 ok(bodyEl.classList.contains("awino-vibranium"), "default theme is vibranium when no vscode-light class");

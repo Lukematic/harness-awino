@@ -535,6 +535,78 @@ async function runModelDiscovery(
   }
 }
 
+interface ModelPickItem extends vscode.QuickPickItem {
+  pickKind: "model" | "manual" | "panel";
+  modelId?: string;
+}
+
+// Header model picker: the chat-header provider pill switches models
+// without a Settings trip. Uses the same endpoint discovery as the Models
+// panel; when discovery fails the panel still offers the current model,
+// manual entry, and a shortcut to Models & Providers. Writing awino.model
+// marks settings dirty and the Spec 3.1 flow offers the reconnect.
+async function pickModelFromHeader(context: vscode.ExtensionContext): Promise<void> {
+  const cfg = vscode.workspace.getConfiguration("awino");
+  const provider = String(cfg.get<string>("provider", "") || "");
+  const endpoint = String(cfg.get<string>("endpoint", "") || "");
+  const current = String(cfg.get<string>("model", "") || "");
+  if (!provider || provider.toLowerCase() === "echo") {
+    // No real provider — the Models panel is the right destination.
+    await vscode.commands.executeCommand("awino.openModels");
+    return;
+  }
+  const keyName =
+    provider === "anthropic" ? KEY_ANTHROPIC : provider === "bedrock" ? KEY_BEDROCK : KEY_OPENAI;
+  const key = (await context.secrets.get(keyName)) ?? undefined;
+  const found = await runModelDiscovery(context, provider, endpoint, key);
+  const items: ModelPickItem[] = [];
+  const seen = new Set<string>();
+  const pushModel = (id: string) => {
+    const trimmed = id.trim();
+    if (!trimmed || seen.has(trimmed)) return;
+    seen.add(trimmed);
+    items.push({
+      pickKind: "model",
+      modelId: trimmed,
+      label: (trimmed === current ? "$(check) " : "") + trimmed,
+      description: trimmed === current ? "current" : undefined,
+    });
+  };
+  if (current) pushModel(current);
+  if (found.ok) found.models.forEach(pushModel);
+  items.push({ pickKind: "manual", label: "$(pencil) Enter model ID manually…", alwaysShow: true });
+  items.push({ pickKind: "panel", label: "$(gear) Open Models & Providers…", alwaysShow: true });
+  const placeholder = found.ok
+    ? `Model for ${provider} — ${found.models.length} found${current ? `, current: ${current}` : ""}`
+    : `Model for ${provider}${found.error ? ` — discovery: ${found.error}` : ""}`;
+  const picked = await vscode.window.showQuickPick(items, {
+    title: "Awino model",
+    placeHolder: placeholder,
+    ignoreFocusOut: true,
+  });
+  if (!picked) return;
+  if (picked.pickKind === "panel") {
+    await vscode.commands.executeCommand("awino.openModels");
+    return;
+  }
+  let next: string | undefined;
+  if (picked.pickKind === "manual") {
+    next = await vscode.window.showInputBox({
+      title: "Awino model",
+      prompt: `Model ID for provider "${provider}"`,
+      value: current,
+      ignoreFocusOut: true,
+    });
+    if (!next) return;
+    next = next.trim();
+    if (!next) return;
+  } else {
+    next = picked.modelId;
+  }
+  if (!next || next === current) return;
+  await cfg.update("model", next, vscode.ConfigurationTarget.Workspace);
+}
+
 class ChatViewProvider implements vscode.WebviewViewProvider {
   constructor(private ctx: vscode.ExtensionContext) {}
 
@@ -592,6 +664,14 @@ async function handleChatMessage(
   // the escape hatch when there is no model connected (e.g. missing API key).
   if (m.type === "models") {
     await vscode.commands.executeCommand("awino.openModels");
+    return;
+  }
+  // "pickModel" is the chat-header model picker: switch models directly
+  // from the provider pill, without opening Settings or the Models panel.
+  // Changing awino.model marks settings dirty; the existing Spec 3.1 flow
+  // then offers the reconnect.
+  if (m.type === "pickModel") {
+    await pickModelFromHeader(context);
     return;
   }
   // "openExternal" opens allowlisted provider pages (key creation, docs) and

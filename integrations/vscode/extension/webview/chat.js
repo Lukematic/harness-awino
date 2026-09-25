@@ -422,12 +422,12 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
 
   // Provider status pill in the input area (Kilo's "No providers" pattern):
   // the binding state where the user types — "No provider" or
-  // "provider · model". Clicking opens Models & Providers.
+  // "provider · model". Clicking opens the header model picker.
   function setProviderPill(m) {
     if (!providerPill) return;
     var none = true;
     var label = "No provider";
-    var title = "No provider connected — open Models & Providers";
+    var title = "No provider connected — click to set up";
     var isEcho = false;
     var stale = m.settingsDirty === true;
     if (m.keyMissing !== true && (m.connected === true || (m.ready && m.ready.binding))) {
@@ -445,7 +445,7 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
         var mLabel = mo ? String(mo) : "?";
         if (mLabel.length > 24) mLabel = mLabel.slice(0, 23) + "…";
         label = pLabel + " · " + mLabel + (stale ? " (stale)" : "");
-        title = "provider: " + p + " · model: " + (mo || "?") + " — open Models & Providers";
+        title = "provider: " + p + " · model: " + (mo || "?") + " — click to switch model";
       }
     }
     providerPill.textContent = label;
@@ -1196,9 +1196,10 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
   const openModelsPanel = function () { vscode.postMessage({ type: "models" }); };
   if (modelsBtn) modelsBtn.addEventListener("click", openModelsPanel);
   if (setupBtn) setupBtn.addEventListener("click", openModelsPanel);
-  // Provider status pill: same destination as the gear — the click target
-  // a new user actually finds (Kilo pattern).
-  if (providerPill) providerPill.addEventListener("click", openModelsPanel);
+  // Provider status pill: the header model picker — clicking switches
+  // models directly (no Settings trip). The gear keeps opening
+  // Models & Providers (Kilo pattern).
+  if (providerPill) providerPill.addEventListener("click", function () { vscode.postMessage({ type: "pickModel" }); });
 
   // ---------- Spec 1.4: mode selector + new-mission button ----------
   function setModeOptions(modes, activeId) {
