@@ -43,6 +43,7 @@ from contract import MODES, compile_contract as _real_compile_contract
 from contract import parse_criteria
 from judges import build_judge_panel
 from loop import Loop
+from secret_redaction import redact, redact_text
 from skills import SkillIntegrityError
 from synthesis import (SynthesisRefused, admit_skill, open_registry,
                        run_checks, screen_learning, _parse_checks)
@@ -1123,7 +1124,12 @@ _FOLDER_READMES = {
 
 
 def _emit(obj: dict) -> None:
-    sys.stdout.write(json.dumps(obj, default=str) + "\n")
+    # Log/output boundary: stdout is the sidecar's protocol stream and the
+    # extension host logs it. High-confidence secrets are redacted here so
+    # they never persist in cleartext in host logs. Key material is never
+    # in these payloads anyway (resolved server-side via _lookup_key_material),
+    # so redaction cannot break provider auth.
+    sys.stdout.write(json.dumps(redact(obj), default=str) + "\n")
     sys.stdout.flush()
 
 
@@ -1131,6 +1137,27 @@ def _err(message: str) -> None:
     # Protocol/stream errors are non-fatal: the process is alive, only the
     # command failed. A dead process is reported by the client (fatal: true).
     _emit({"event": "error", "message": message, "fatal": False})
+
+
+class _RedactingStderr:
+    """Write-through stderr wrapper: high-confidence secrets are redacted
+    from crash tracebacks and diagnostic prints, which the extension host
+    captures into its logs. Non-secret text passes through byte-identical;
+    all other attributes delegate to the wrapped stream."""
+
+    def __init__(self, wrapped):
+        self._wrapped = wrapped
+
+    def write(self, s):
+        return self._wrapped.write(
+            redact_text(s) if isinstance(s, str) else s)
+
+    def writelines(self, lines):
+        for line in lines:
+            self.write(line)
+
+    def __getattr__(self, name):
+        return getattr(self._wrapped, name)
 
 
 _DIFF_MAX_LINES = 200
@@ -3482,6 +3509,9 @@ def main() -> None:
     # and skips creation (returns a warning instead of hanging for 120s on
     # `python -m venv`, whose ensurepip stalls on Windows).
     os.environ["AWINO_SIDECAR"] = "1"
+    # stderr (tracebacks, diagnostics) is captured into host logs: redact
+    # high-confidence secrets at this boundary too.
+    sys.stderr = _RedactingStderr(sys.stderr)
     Sidecar().run()
 
 

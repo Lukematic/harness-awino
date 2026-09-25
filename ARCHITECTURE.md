@@ -99,7 +99,9 @@ Conformance ladder: Context → Interactive → Autonomous-local → Hosted. See
 
 - Backends: mock (tests), live local model, provider APIs. Provider keys are user-supplied; the harness never configures them unasked.
 - Only provider-exposed thinking is displayed; hidden reasoning is never fabricated.
-- No general prompt/source-file PII scrubber. Ollama offers zero-cloud-egress for the local path.
+- High-confidence secrets ARE redacted before persistence: `prototype/secret_redaction.py` scrubs `AKIA[0-9A-Z]{16}` AWS keys, `sk-`/`sk-or-v1-`/`sk-ant-` API keys, `ghp_`/`gho_`/`github_pat_` GitHub tokens, `Bearer` header tokens, `xoxb-`/`xoxp-` Slack tokens, and high-entropy `api_key`/`secret`/`token`/`password` assignments — at the journaling boundary (`ProjectState.record()` covers `events.jsonl`, in-memory events, and the `.awino/journal/` exports; `persist_snapshot()` covers `snapshot.json`) and on the sidecar's log output path (`_emit()` stdout and the stderr wrapper). Redacted values keep a short tail (e.g. `sk-or-v1-...4f2a`) so debugging stays possible. Deliberately conservative: only known prefixes/shapes are touched; ordinary prose is never mangled.
+- What remains honestly out of scope: general PII scrubbing of arbitrary prompt/source-file content (names, emails, addresses in free text). That is an arms race, not attempted — the redactor targets secret-shaped tokens only.
+- Ollama offers zero-cloud-egress for the local path.
 - Workspace cwd is not OS-level isolation; there is no dangerous-command blacklist — approved shell commands may address external/absolute resources.
 - Full-file `write_file` remains a token-heavy operation with no patch tool.
 

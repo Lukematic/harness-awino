@@ -16,6 +16,8 @@ import time
 import uuid
 from pathlib import Path
 
+from secret_redaction import redact, redact_text
+
 SNAPSHOT_VERSION = 1
 
 
@@ -348,8 +350,14 @@ class ProjectState:
 
     # ---- mutation -----------------------------------------------------------
     def record(self, etype: str, data: dict | None = None) -> dict:
+        # Journaling boundary: high-confidence secrets are redacted BEFORE
+        # persistence. The redacted copy is what is written to events.jsonl
+        # AND kept in memory, so every downstream consumer (journal export,
+        # compaction, turn history) only ever sees the redacted form.
+        # redact() returns a new structure; the caller's dict is untouched.
+        redacted_data = redact(data or {})
         ev = {"seq": len(self.events), "id": _uid(), "ts": _now(),
-              "type": etype, "data": data or {}}
+              "type": etype, "data": redacted_data}
         line = (json.dumps(ev) + "\n").encode()
         with open(self.events_path, "ab") as f:
             f.write(line)
@@ -361,7 +369,10 @@ class ProjectState:
 
     def persist_snapshot(self) -> None:
         tmp = self.snapshot_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.snapshot, indent=2))
+        # Defense in depth: the snapshot is derived from already-redacted
+        # events, but redact the serialized form anyway so a secret can
+        # never persist in cleartext in snapshot.json either.
+        tmp.write_text(redact_text(json.dumps(self.snapshot, indent=2)))
         os.replace(tmp, self.snapshot_path)
 
     def find_event(self, etype: str, call_id: str) -> dict | None:
