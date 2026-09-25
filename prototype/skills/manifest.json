@@ -5,7 +5,7 @@
   "discovery": "faec80d8278cc83054b9abf0da284d503d06d0f787e4b95daec525a77e0cba33",
   "domain": "6ac41b64cf947691b8ad436f111bba1376e8f54cd2994b365c8ed6ceb1478139",
   "explainer": "3eb10883bce91967abc3b3bf308947c3cb10601f8aa04c02bc71d5e144215fa3",
-  "mission-definition": "4489d42b195543553eb2d93aa2ceeb53f160b410401e074a7cbe5ca99c92e2c4",
+  "mission-definition": "3bc787b2633a2dc20ef3fd28fd9fdb3c6f1236f698683b229489290392865560",
   "mode-ai-architect": "494b8402c014056d6f4edc98a5284350ccf7d52e2e5ce3a45945fc34b94e3f79",
   "mode-ai-researcher": "f80a4fbfd13d9f9725261e306f14a214a740b6fa5661bdcca4d1d02aa635bac4",
   "mode-cybersecurity-engineer": "f1c07e79c983f907bf4083e65c5f3b507cbb1033b2578302568aacf09f65d125",
@@ -28,10 +28,14 @@
   "rigor-three-strike": "83cd2ac1b0f310f0cc74ee9885da0b6290a4ffa02230fd05c759c370265e31f1",
   "rigor-scope": "5878b3b832c2a77c635a0800f7fc2d8a2619d7b2ada22e0409fd69343d0f6e18",
   "rigor-laws": "07ea8e401e6036b87344a5f6304186fb93bf7e071ef1526f27dde34198e7d720",
-  "osmani-adoption": "95f087ecbb545678b046f4c9ca39f5eaeb6d7e993a41ffe2a346cad7c1fd6471",
-  "osmani-code-review": "4f18353f8f57ef3b19e95c9fd477102f73b7f1ad10c486b14238876113091c6c",
-  "osmani-constraints": "9d0f7632a36cac22cc906c1a512dbfe7dd3fc51b796639a243e57a0518a74d0b",
+  "osmani-adoption": "13c8e8b80493e763b73818c8af22c9e232784481144d604d3b4ae0b76b516b91",
+  "osmani-code-review": "6cd06439a738eec5c1f1323f166e6e15b9ab77a0766caad672c0fab14cd12a41",
+  "osmani-constraints": "a8c6a2fb47a0eab267e6d47475c320be560bc1304d38f9134c5e22f42fe4d27d",
   "osmani-security": "4657fef6b300b7eedf899eb97fef54bb31c16cf118248ba9c05cb9c332fd6dd5",
-  "osmani-shipping": "3f6b9615d44e97aff1082cee8547676ca1357c5d66d57ebccc1e6f54deab1700",
-  "osmani-tdd": "f832e14b6b97a7d2b615465212325f27f0f80dbe5056a73a2e63e697dfd735a7"
+  "osmani-shipping": "886127414c0bfab025adbb5044205deca25b4f7d210db944ab44cfc1f9f1ac4b",
+  "osmani-tdd": "f832e14b6b97a7d2b615465212325f27f0f80dbe5056a73a2e63e697dfd735a7",
+  "definition-of-done": "7d0321ae0cc8de2f74d035e8767fba43a7bc1a9fb1cb2d220eb7e44de385f603",
+  "osmani-failure-modes": "5af145e69fdd678bae508adb5b0301798a340b414ccad6ffcb9174b37a139991",
+  "lifecycle-sequence": "070f4496e4ace07928aec17de105e49502ec227f3640711c278624c05df938fc",
+  "critical-thinking": "a915093bfb20c8716fead334f33776271311cc2ea34fd4c678b3136d838a0f93"
 }

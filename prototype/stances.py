@@ -67,10 +67,12 @@ FLOORS = {
         # Rigor: decomposition (strategic task breakdown) + scope (guardrail —
         # declare scope before BUILD touches anything).
         # Osmani: constraints (decide the quality bar once, at contract
-        # approval; enforce it everywhere after).
+        # approval; enforce it everywhere after) + failure-modes (the agent's
+        # own behavioral failure modes; cross-phase guardrail declared here,
+        # self-applied at every turn/phase boundary).
         "skills": ["decision-analysis", "domain",
                    "rigor-decomposition", "rigor-scope",
-                   "osmani-constraints"],
+                   "osmani-constraints", "osmani-failure-modes"],
         "mode": "plan",
         "exit": "contract approved (with SCOPE) → BUILD",
     },
