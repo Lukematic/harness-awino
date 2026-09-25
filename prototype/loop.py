@@ -1109,6 +1109,9 @@ class Loop:
         and return the {"tool", "result"} envelope the loop carries."""
         call_id = f"{turn_id}.{self._call_offset + index}"
         call = {"name": name, "args": args}
+        self.state.record("tool_called",
+                          {"call_id": call_id, "tool": name, "args": args,
+                           "idem_key": self._idem(call), "harness": True})
         self.state.record("tool_result",
                           {"call_id": call_id, "tool": name, "args": args,
                            "idem_key": self._idem(call), "result": inner,
@@ -1148,12 +1151,17 @@ class Loop:
         notes = args.get("notes")
         task = next((t for t in self.state.snapshot["tasks"]
                      if t["id"] == tid), None)
-        if task is None:
-            return {"error": f"unknown task id: {tid}",
-                    "error_code": "UNKNOWN_TASK"}
         if status not in ("todo", "doing", "done"):
             return {"error": f"invalid status: {status!r} (todo|doing|done)",
                     "error_code": "BAD_STATUS"}
+        if task is None:
+            reg_result = self._registry_task_update(
+                tid, status, notes, turn_id, round_no,
+                evidence=args.get("evidence"))
+            if reg_result is not None:
+                return reg_result
+            return {"error": f"unknown task id: {tid}",
+                    "error_code": "UNKNOWN_TASK"}
         if status == "doing":
             other = next((t for t in self.state.snapshot["tasks"]
                           if t["status"] == "doing" and t["id"] != tid), None)
@@ -1165,6 +1173,48 @@ class Loop:
                           {"turn_id": turn_id, "round": round_no,
                            "id": tid, "status": status, "notes": notes})
         return {"id": tid, "status": status}
+
+    def _registry_task_update(self, tid, status, notes, turn_id: str,
+                              round_no: int,
+                              evidence=None) -> dict | None:
+        """task_update on a project-DAG task (seeded from a story plan or a
+        verifier finding) — the same ids the contract shows and the
+        verifier counts as blockers. None when the id is not a DAG task.
+        Same one-doing policy; dependencies must be done first."""
+        reg = getattr(self, "registry", None)
+        if reg is None or not isinstance(tid, str):
+            return None
+        try:
+            dag = {t["id"]: t for t in reg.tasks()}
+        except Exception:
+            return None
+        if tid not in dag:
+            return None
+        if status == "doing":
+            other = next((t for t in dag.values()
+                          if t["state"] == "doing" and t["id"] != tid), None)
+            if other is not None:
+                return {"error": (f"task {other['id']} is already doing; mark "
+                                  "exactly one task doing at a time"),
+                        "error_code": "DOING_CONFLICT"}
+        paths = [p.strip() for p in re.split(r"[;,\n]+", evidence or "")
+                 if isinstance(evidence, str) and p.strip()]
+        found = [p for p in paths
+                 if any((Path(d) / p).exists() for d in self._search_dirs())]
+        if status == "done" and not found:
+            return {"error": (f"task {tid} needs evidence to be done: pass "
+                              f"evidence=<workspace file that proves it> "
+                              f"(got {paths or 'none'}; none exist)"),
+                    "error_code": "EVIDENCE_REQUIRED"}
+        state = {"todo": "open", "doing": "doing", "done": "done"}[status]
+        try:
+            reg.set_task_state(tid, state, evidence=found or None)
+        except ValueError as ex:
+            return {"error": str(ex), "error_code": "BLOCKED"}
+        self.state.record("task_updated",
+                          {"turn_id": turn_id, "round": round_no, "id": tid,
+                           "status": status, "notes": notes, "dag": True})
+        return {"id": tid, "status": status, "dag": True}
 
     def _attempt_completion(self, args: dict, turn_id: str,
                             round_no: int) -> dict:
@@ -1433,7 +1483,15 @@ class Loop:
             # checked at the done claim, not here.
             self.request_phase("VERIFY", reason="write effects produced")
             s = self.state.snapshot
-        if s["phase"] == "VERIFY" and self._has_exit_zero():
+        last = self._last_verify_run() if s["phase"] == "VERIFY" else None
+        if last is not None and last.get("exit_code") not in (0, None):
+            # VERIFY exit gate, failing side: the latest test run failed, so
+            # the work is not done — route back to BUILD to repair instead
+            # of idling on a floor that offers no write tools.
+            self._route_test_failure(last)
+            s = self.state.snapshot
+        if (s["phase"] == "VERIFY" and last is not None
+                and last.get("exit_code") == 0):
             # Track G: exit 0 alone does NOT unlock REVIEW — only the
             # verifier worker's journaled pass verdict does. v0.6: the
             # harness auto-spawns the verifier (existing machinery) instead
@@ -1810,6 +1868,7 @@ class Loop:
             round_pairs = [(i, merged[i]) for i in sorted(merged)]
             round_results = [r for _, r in round_pairs]
             results_all.extend(round_results)
+            round_base = self._call_offset
             self._call_offset += len(calls)
             note = None
             if deferred is not None and need_idx:
@@ -1829,7 +1888,7 @@ class Loop:
                 need = [(i, calls[i]) for i in sorted(need_idx)]
                 return self._pause_for_approval(
                     turn_id, turn, results_all, need, routing,
-                    expected_header, base=self._call_offset,
+                    expected_header, base=round_base,
                     round_ctx={"round_no": round_no,
                                "call_offset": self._call_offset,
                                "last_round_sig": self._last_round_sig,
@@ -2967,6 +3026,58 @@ class Loop:
         return {"status": "ok", "said": f"Effect {call_id} reconciled as {resolution}."}
 
     # --------------------------------------------------------------- finalize
+    def _last_verify_run(self) -> dict | None:
+        """Result of the latest run_command since the phase last entered
+        VERIFY (current mission revision), or None. Only the newest run
+        decides the gate: an old pass never outvotes a newer failure."""
+        rev = self.state.snapshot["mission_revision"]
+        events = self.state.events
+        start = 0
+        for i, e in enumerate(events):
+            if (e["type"] == "phase_changed"
+                    and e["data"].get("phase") == "VERIFY"):
+                start = i + 1
+        last = None
+        for e in events[start:]:
+            d = e["data"]
+            if (e["type"] == "tool_result" and d.get("tool") == "run_command"
+                    and d.get("mission_rev") == rev
+                    and isinstance(d.get("result"), dict)
+                    and "exit_code" in d["result"]):
+                last = dict(d["result"], cmd=(d.get("args") or {}).get("cmd"))
+        return last
+
+    _TEST_STRIKES = 3
+
+    def _route_test_failure(self, run: dict) -> None:
+        """Failed test run on VERIFY: journal verify_failed, count strikes
+        (same failure signature since the last pass), and route to BUILD.
+        At three identical failures the three-strike breaker fires, which
+        routes the rigor-three-strike skill (rethink, don't patch forward)."""
+        out = (run.get("stderr") or run.get("stdout") or "").strip()
+        tail = out.splitlines()[-1][:160] if out else ""
+        signature = f"exit {run.get('exit_code')}: {tail}"
+        self.state.record("verify_failed", {
+            "source": "tests", "reason": (f"test command failed: "
+                                          f"{run.get('cmd')} "
+                                          f"(exit {run.get('exit_code')})"),
+            "signature": signature, "verdict": []})
+        strikes = 0
+        for e in reversed(self.state.events):
+            if e["type"] in ("verify_passed", "mission_set"):
+                break
+            if (e["type"] == "verify_failed"
+                    and e["data"].get("source") == "tests"):
+                if e["data"].get("signature") != signature:
+                    break
+                strikes += 1
+        if strikes >= self._TEST_STRIKES:
+            self.state.record("doom_loop_detected",
+                              {"source": "tests", "signature": signature,
+                               "consecutive": strikes})
+        self.request_phase("BUILD", reason=f"tests failed ({signature}) — "
+                                           f"repair")
+
     def _has_exit_zero(self) -> bool:
         """VERIFY exit gate: a recorded exit code 0 from run_command,
         in the current mission revision."""
@@ -3218,7 +3329,9 @@ class Loop:
             cid = d["call_id"]
             if cid not in called_ids:
                 problems.append(f"tool_result {cid} has no tool_called")
-            if not d.get("reused"):
+            # run_command re-executes by design after the world changes
+            # (a repair), so its repeats are not forged duplicates.
+            if not d.get("reused") and d.get("tool") != "run_command":
                 key = d.get("idem_key")
                 if key:
                     if key in seen_idem:

@@ -159,6 +159,10 @@ TOOL_SCHEMAS: dict[str, dict] = {
                 "status": {"type": "string",
                            "enum": ["todo", "doing", "done"]},
                 "notes": {"type": "string"},
+                "evidence": {"type": "string",
+                             "description": ("Workspace file(s) proving the "
+                                             "task is done, comma-separated. "
+                                             "Required to mark a plan task done.")},
             },
             "required": ["id", "status"],
         },

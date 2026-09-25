@@ -44,6 +44,15 @@ Done on `claude/native-tools-auth-hotfix-bhsr45` (tests in `tests/test_tool_prom
   the brag board. Planner role prompt tells the model to use it. Still to do in T10:
   the sidecar `stories`/`story_start`/`story_close` commands and the VS Code view.
 
+- **End-to-end loop proven** (`tests/test_e2e_mission.py`): one mission through the real
+  loop — grill → `set_mission` → approve → steel-man challenge (hollow answer rejected by
+  the rubric) → `story_plan` → scoped approval → write → tests fail → auto back to BUILD →
+  fix → tests pass → verifier worker → REVIEW → evidence-gated completion → SHIP → story
+  closed onto the brag board, journal chain intact. Defects it found, now fixed: failed test
+  runs never routed VERIFY → BUILD; `task_update` could not close the plan's DAG tasks and
+  could not pass evidence (verifier always failed); harness tool results had no
+  `tool_called`; a call paused for approval reused the next round's call id.
+
 Everything else below is still open.
 
 ---

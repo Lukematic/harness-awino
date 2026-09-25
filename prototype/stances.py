@@ -165,7 +165,8 @@ INTENT_TABLE = [
      re.compile(r"\bchallenge (me|this|my|it|that)\b|\bpoke holes\b|"
                 r"\bdevil'?s advocate\b|\bpush back\b|"
                 r"\btear (it|this|that) apart\b|\bwhat could go wrong\b|"
-                r"\bis (this|it|that) a good idea\b|\bam i (wrong|missing)\b|"
+                r"\b(good|bad) idea\b|\bam i (wrong|missing)\b|"
+                r"\bbetter (way|approach)\b|"
                 r"\bstress[- ]test\b|\bsanity[- ]check\b|\bgrill me\b"),
      "plan", ["steel-man", "premortem"], ["decision-analysis", "domain"]),
     ("opinion",
