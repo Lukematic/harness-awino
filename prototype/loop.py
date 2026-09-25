@@ -1362,6 +1362,40 @@ class Loop:
                              "word doesn't count. Next action: run "
                              "verification (begin_verification), fix any "
                              "findings it reports, then retry.")}
+        # Mechanical layer (osmani-constraints FLOOR): REVIEW -> SHIP runs the
+        # deterministic floor checks on the mission diff — no new
+        # suppression comments, no stubs, no unexplained skipped tests, no
+        # secrets. Rules that tooling can check are checked by tooling; the
+        # model never self-grades. Same hard-refuse pattern as VERIFY ->
+        # REVIEW above.
+        if frm == "REVIEW" and target == "SHIP":
+            findings = self._floor_gate()
+            if findings:
+                shown = "; ".join(
+                    f"{f['file']}:{f['line']} [{f['check']}] {f['detail']}"
+                    for f in findings[:8])
+                more = (f" (+{len(findings) - 8} more)"
+                        if len(findings) > 8 else "")
+                self.state.record(
+                    "transition_refused",
+                    {"from": frm, "to": target,
+                     "reason": "constraints floor violations",
+                     "findings": findings})
+                self.state.persist_snapshot()
+                return {"status": "refused",
+                        "said": (
+                            f"Transition refused: REVIEW -> SHIP — the "
+                            f"constraints floor found "
+                            f"{len(findings)} violation(s): {shown}{more}. "
+                            f"What happened: deterministic checks on the "
+                            f"mission diff found suppression comments, "
+                            f"unimplemented stubs, skipped tests without a "
+                            f"reason, or possible secrets. What it means: "
+                            f"the floor is always enforced, no setup — a "
+                            f"skipped test needs an inline reason, and the "
+                            f"record is never weakened to make a change "
+                            f"pass. Next action: fix each finding, then "
+                            f"retry the transition.")}
         # Story ledger (planning gate): entering BUILD requires the active
         # story's spine — problem, approach, done criteria. The approach is
         # defined during planning; BUILD without it is refused, plainly.
@@ -1443,6 +1477,65 @@ class Loop:
                     f"done. Next action: fill in the missing fields "
                     f"(story_update), then retry.")
         return None
+
+    # ------------------------------------------------- mechanical: floor gate
+    def _mission_diff(self) -> str | None:
+        """Best-effort unified diff of the mission workspace vs HEAD.
+
+        Tracked changes come from `git diff HEAD`; untracked files the
+        sandbox wrote are appended as synthetic added-file diffs (new files
+        are exactly where secrets and stubs hide). Returns None when the
+        workspace is not a git checkout — the gate then skips, journaled.
+        """
+        import subprocess
+        from floor_checks import diff_for_new_file
+        root = self.sandbox.root
+        try:
+            p = subprocess.run(
+                ["git", "-C", str(root), "diff", "HEAD", "--"],
+                capture_output=True, text=True, timeout=30)
+            if p.returncode != 0:
+                return None
+            diff = p.stdout
+            q = subprocess.run(
+                ["git", "-C", str(root), "ls-files",
+                 "--others", "--exclude-standard"],
+                capture_output=True, text=True, timeout=30)
+            if q.returncode == 0:
+                for rel in q.stdout.splitlines():
+                    rel = rel.strip()
+                    if not rel:
+                        continue
+                    try:
+                        content = (root / rel).read_text()
+                    except (OSError, UnicodeDecodeError):
+                        continue
+                    if "\x00" in content:
+                        continue
+                    diff += diff_for_new_file(rel, content)
+            return diff
+        except Exception:
+            return None
+
+    def _floor_gate(self) -> list:
+        """Run the osmani-constraints FLOOR checks on the mission diff.
+
+        Returns the findings (empty = the floor holds). The run is
+        journaled either way; a workspace with no VCS baseline is
+        recorded as skipped, never silently passed.
+        """
+        from floor_checks import check_diff
+        diff = self._mission_diff()
+        if diff is None:
+            self.state.record("floor_checks",
+                              {"status": "skipped",
+                               "reason": "no VCS baseline in workspace"})
+            return []
+        findings = check_diff(diff)
+        self.state.record("floor_checks",
+                          {"status": "pass" if not findings else "fail",
+                           "findings": len(findings)})
+        return findings
 
     def approve_contract(self, scope: list[str] | None = None) -> dict:
         """Operator approves the contract (elevator gate, code-enforced).

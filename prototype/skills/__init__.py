@@ -68,6 +68,37 @@ class SkillStore:
             bodies[name] = raw.decode("utf-8")
         self._pinned = dict(pinned)
         self._bodies = bodies
+        # Layered loading: every pinned skill is assigned exactly one
+        # layer (ceremony / mechanical / reference). The built-in store
+        # ships layers.json, and it must match the manifest exactly —
+        # fail-closed like the manifest itself. A user-admitted registry
+        # (skill_add) has no layers.json: its skills enter only through
+        # explicit, screened admission, which IS the ceremony on-demand
+        # path, so they default to ceremony/ondemand.
+        layers_path = self.dir / "layers.json"
+        if layers_path.is_file():
+            try:
+                layers = json.loads(layers_path.read_text())
+            except (json.JSONDecodeError, OSError) as e:
+                raise SkillIntegrityError(
+                    f"skill layer registry unreadable: {e}") from e
+            if set(layers) != set(bodies):
+                raise SkillIntegrityError(
+                    "layer registry out of sync with manifest: "
+                    f"missing={sorted(set(bodies) - set(layers))} "
+                    f"extra={sorted(set(layers) - set(bodies))}")
+            for name, spec in layers.items():
+                if not isinstance(spec, dict) or spec.get("layer") not in (
+                        "ceremony", "mechanical", "reference"):
+                    raise SkillIntegrityError(
+                        f"skill {name!r} has an invalid layer assignment: "
+                        f"{spec!r}")
+        else:
+            layers = {}
+        self._layers = {
+            name: layers.get(name,
+                             {"layer": "ceremony", "route": "ondemand"})
+            for name in bodies}
         # Track C: network declarations. Absence of the file or of an entry
         # means "network: none". This meta file is advisory (surfacing +
         # egress audit); integrity of the bodies is still the sha256 manifest.
@@ -96,6 +127,17 @@ class SkillStore:
 
     def pinned_hash(self, name: str) -> str | None:
         return self._pinned.get(name)
+
+    def layer_of(self, name: str) -> str:
+        """The loading layer for a skill: ceremony, mechanical, or reference."""
+        return self._layers[name]["layer"]
+
+    def route_of(self, name: str) -> str:
+        """How a ceremony skill reaches a turn: phase/intent/role/ondemand.
+
+        Reference entries report "none" — they are never routed.
+        """
+        return self._layers[name]["route"]
 
     def get(self, name: str) -> str | None:
         """Full body for a routed skill name, or None if unknown."""
