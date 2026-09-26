@@ -34,17 +34,21 @@ import awino_sidecar as S  # noqa: E402
 
 MESSAGES = [
     "I want to build an experiment comparing 7 approaches to agentic learning.",
-    "Goal: a literature review that ranks 7 agentic learning approaches, plus a plan "
-    "for the experiment. Done when review.md covers all 7, each with an arXiv source "
-    "link and a way to test it, experiment/approaches.yaml lists the same 7 as "
-    "'- name: ...' entries, and `python check_review.py` passes.",
+    "Goal: a written literature review paper on 7 agentic learning approaches, plus "
+    "the experiment to compare them. review.md must be a real paper of at least 1,500 "
+    "words with these sections: Abstract; Scope and method; one ### subsection per "
+    "approach (mechanism, evidence, where it breaks); Comparison (a table); Challenge "
+    "(is newest best?); Experiment (controls, tasks, metrics, success and failure "
+    "criteria); Recommendation; References with arXiv links. "
+    "experiment/approaches.yaml lists the 7 as '- name: ...' entries. "
+    "Done when `python check_paper.py` passes.",
     "Is comparing these 7 a good idea, or are there newer and better approaches? "
     "Challenge me before we plan.",
     "Plan it with me. Honda first, keep it small, and record the plan.",
-    "Build it: write review.md and experiment/approaches.yaml, then run "
-    "`python check_review.py` and fix anything until it passes.",
+    "Build it: write the paper to review.md and write experiment/approaches.yaml, then "
+    "run `python check_paper.py` and fix anything it reports until it passes.",
 ]
-CONTINUE = "Keep going until check_review.py passes and verification signs off."
+CONTINUE = "Keep going until check_paper.py passes and verification signs off."
 SHIP = "Ship it."
 SCOPE = ["review.md", "experiment/approaches.yaml"]
 
@@ -91,7 +95,7 @@ def main():
 
     ws = Path(tempfile.mkdtemp(prefix="agentic-learning-live-"))
     (ws / "experiment").mkdir()
-    shutil.copy(ROOT / "proof/demo-agentic-learning/check_review.py", ws / "check_review.py")
+    shutil.copy(HERE / "check_paper.py", ws / "check_paper.py")
 
     sc = S.Sidecar()
     hello = {"cmd": "hello", "workspace": str(ws), "provider": a.provider, "model": a.model}
@@ -183,7 +187,7 @@ def main():
         "Writes paused for approval": bool(of("approval_requested")),
         "Reached VERIFY": "VERIFY" in phases,
         "Failing check routed back to BUILD": 1 in runs and phases.count("BUILD") >= 2,
-        "check_review.py passed": 0 in runs,
+        "check_paper.py passed (a real paper)": 0 in runs,
         "Independent verifier passed": bool(of("verify_passed")),
         "Reached SHIP": sc.loop.state.snapshot["phase"] == "SHIP",
         "Journal chain intact": ok,
@@ -197,7 +201,7 @@ def main():
               f"Final phase: {sc.loop.state.snapshot['phase']}",
               f"Modes routed: {', '.join(modes)}",
               f"Stances fired: {', '.join(stances)}",
-              f"check_review.py exit codes: {runs}",
+              f"check_paper.py exit codes: {runs}",
               f"Tools the model called: {', '.join(tools) or 'none'}",
               f"Tokens charged (approx): {sum(d.get('tokens', 0) for d in of('tokens_charged'))}",
               "", "## Stances the model chose, and why"]
