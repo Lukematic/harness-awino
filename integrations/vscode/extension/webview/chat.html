@@ -260,23 +260,24 @@
     border: 1px solid var(--vscode-panel-border, #232F45);
     border-radius: 6px;
   }
-  .receipt-card { margin: 8px 0; padding: 10px 12px; border-radius: 8px;
-    border: 1px solid var(--awino-border, var(--vscode-panel-border, #2A3550));
-    border-left: 3px solid var(--awino-accent, var(--vscode-focusBorder, #7C5CFF));
-    background: var(--awino-surface, var(--vscode-editorWidget-background, #111827)); }
+  .receipt-card { margin: 0 0 12px; padding: 10px 12px; border-radius: 8px;
+    background: var(--awino-bg-2, var(--vscode-editor-background, #172036));
+    color: var(--awino-text, var(--vscode-foreground, #DCE7F7));
+    border: 1px solid var(--awino-vibranium-dim, var(--vscode-panel-border, #2A3550));
+    border-left: 3px solid var(--awino-gold, var(--vscode-focusBorder, #D4A937)); }
   .receipt-card .rc-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
   .receipt-card .rc-title { font-weight: 700; }
-  .receipt-card .rc-badge { font-size: 11px; font-weight: 700; letter-spacing: .04em; padding: 1px 6px; border-radius: 4px; white-space: nowrap; }
-  .receipt-card .rc-badge.rc-ok { color: #0b1a10; background: #3fb950; }
-  .receipt-card .rc-badge.rc-warn { color: #1a1405; background: #d29922; }
-  .receipt-card .rc-badge.rc-bad { color: #fff; background: #da3633; }
+  .receipt-card .rc-badge { font-size: 11px; font-weight: 700; letter-spacing: .04em; padding: 1px 6px; border-radius: 4px; white-space: nowrap; color: #fff; }
+  .receipt-card .rc-badge.rc-ok { background: var(--awino-ok, #2EA043); }
+  .receipt-card .rc-badge.rc-warn { background: var(--awino-warn, #D29922); color: #1a1405; }
+  .receipt-card .rc-badge.rc-bad { background: var(--awino-danger, #DA3633); }
   .receipt-card .rc-outcome { margin: 4px 0; }
   .receipt-card .rc-meta, .receipt-card .rc-dim { color: var(--awino-muted, var(--vscode-descriptionForeground, #8B98B0)); font-size: 12px; }
-  .receipt-card .rc-sec { margin-top: 8px; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+  .receipt-card .rc-sec { margin-top: 8px; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--awino-gold, inherit); }
   .receipt-card .rc-list { margin: 2px 0; padding-left: 18px; }
-  .receipt-card li.rc-bad, .receipt-card td.rc-bad { color: #f85149; }
+  .receipt-card li.rc-bad, .receipt-card td.rc-bad { color: var(--awino-danger, #F85149); }
   .receipt-card .rc-steps { border-collapse: collapse; margin-top: 6px; font-size: 12px; width: 100%; }
-  .receipt-card .rc-steps th, .receipt-card .rc-steps td { text-align: left; padding: 2px 6px; border-bottom: 1px solid var(--awino-border, #2A3550); }
+  .receipt-card .rc-steps th, .receipt-card .rc-steps td { text-align: left; padding: 2px 6px; border-bottom: 1px solid var(--awino-vibranium-dim, #2A3550); }
   .receipt-card .rc-actions { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
   #session-resume .sr-title { font-weight: 700; margin-bottom: 4px; }
   #session-resume .sr-row { margin: 2px 0; color: var(--awino-muted, var(--vscode-descriptionForeground, #8B98B0)); }
