@@ -4043,6 +4043,7 @@ class Sidecar:
             "story_start": self._cmd_story_start,
             "story_focus": self._cmd_story_focus,
             "story_close": self._cmd_story_close,
+            "receipt": self._cmd_receipt,
             "verify_begin": self._cmd_verify_begin,
             "verify_turn": self._cmd_verify_turn,
             "verify_complete": self._cmd_verify_complete,
@@ -4499,13 +4500,45 @@ class Sidecar:
         if not outcome:
             return {"status": "error",
                     "said": "closing needs an outcome for the brag board"}
+        events, chain_ok = [], None
+        if self.loop is not None:
+            events = self.loop.state.events
+            try:
+                chain_ok = self.loop.verify_journal()[0]
+            except Exception:
+                chain_ok = None
         try:
-            st = story_close(self._awino_dir(), sid, outcome)
+            st = story_close(self._awino_dir(), sid, outcome,
+                             events=events, chain_ok=chain_ok)
         except KeyError:
             return {"status": "error", "said": f"no story {sid!r}"}
         self._say("story", f"Closed '{st['title']}' — on the brag board. "
                            f"{st.get('push_note', '')}".strip())
-        return {"status": "ok", "id": sid}
+        out = {"status": "ok", "id": sid}
+        rc = self._cmd_receipt({"id": sid})
+        if rc.get("status") == "ok":
+            out["receipt"] = rc["receipt"]
+            out["markdown"] = rc["markdown"]
+        return out
+
+    def _cmd_receipt(self, args: dict) -> dict:
+        """A story's receipt (promise -> proof -> lesson) and its markdown,
+        which pastes as a PR description. Closed stories read the stored
+        receipt; open ones get a live preview built from the journal."""
+        from receipt import build_receipt, load_receipt, render_receipt_md
+        awd = self._awino_dir()
+        sid = args.get("id")
+        rc = load_receipt(awd, sid)
+        if rc is None:
+            try:
+                rc = build_receipt(
+                    awd, sid,
+                    events=self.loop.state.events if self.loop else None)
+            except KeyError:
+                return {"status": "error", "said": f"no story {sid!r}"}
+            rc["preview"] = True
+        return {"status": "ok", "receipt": rc,
+                "markdown": render_receipt_md(rc)}
 
     def _cmd_verify_begin(self, args: dict) -> dict:
         """Spawn the verifier worker (Track G)."""

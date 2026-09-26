@@ -752,6 +752,13 @@ async function handleChatMessage(
     case "invokeModeSelect":
       void invokeModeFlow(typeof m.mode === "string" ? m.mode : undefined);
       break;
+    case "copyReceipt":
+      await vscode.env.clipboard.writeText(String(m.markdown ?? ""));
+      vscode.window.setStatusBarMessage("Awino: receipt copied as a PR description", 3000);
+      break;
+    case "openReceipt":
+      await openReceiptDoc(String(m.markdown ?? ""));
+      break;
     case "approve":
       log(`webview approve: id=${String(m.id)} decision=${m.decision}`);
       session.client.approve(String(m.id), m.decision === "deny" ? "deny" : "approve");
@@ -1179,7 +1186,33 @@ async function closeStoryFlow(story?: StoryRow): Promise<void> {
     validateInput: (v) => (v.trim() ? undefined : "An outcome is required for the brag board"),
   });
   if (!outcome) return;
-  await runStoryCommand("story_close", { id: s.id, outcome: outcome.trim() });
+  const r = (await query("story_close", { id: s.id, outcome: outcome.trim() })) as Record<string, unknown>;
+  if (r["status"] === "error") {
+    vscode.window.showErrorMessage(`Awino: ${String(r["said"] ?? "story_close failed")}`);
+    return;
+  }
+  if (r["receipt"]) postToChat({ type: "receipt", receipt: r["receipt"], markdown: r["markdown"] });
+  refreshViews();
+  await postSessionResume();
+}
+
+// Receipt: promise -> proof -> lesson. Closed stories show the stored
+// receipt; open ones a live preview from the journal.
+async function showReceiptFlow(story?: StoryRow): Promise<void> {
+  const s = story ?? (await pickStory("Receipt for which story?", () => true));
+  if (!s) return;
+  const r = (await query("receipt", { id: s.id })) as Record<string, unknown>;
+  if (r["status"] === "error") {
+    vscode.window.showErrorMessage(`Awino: ${String(r["said"] ?? "no receipt")}`);
+    return;
+  }
+  postToChat({ type: "receipt", receipt: r["receipt"], markdown: r["markdown"] });
+  void vscode.commands.executeCommand("awino.chat.focus").then(undefined, () => undefined);
+}
+
+async function openReceiptDoc(markdown: string): Promise<void> {
+  const doc = await vscode.workspace.openTextDocument({ language: "markdown", content: markdown });
+  await vscode.window.showTextDocument(doc, { preview: true });
 }
 
 // The harness never closes a story itself: when the verifier marks one
@@ -1956,6 +1989,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
     if (s) await runStoryCommand("story_focus", { id: s.id });
   });
   reg("awino.closeStory", async (arg: unknown) => closeStoryFlow(storyFromArg(arg)));
+  reg("awino.showReceipt", async (arg: unknown) => showReceiptFlow(storyFromArg(arg)));
   reg("awino.refreshStories", () => storiesView?.refresh());
   // Native tool application: revert the workspace to the last git
   // checkpoint taken before a delegated build-mode write batch. The

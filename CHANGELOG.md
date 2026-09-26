@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased — Receipts
+
+- Every closed story gets a **receipt**: promise (done criteria, plan steps
+  with forecasts) → proof (check commands and exit codes, verifier
+  verdicts and who gave them, files written, approvals, commits, journal
+  head hash) → lesson (forecast vs actual, failed verifications, criteria
+  closed without proof). Built from the journal, not from the model's
+  account. Labels are honest: PROVEN (independent verifier, every
+  criterion named), PARTLY PROVEN, SELF-CHECKED, UNVERIFIED.
+  Stored in `.awino/registry/receipts/<story>.json` and `.md`.
+- `story_plan` steps take an optional fourth column, the time forecast
+  (`title | success | failure | 45m`). The tool says which steps lack one.
+  After two or more receipts, planning quotes your past forecast accuracy
+  ("your last 3 stories ran 2.1x their forecast") so estimates get
+  challenged with evidence.
+- VS Code: closing a story posts a receipt card in chat with **Copy as PR
+  description** and **Open receipt**; *Awino: Show Story Receipt* on any
+  story (open stories get a live preview).
+
 ## 0.7.0 — the loop runs end to end (2026-09-26)
 
 - The mission loop now completes on its own: a failing test run routes

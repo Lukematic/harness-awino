@@ -1306,7 +1306,8 @@ class Loop:
 
         Turn-schema args are strings: `done_criteria` is semicolon- or
         newline-separated; `steps` is one step per line as
-        "title | success | failure", each depending on the previous one.
+        "title | success | failure | forecast" (forecast optional, e.g.
+        "45m"), each depending on the previous one.
         Targets `story_id`, else the story in progress, else starts a new
         story from `title`. Workers are refused.
         """
@@ -1327,12 +1328,15 @@ class Loop:
         for i, line in enumerate(l for l in arg("steps").splitlines()
                                  if l.strip()):
             parts = [p.strip() for p in line.split("|")]
-            if len(parts) != 3:
+            if len(parts) not in (3, 4):
                 return {"error": f"story_plan step {i + 1} must be "
-                                 f"'title | success | failure', got: "
-                                 f"{line.strip()[:120]}"}
-            steps.append({"title": re.sub(r"^\d+[.)]\s*", "", parts[0]),
-                          "success": parts[1], "failure": parts[2]})
+                                 f"'title | success | failure | forecast', "
+                                 f"got: {line.strip()[:120]}"}
+            step = {"title": re.sub(r"^\d+[.)]\s*", "", parts[0]),
+                    "success": parts[1], "failure": parts[2]}
+            if len(parts) == 4 and parts[3]:
+                step["forecast"] = parts[3]
+            steps.append(step)
         criteria = [c.strip() for c in re.split(r"[;\n]+",
                                                 arg("done_criteria"))
                     if c.strip()]
@@ -1368,11 +1372,38 @@ class Loop:
         story = StoryStore(awd).get(story_id)
         gaps = [k for k in ("problem", "done_criteria") if not story.get(k)]
         said = res["said"]
+        unforecast = [st["title"] for st in story.get("steps") or []
+                      if not st.get("forecast")]
+        if unforecast:
+            said += (f" {len(unforecast)} step(s) have no time forecast; "
+                     f"add one ('| 45m') so the receipt can check it.")
+        past = self._calibration_note(awd)
+        if past:
+            said += " " + past
         if gaps:
             said += (f" Still missing before BUILD: {', '.join(gaps)} — "
                      f"call story_plan again with them.")
         return {"ok": True, "story_id": story_id,
                 "dag_seeded": res.get("dag_seeded", 0), "said": said}
+
+    @staticmethod
+    def _calibration_note(awino_dir) -> str:
+        """What past receipts say about this user's forecasts, so the plan
+        can be challenged with evidence rather than opinion."""
+        try:
+            from receipt import calibration_history
+            hist = calibration_history(awino_dir, limit=5)
+        except Exception:
+            return ""
+        if len(hist) < 2:
+            return ""
+        avg = sum(h["ratio"] for h in hist) / len(hist)
+        if 0.8 <= avg <= 1.25:
+            return (f"Past receipts: your last {len(hist)} forecasts held "
+                    f"(avg {avg:.1f}x).")
+        return (f"Past receipts: your last {len(hist)} stories ran "
+                f"{avg:.1f}x their forecast on average — challenge these "
+                f"estimates before BUILD.")
 
     def _harness_stretch_goal(self, **args) -> dict:
         """Model-callable stretch-goal pitch (T17): Need, Approach,

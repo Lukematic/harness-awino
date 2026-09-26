@@ -681,6 +681,8 @@ def _render_steps_md(steps: list[dict]) -> str:
         lines.append(f"{i + 1}. **{st['title']}**{dep}")
         lines.append(f"   - success: {st['success']}")
         lines.append(f"   - fail fast: {st['failure']}")
+        if st.get("forecast"):
+            lines.append(f"   - forecast: {st['forecast']}")
     return "\n".join(lines)
 
 
@@ -754,8 +756,21 @@ def _normalize_steps(steps: list[dict] | None) -> list[dict]:
                     f"step {i + 1} has bad dependency {d!r}: depends_on "
                     f"lists earlier step indexes (0-based) — the chain "
                     f"stays acyclic by construction.")
-        norm.append({"title": title, "success": success,
-                     "failure": failure, "depends_on": deps})
+        step = {"title": title, "success": success,
+                "failure": failure, "depends_on": deps}
+        # Optional time forecast ("45m", "2h"): the receipt compares it
+        # with the actual time when the story closes.
+        forecast = str(st.get("forecast") or "").strip()
+        if forecast:
+            from receipt import parse_forecast  # local: keep story light
+            secs = parse_forecast(forecast)
+            if secs is None:
+                raise ValueError(
+                    f"step {i + 1} ('{title}') has forecast {forecast!r}; "
+                    f"use a duration like '30m', '2h' or '1h30m'.")
+            step["forecast"] = forecast
+            step["forecast_s"] = secs
+        norm.append(step)
     return norm
 
 
@@ -1042,7 +1057,9 @@ def touch_session(awino_dir: str | Path, story_id: str, note: str) -> dict:
     return story
 
 
-def story_close(awino_dir: str | Path, story_id: str, outcome: str) -> dict:
+def story_close(awino_dir: str | Path, story_id: str, outcome: str,
+                *, events: list[dict] | None = None,
+                chain_ok: bool | None = None) -> dict:
     """Close a story: stamps closed date + outcome into the brag board.
 
     Close authority stays with the human — the harness only ever ASKS
@@ -1074,6 +1091,19 @@ def story_close(awino_dir: str | Path, story_id: str, outcome: str) -> dict:
         pass
     render_story_md(awino_dir)
     story["push_note"] = push_note
+    # Receipt: promise -> proof -> lesson, from the journal (best-effort;
+    # a receipt failure never blocks the close).
+    try:
+        from receipt import build_receipt, write_receipt
+        rc = build_receipt(awino_dir, story_id, events=events,
+                           chain_ok=chain_ok)
+        story["receipt_path"] = str(write_receipt(awino_dir, rc))
+        story["receipt_status"] = rc["status"]
+        _journal(awino_dir, "story_receipt",
+                 f"Receipt for '{story['title']}' ({story_id}): "
+                 f"{rc['status']}.")
+    except Exception as ex:  # noqa: BLE001
+        story["receipt_error"] = f"{type(ex).__name__}: {ex}"
     return story
 
 

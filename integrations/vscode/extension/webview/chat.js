@@ -269,9 +269,79 @@ function harnessReplyMarkdown(said) {
   return next ? (body ? body + "\n\n" : "") + next : body;
 }
 
+// Receipt card: promise -> proof -> lesson for a closed story. Built from
+// the receipt JSON (the markdown copy is what goes to the clipboard).
+// Every value is escaped; the status badge is one of four fixed labels.
+function receiptDuration(s) {
+  if (s == null) return "—";
+  s = Math.round(Number(s) || 0);
+  if (s < 60) return s + "s";
+  var m = Math.floor(s / 60), h = Math.floor(m / 60);
+  m = m % 60;
+  return h ? h + "h " + (m < 10 ? "0" : "") + m + "m" : m + "m";
+}
+
+function receiptCardHtml(r) {
+  var e = __mdEscape;
+  r = r || {};
+  var st = r.story || {}, pr = r.proof || {}, le = r.lesson || {};
+  var cls = { "PROVEN": "ok", "PARTLY PROVEN": "warn", "SELF-CHECKED": "warn", "UNVERIFIED": "bad" }[r.status];
+  var status = cls ? r.status : "UNVERIFIED";
+  cls = cls || "bad";
+  var h = '<div class="rc-head"><span class="rc-title">' + e(st.title) + '</span>' +
+    '<span class="rc-badge rc-' + cls + '">' + (r.preview ? "PREVIEW · " : "") + status + "</span></div>";
+  if (st.outcome) h += '<div class="rc-outcome">' + e(st.outcome) + "</div>";
+  h += '<div class="rc-meta">' + e(st.type || "story") + " · " + e(st.branch || "") +
+    " · time " + (st.time_s >= 1 ? receiptDuration(st.time_s) : "not tracked") + "</div>";
+  var crit = pr.criteria || [];
+  if (crit.length) {
+    h += '<div class="rc-sec">Promise</div><ul class="rc-list">' + crit.map(function (c) {
+      var ok = c.proof !== "unproven";
+      return '<li class="' + (ok ? "rc-ok" : "rc-bad") + '">' + (ok ? "✓ " : "✗ ") +
+        e(c.criterion) + ' <span class="rc-dim">' + e(c.proof) + "</span></li>";
+    }).join("") + "</ul>";
+  }
+  var steps = pr.steps || [];
+  if (steps.length) {
+    h += '<table class="rc-steps"><tr><th>#</th><th>Step</th><th>Forecast</th><th>Actual</th><th>State</th></tr>' +
+      steps.map(function (x) {
+        var over = x.forecast_s && x.actual_s && x.actual_s > 1.25 * x.forecast_s;
+        return "<tr><td>" + (Number(x.index) + 1) + "</td><td>" + e(x.title) + "</td><td>" +
+          e(x.forecast || "—") + '</td><td class="' + (over ? "rc-bad" : "") + '">' +
+          receiptDuration(x.actual_s) + "</td><td>" + e(x.state) + "</td></tr>";
+      }).join("") + "</table>";
+  }
+  var proof = [];
+  (pr.checks || []).forEach(function (c) {
+    proof.push('<li class="' + (c.last_exit === 0 ? "rc-ok" : "rc-bad") + '"><code>' + e(c.cmd) +
+      "</code> → exit " + e(c.last_exit) + ' <span class="rc-dim">' + e(c.runs) + " run(s), " +
+      e(c.failures) + " failed</span></li>");
+  });
+  (pr.verdicts || []).forEach(function (v) {
+    proof.push('<li class="' + (v.passed ? "rc-ok" : "rc-bad") + '">Verification ' +
+      (v.passed ? "passed" : "failed") + ' <span class="rc-dim">' + e(v.by) + "</span></li>");
+  });
+  if ((pr.files || []).length) proof.push("<li>" + pr.files.length + " file(s) written</li>");
+  if ((pr.commits || []).length) proof.push("<li>" + pr.commits.length + " commit(s)</li>");
+  var j = pr.journal || {};
+  proof.push('<li class="rc-dim">journal ' + e(j.events || 0) + " events" +
+    (j.head ? " · head " + e(String(j.head).slice(0, 12)) : "") +
+    (j.chain_ok === true ? " · chain intact" : j.chain_ok === false ? " · chain BROKEN" : "") + "</li>");
+  h += '<div class="rc-sec">Proof</div><ul class="rc-list">' + proof.join("") + "</ul>";
+  var notes = le.notes || [];
+  if (notes.length) {
+    h += '<div class="rc-sec">Lesson</div><ul class="rc-list">' +
+      notes.map(function (n) { return "<li>" + e(n) + "</li>"; }).join("") + "</ul>";
+  }
+  h += '<div class="rc-actions"><button type="button" class="rc-copy">Copy as PR description</button>' +
+    '<button type="button" class="rc-open">Open receipt</button></div>';
+  return h;
+}
+
 if (typeof window !== "undefined") window.AwinoMarkdown = AwinoMarkdown;
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { AwinoMarkdown: AwinoMarkdown, harnessReplyMarkdown: harnessReplyMarkdown };
+  module.exports = { AwinoMarkdown: AwinoMarkdown, harnessReplyMarkdown: harnessReplyMarkdown,
+    receiptCardHtml: receiptCardHtml, receiptDuration: receiptDuration };
 }
 
 // The chat UI boots only inside a VS Code webview (acquireVsCodeApi +
@@ -1520,6 +1590,22 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
       // Spec 1.3: scroll to bottom after state rehydration (postChatState on
       // view resolve) so the reloaded chat shows the latest messages.
       if (messages) messages.scrollTop = messages.scrollHeight;
+    } else if (m.type === "receipt" && m.receipt) {
+      const card = document.createElement("div");
+      card.className = "receipt-card";
+      card.innerHTML = receiptCardHtml(m.receipt);
+      const md = String(m.markdown || "");
+      const copyBtn = card.querySelector(".rc-copy");
+      if (copyBtn) copyBtn.addEventListener("click", function () {
+        vscode.postMessage({ type: "copyReceipt", markdown: md });
+        copyBtn.textContent = "Copied";
+      });
+      const openBtn = card.querySelector(".rc-open");
+      if (openBtn) openBtn.addEventListener("click", function () {
+        vscode.postMessage({ type: "openReceipt", markdown: md });
+      });
+      messages.appendChild(card);
+      messages.scrollTop = messages.scrollHeight;
     } else if (m.type === "sessionResume") {
       // 0.4.1: read-only session-focus summary from the event log,
       // posted on (re)connect and on demand via the command palette.

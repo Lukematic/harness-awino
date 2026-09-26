@@ -394,6 +394,11 @@ Take items from the spec doc "A.W.I.N.O. — Spec: Beat Cline, Roo & Copilot" (r
 - **Change:** on cancel, the chat lists tool calls completed, the one interrupted, and those prevented.
 - **Accept:** cancel mid-round → three lists match the journal.
 
+### T30. Receipts (the architect's proposal, Honda steps 1–3) — DONE
+- **Change:** `prototype/receipt.py` builds promise → proof → lesson from the journal on `story_close`; `story_plan` steps carry an optional forecast; the extension shows a receipt card with *Copy as PR description*.
+- **Accept:** `tests/test_receipt.py` (12), `test/receiptCard.js` (8), sidecar `receipt` command in `tests/test_sidecar_stories.py`. A story closed without a passing verdict reads UNVERIFIED; a criterion the verdict didn't name reads unproven.
+- **Open:** step 0 (live mission with the user's key) still gates everything; receipts from a live run are the real test.
+
 ### T18. Name (needs the user)
 - **Change:** once a name is chosen, centralize display name and IDs so a rename is one change.
 

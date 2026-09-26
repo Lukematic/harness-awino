@@ -61,6 +61,14 @@ class SidecarStoriesTest(unittest.TestCase):
         self.assertEqual(ledger["brag"][0]["outcome"], "Counter live")
         self.assertGreaterEqual(ledger["brag"][0]["time_s"], 0)
         self.assertIn("Counter live", (self.ws / "STORY.md").read_text())
+        # The close hands back a receipt; with no checks run it is honest.
+        closed = self.result(results[2])
+        self.assertEqual(closed["receipt"]["status"], "UNVERIFIED")
+        self.assertIn("## Salmon counter", closed["markdown"])
+        results, _ = run(self.ws, [("receipt", {"id": sid}),
+                                   ("receipt", {"id": "st-nope"})])
+        self.assertEqual(self.result(results[0])["receipt"]["story"]["id"], sid)
+        self.assertEqual(self.result(results[1])["status"], "error")
 
     def test_empty_project_reports_unattached(self):
         results, _ = run(self.ws, [("stories", {})])

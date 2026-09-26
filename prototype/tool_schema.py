@@ -227,7 +227,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
                 "surveyed": {"type": "string", "description": "Existing approaches surveyed and why they fall short."},
                 "user_guidance": {"type": "string", "description": "What the user asked for and decided, in their words."},
                 "proposal": {"type": "string", "description": "Options A/B/C with the Honda recommended; tag claims [Certain], [Likely] or [Guessing]."},
-                "steps": {"type": "string", "description": "Ordered steps, one per line: title | success criterion | failure criterion."},
+                "steps": {"type": "string", "description": "Ordered steps, one per line: title | success criterion | failure criterion | forecast (time, e.g. 45m or 2h). The forecast is checked against the actual time on the story receipt."},
                 "bugatti_brief": {"type": "string", "description": "The Bugatti (ambitious option) in two or three sentences."},
             },
             "required": ["breakdown", "surveyed", "user_guidance",
