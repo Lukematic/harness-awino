@@ -218,21 +218,22 @@ def learn_from_receipt(awino_dir, receipt: dict,
 
 def live(awino_dir) -> list[dict]:
     """Live lessons, escalated first, then most often seen."""
-    rows = [l for l in load(awino_dir).values()
-            if l.get("status") in ("live", "escalated")]
-    rows.sort(key=lambda l: (l.get("status") != "escalated",
-                             -_num(l.get("seen")), -_num(l.get("created_ts"))))
+    rows = [row for row in load(awino_dir).values()
+            if row.get("status") in ("live", "escalated")]
+    rows.sort(key=lambda row: (row.get("status") != "escalated",
+                               -_num(row.get("seen")),
+                               -_num(row.get("created_ts"))))
     return rows
 
 
 def index_lines(awino_dir, limit: int = INDEX_LIMIT) -> list[str]:
     out = []
-    for l in live(awino_dir)[:limit]:
-        if not l.get("text"):
+    for row in live(awino_dir)[:limit]:
+        if not row.get("text"):
             continue
-        seen = int(_num(l.get("seen"))) or 1
-        tag = "ESCALATED" if l["status"] == "escalated" else f"x{seen}"
-        out.append(f"[{tag}] {l['text']}")
+        seen = int(_num(row.get("seen"))) or 1
+        tag = "ESCALATED" if row["status"] == "escalated" else f"x{seen}"
+        out.append(f"[{tag}] {row['text']}")
     return out
 
 
@@ -241,7 +242,7 @@ def mark_shown(awino_dir, keys: list[str] | None = None) -> None:
     a lesson not taken, and a clean close counts toward LEARNED_AFTER."""
     lessons = _load_for_write(awino_dir)
     want = set(keys) if keys is not None else {
-        l["key"] for l in live(awino_dir)[:INDEX_LIMIT]}
+        row["key"] for row in live(awino_dir)[:INDEX_LIMIT]}
     for k in want:
         if k in lessons:
             lessons[k]["shown"] = int(_num(lessons[k].get("shown"))) + 1

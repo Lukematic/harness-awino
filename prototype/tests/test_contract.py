@@ -33,8 +33,9 @@ class TestContract(unittest.TestCase):
         r = loop.run_user_turn("fix the login bug")
         self.assertEqual(r["status"], "ok")
         s = loop.state.snapshot
-        # backend asked for "admin"; harness routed build/first-principles from intent
-        self.assertEqual(s["mode"], "build")
+        # backend asked for "admin"; harness routed first-principles from the
+        # fix intent, with the mode capped by the DEFINE phase (09-27).
+        self.assertEqual(s["mode"], "plan")
         self.assertEqual(s["stance_chain"], ["first-principles"])
         self.assertEqual(s["skills"], ["repo", "code", "debug", "rpi", "rigor-iteration", "rigor-proof-cycles"])
         hints = [e for e in loop.state.events if e["type"] == "turn_hint_ignored"]

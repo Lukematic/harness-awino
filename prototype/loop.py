@@ -21,8 +21,7 @@ from pathlib import Path
 from state import ProjectState, _uid
 from contract import (
     MODES, HARNESS_TOOLS, compile_contract, criterion_status, detect_mission_kind,
-    knowledge_counts, next_action_line, parse_criteria, render_header,
-    route_mode, validate_header, validate_schema, verify_done_criteria,
+    next_action_line, parse_criteria, validate_header, validate_schema, verify_done_criteria,
     coerce_turn_contract, ContractTypeError,
     skills_for_kind, get_skill_store,
 )
@@ -283,7 +282,8 @@ def _owned_overlap(a: list, b: list) -> str | None:
     _execute_single: owned entries are prefixes, so "docs/" owns
     "docs/api/x.txt" and overlaps "docs/api/".
     """
-    norm = lambda p: str(p).rstrip("/")
+    def norm(p):
+        return str(p).rstrip("/")
     for x in a:
         for y in b:
             nx, ny = norm(x), norm(y)
@@ -742,7 +742,10 @@ class Loop:
                 return self.approve()
             pend = [a["id"] for a in s["approvals"] if a["status"] == "pending"]
             return {"status": "awaiting_approval",
-                    "said": f"Still waiting on approval {pend}. /approve <id> or /deny <id>.",
+                    "said": ("Still waiting. "
+                             + self._approval_said(
+                                 [a for a in s["approvals"]
+                                  if a["status"] == "pending"])),
                     "approvals": pend}
 
         if s["awaiting_operator"]:
@@ -846,7 +849,6 @@ class Loop:
 
     def _pipeline(self, user_text: str, input_kind: str) -> dict:
         """Stages 0-4b of the per-turn pipeline."""
-        cfg = self.config
         s = self.state.snapshot
         turn_no = s["turn_count"] + 1
         turn_id = f"t{turn_no}"
@@ -887,10 +889,9 @@ class Loop:
         # block already carries the routed triple.)
         # ---- Stage 2: elevator sensor ----
         routing = self._sensor_route(user_text, input_kind)
-        contract_block = compile_contract(self.state, turn_no=turn_no)
-        # The expected header is the contract's first line: rendered by the
-        # harness from the sensor's routing BEFORE the backend acts.
-        expected_header = contract_block.split("\n", 1)[0]
+        # Compiled here for its fail-closed checks (an unverified skill body
+        # raises before the turn starts); the round loop compiles its own.
+        compile_contract(self.state, turn_no=turn_no)
 
         # ---- Stage 3: autonomy & permission gate ----
         # The permitted tool set is computed from the routed mode BEFORE the
@@ -1350,8 +1351,8 @@ class Loop:
             return v.strip() if isinstance(v, str) else ""
 
         steps = []
-        for i, line in enumerate(l for l in arg("steps").splitlines()
-                                 if l.strip()):
+        for i, line in enumerate(ln for ln in arg("steps").splitlines()
+                                 if ln.strip()):
             parts = [p.strip() for p in line.split("|")]
             if len(parts) not in (3, 4):
                 return {"error": f"story_plan step {i + 1} must be "
@@ -1473,8 +1474,8 @@ class Loop:
             return {"error": f"stretch_goal needs every NABC part; missing: "
                              f"{', '.join(missing)}"}
         steps = []
-        for i, line in enumerate(l for l in arg("steps").splitlines()
-                                 if l.strip()):
+        for i, line in enumerate(ln for ln in arg("steps").splitlines()
+                                 if ln.strip()):
             parts = [p.strip() for p in line.split("|")]
             if len(parts) != 3:
                 return {"error": f"stretch_goal step {i + 1} must be "
@@ -2698,9 +2699,22 @@ class Loop:
         self.hooks.fire("approval_requested",
                         {"turn_id": turn_id, "approval_ids": ids})
         return {"status": "awaiting_approval",
-                "said": f"Consequential action(s) need approval: {ids}. "
-                        f"/approve <id> or /deny <id>.",
+                "said": self._approval_said(approvals),
                 "approvals": ids}
+
+    @staticmethod
+    def _approval_said(approvals: list[dict]) -> str:
+        """Plain words for what is waiting: tool + target, no id lists.
+        (In the terminal, /approve and /deny act on the oldest pending.)"""
+        what = []
+        for a in approvals[:3]:
+            args = a.get("args") or {}
+            target = args.get("path") or args.get("cmd") or ""
+            what.append(f"{a.get('tool', '?')} {str(target)[:60]}".strip())
+        more = f" and {len(approvals) - 3} more" if len(approvals) > 3 else ""
+        n = len(approvals)
+        return (f"{n} action{'s' if n != 1 else ''} need{'s' if n == 1 else ''} "
+                f"your approval: {', '.join(what)}{more}.")
 
     def _pending_approvals(self) -> list[dict]:
         return [a for a in self.state.snapshot["approvals"] if a["status"] == "pending"]
@@ -4066,7 +4080,6 @@ class Loop:
         Fail -> findings become new DAG tasks; route back to BUILD.
         A verdict forged in the PARENT journal is ignored (worker isolation).
         """
-        s = self.state.snapshot
         wstate = self._worker_state(worker_id)
         verdict_ev = None
         for e in wstate.events:

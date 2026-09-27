@@ -304,6 +304,23 @@ function toolResultSummary(t) {
   return { ok: !failed, text: JSON.stringify(r).slice(0, 160) };
 }
 
+// Status chip wording: nothing for the normal case, plain words otherwise.
+function statusChipText(status) {
+  var map = { ok: "", completed: "", awaiting_approval: "Waiting for approval",
+    awaiting_inspection: "Needs a check", awaiting_operator: "Needs you",
+    rejected: "Rejected", error: "Error", cancelled: "Stopped", closed: "Closed" };
+  if (status == null || status === "") return "";
+  if (Object.prototype.hasOwnProperty.call(map, status)) return map[status];
+  return String(status).replace(/_/g, " ");
+}
+
+function approvalResolvedText(decision) {
+  if (decision === "deny") return "Denied ✗";
+  if (decision === "always") return "Approved ✓ (always allowed this session)";
+  if (decision === "auto") return "Approved ✓ (allowed earlier this session)";
+  return "Approved ✓";
+}
+
 function commandResultText(ev) {
   ev = ev || {};
   var r = ev.result || {};
@@ -394,7 +411,8 @@ if (typeof window !== "undefined") window.AwinoMarkdown = AwinoMarkdown;
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { AwinoMarkdown: AwinoMarkdown, harnessReplyMarkdown: harnessReplyMarkdown,
     receiptCardHtml: receiptCardHtml, receiptDuration: receiptDuration,
-    toolResultSummary: toolResultSummary, commandResultText: commandResultText };
+    toolResultSummary: toolResultSummary, commandResultText: commandResultText,
+    approvalResolvedText: approvalResolvedText, statusChipText: statusChipText };
 }
 
 // The chat UI boots only inside a VS Code webview (acquireVsCodeApi +
@@ -518,11 +536,11 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
   function chips(result) {
     const out = [];
     if (result.phase) out.push('<span class="chip phase">' + esc(result.phase) + "</span>");
-    const m = result.active_mode || {};
-    if (m.id) out.push('<span class="chip mode">mode: ' + esc(m.id) + "</span>");
-    const p = result.persona;
-    if (p && p.skill) out.push('<span class="chip persona">persona: ' + esc(p.skill) + "</span>");
-    if (result.status) out.push('<span class="chip">' + esc(result.status) + "</span>");
+    // Phase only, plus the status when it needs the user's attention.
+    // Mode/persona ids were internal jargon ("mode: interview") on every
+    // reply; the mode selector in the header already shows the mode.
+    const st = statusChipText(result.status);
+    if (st) out.push('<span class="chip">' + esc(st) + "</span>");
     return out.length ? '<div class="chips">' + out.join("") + "</div>" : "";
   }
 
@@ -1115,7 +1133,7 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
       if (row.bead.className.indexOf("working") >= 0) row.bead.className = "bead done";
     });
     if (r.status === "awaiting_approval") {
-      st.card.appendChild(mk("div", "", "<i>Awaiting your approval \u2014 see the approval card(s) below and the VS Code dialog.</i>"));
+      st.card.appendChild(mk("div", "", "<i>Waiting for your approval \u2014 decide on the card below.</i>"));
     }
     turnInFlight = false;
     setBead("turn", "", "turn: idle");
@@ -1179,7 +1197,7 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
       card.appendChild(cd);
     }
     if (r.status === "awaiting_approval") {
-      card.appendChild(mk("div", "", "<i>Awaiting your approval \u2014 see the approval card(s) below and the VS Code dialog.</i>"));
+      card.appendChild(mk("div", "", "<i>Waiting for your approval \u2014 decide on the card below.</i>"));
     }
     messages.appendChild(card);
     turnInFlight = false;
@@ -1225,7 +1243,7 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
         });
         html += "</div>";
       }
-      html += '<div class="btnrow">' +
+      html += '<div class="btnrow" data-approval-id="' + esc(a.id) + '">' +
         '<button data-act="approve">Approve</button>';
       // Native diff review: open the proposed change in a vscode.diff
       // editor. The decision stays on the card — this button never
@@ -1235,25 +1253,40 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
       if (canDiff) {
         html += '<button data-act="viewDiff" class="secondary">View diff</button>';
       }
+      html += '<button data-act="always" class="secondary" title="Approve this and every later ' +
+        esc(a.tool) + ' call in this session">Always allow ' + esc(a.tool) + '</button>';
       html += '<button data-act="deny" class="secondary">Deny</button></div></div>';
       d.innerHTML = html;
       AwinoMarkdown.wireCopyButtons(d);
-      d.querySelectorAll("button").forEach(function (b) {
+      d.querySelectorAll(".btnrow button").forEach(function (b) {
         b.addEventListener("click", function () {
           var act = b.getAttribute("data-act");
           if (act === "viewDiff") {
             vscode.postMessage({ type: "viewDiff", id: a.id });
             return;
           }
-          vscode.postMessage({ type: "approve", id: a.id, decision: act });
-          b.disabled = true;
+          vscode.postMessage({ type: "approve", id: a.id, decision: act, tool: a.tool });
+          // One decision per card: lock the whole row until the host confirms.
+          b.parentNode.querySelectorAll("button").forEach(function (x) { x.disabled = true; });
           const spin = mk("span", "bead working");
           spin.title = "waiting for sidecar";
           b.parentNode.appendChild(spin);
-          setBead("approval", "", "approval: none");
         });
       });
     });
+  }
+
+  // The host confirmed a decision: the card becomes a read-only record.
+  function markApprovalResolved(id, decision) {
+    document.querySelectorAll(".btnrow[data-approval-id]").forEach(function (row) {
+      if (row.getAttribute("data-approval-id") !== String(id)) return;
+      var text = approvalResolvedText(decision);
+      row.innerHTML = '<span class="resolved ' + (decision === "deny" ? "denied" : "approved") + '">' +
+        esc(text) + "</span>";
+    });
+    if (!document.querySelector(".btnrow[data-approval-id] button")) {
+      setBead("approval", "", "approval: none");
+    }
   }
 
   function renderCompaction(ev) {
@@ -1359,7 +1392,8 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
         setBead("link", "", "link: disconnected");
         break;
       default:
-        addMsg("", "<i>[" + esc(ev.event) + "]</i> <code>" + esc(JSON.stringify(ev).slice(0, 300)) + "</code>");
+        // Internal events (budget ticks, bookkeeping) are not conversation.
+        if (typeof console !== "undefined") console.debug("awino event", ev.event);
     }
   }
 
@@ -1367,9 +1401,12 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     // Spec 1.3: the input bar is NEVER hidden — states only disable it or
     // change the placeholder. Wizard showing → disabled; not connected →
     // disabled; turn in flight → disabled.
+    // While a turn runs you can still type the next message; only Send
+    // waits. Stop is live only when there is something to stop.
     var blocked = turnInFlight || wizardActive || !chatConnected;
     sendBtn.disabled = blocked;
-    input.disabled = blocked;
+    input.disabled = wizardActive || !chatConnected;
+    if (stopBtn) stopBtn.disabled = !turnInFlight;
     if (wizardActive) {
       input.placeholder = "Finish setup above to start chatting";
     } else if (!chatConnected) {
@@ -1546,6 +1583,7 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
   });
   input.addEventListener("keydown", function (e) {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+    if (e.key === "Escape" && turnInFlight) { e.preventDefault(); vscode.postMessage({ type: "stop" }); }
   });
 
   window.addEventListener("message", function (e) {
@@ -1652,6 +1690,8 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
       // Spec 1.3: scroll to bottom after state rehydration (postChatState on
       // view resolve) so the reloaded chat shows the latest messages.
       if (messages) messages.scrollTop = messages.scrollHeight;
+    } else if (m.type === "approvalResolved" && m.id) {
+      markApprovalResolved(m.id, m.decision);
     } else if (m.type === "receipt" && m.receipt) {
       const card = document.createElement("div");
       card.className = "receipt-card";

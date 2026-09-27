@@ -390,7 +390,7 @@ def route_mode(snapshot: dict, input_kind: str = "info") -> str:
 # sha256 in skills/manifest.json -- a hash mismatch raises at import and
 # the harness refuses to start rather than deliver unverified content.
 # ---------------------------------------------------------------------------
-from skills import SkillStore
+from skills import SkillStore  # noqa: E402 (after the policy docs above)
 
 _STORE = SkillStore.default()
 SKILLS = _STORE.as_dict()
@@ -561,7 +561,7 @@ def compile_contract(state, turn_no: int | None = None,
     else:
         A("(no mission — IDLE, read-only)")
     A("")
-    A(f"## MODE — routed by harness code (any mode_hint in model output is ignored)")
+    A("## MODE — routed by harness code (any mode_hint in model output is ignored)")
     A(f"{mode}: {MODES[mode]['desc']}")
     A(f"offered tools: {', '.join(offered)}")
     A(f"consequential (need human approval): {', '.join(consequential) or '(none)'}")
@@ -665,8 +665,8 @@ def compile_contract(state, turn_no: int | None = None,
     A("")
     A("## LEARNINGS (from this project — build on these)")
     learnings = s.get("learnings", [])
-    for l in learnings[-5:]:
-        A(f"- [{l['kind']}] {l['text']}")
+    for lrn in learnings[-5:]:
+        A(f"- [{lrn['kind']}] {lrn['text']}")
     if not learnings:
         A("(none yet)")
     A("")

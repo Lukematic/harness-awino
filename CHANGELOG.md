@@ -2,6 +2,17 @@
 
 ## Unreleased — Receipts and lessons
 
+- **Team review 09-27** (docs/TEAM_REVIEW_2026-09-27.md): the model now
+  sees tool output and can write past 1,024 tokens, and Anthropic tool calls
+  authenticate; the journal is thread-safe and repairs itself; a crash
+  mid-turn no longer strands the session; VERIFY runs your `test`/`lint`
+  recipes; the SHIP scan ignores `.venv`/`node_modules`; setup chores
+  (justfile, .gitignore, .env.example, .editorconfig) are proposed and
+  applied only with consent; approvals happen on one card that updates in
+  place; the header, light theme and Stop button work at sidebar widths;
+  `pip install` ships every module; CI runs lint (zero findings), the engine
+  and extension tests. New: docs/GETTING_STARTED.md.
+
 - **Lessons** (`prototype/lessons.py`), after autoharness's self-learning
   skill layer but judged by outcomes: each closed story's receipt yields
   lessons (steps that ran 2x+ their forecast, checks that failed before

@@ -31,7 +31,8 @@ class TestTurnHeader(unittest.TestCase):
         (phase, mode, stance, skills, loop_no, run, kn, km, mid) = m.groups()
         s = loop.state.snapshot
         self.assertEqual(phase, "DEFINE")
-        self.assertEqual(mode, "build")  # fix intent overrides the floor default
+        # fix intent picks the stance/skills; the DEFINE phase caps the mode
+        self.assertEqual(mode, "plan")
         self.assertEqual(stance, "first-principles")
         self.assertEqual(skills, "repo,code,debug,rpi,rigor-iteration,rigor-proof-cycles")
         self.assertEqual(loop_no, "1.0")  # v0.6: loop renders turn.round

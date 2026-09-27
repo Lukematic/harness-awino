@@ -21,7 +21,7 @@ Two things live here:
 ## Run it
 
 ```sh
-cd prototype && ./run_tests.sh   # full harness suite (909 tests, ~3 min; point TMPDIR at a roomy dir)
+cd prototype && ./run_tests.sh   # full harness suite (~980 tests, under 2 min; point TMPDIR at a roomy dir)
 cd integrations/vscode/extension && npm test   # extension suite (node)
 ```
 
@@ -45,6 +45,10 @@ print('NO_VSIX_FOUND'); sys.exit(1)
 or in VS Code: Extensions view → `…` → *Install from VSIX…* with the
 downloaded file. No Python setup needed — the runtime ships inside the
 package.
+
+**New here? Start with [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)** —
+install, connect a model, your first mission, receipts, lessons, and a
+glossary for the words you'll see.
 
 ## What's in the harness
 

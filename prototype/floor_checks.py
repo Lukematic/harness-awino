@@ -173,7 +173,7 @@ def diff_for_new_file(path, content):
              "--- /dev/null", f"+++ b/{path}"]
     body = content.splitlines()
     lines.append(f"@@ -0,0 +1,{len(body)} @@")
-    lines.extend("+" + l for l in body)
+    lines.extend("+" + ln for ln in body)
     return "\n".join(lines) + "\n"
 
 # ---------------------------------------------------------------------------

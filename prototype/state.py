@@ -68,7 +68,6 @@ def initial_snapshot(project_id: str, conversation_id: str) -> dict:
         "stance_chain": ["advisor"],  # full routed chain; stance = chain[0]
         "skills": [],  # routed skill names (triple router)
         "skill_trigger": "default",
-        "scope": None,  # approved SCOPE file list (None = no scoped approval)
         "scope_epoch": 0,  # bumps on every scope change; approvals bind to it
         "mission_revision": 0,  # bumps on every set_mission; evidence binds to it
         "mission_start_ts": None,  # Phase B: wall-clock budget anchor (set on mission_set)
@@ -96,7 +95,9 @@ def initial_snapshot(project_id: str, conversation_id: str) -> dict:
         "terminal_reason": None,
         "worker_budget_allocated": 0,  # Phase D: turns allocated to workers
         "worker_id": None,  # Phase D: set on worker Loops
-        "scope": [],  # Phase D: worker file ownership (list of path prefixes)
+        # Approved SCOPE file list; for workers, the owned path prefixes.
+        # (It was declared twice, None then []; the [] always won.)
+        "scope": [],
         "role_mode": None,  # Track D: active role lens {role, reason, source}
         "verify_pass": None,  # Track G: journaled verifier verdict that passed
         "verify_pending": None,  # Track G: {worker_id} while verifier runs
@@ -106,7 +107,6 @@ def initial_snapshot(project_id: str, conversation_id: str) -> dict:
         "awaiting_operator": False,
         "awaiting_operator_reason": None,
         "awaiting_operator_round": None,
-        "awaiting_operator": False,
         "turn_count": 0,
         "retries": 0,
         "consecutive_stalls": 0,

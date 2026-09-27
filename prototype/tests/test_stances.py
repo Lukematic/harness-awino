@@ -65,8 +65,11 @@ class TestTripleRouting(unittest.TestCase):
         self.assertNotIn("write_file", MODES[mode]["tools"])
 
     def test_fix_routes_build_scoped_first_principles(self):
+        # In BUILD. Before BUILD the phase caps the mode to plan
+        # (PhaseCapsModeTest below).
         intent, mode, chain, skills, _ = route_triple(
-            snap(), "Fix this bug in the login form", "info")
+            snap({"id": "m-1"}, "BUILD"), "Fix this bug in the login form",
+            "info")
         self.assertEqual(intent, "fix")
         self.assertEqual(mode, "build")
         self.assertEqual(chain, ["first-principles"])
@@ -445,3 +448,22 @@ class TestStanceInvariants(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PhaseCapsModeTest(unittest.TestCase):
+    """Team review 09-27: "plan the fix" in PLAN routed build mode."""
+
+    def test_fix_in_plan_phase_stays_in_plan_mode(self):
+        from stances import route_triple
+        snap = {"mission": {"id": "m"}, "phase": "PLAN"}
+        intent, mode, _chain, skills, label = route_triple(
+            snap, "plan the fix with me", "info")
+        self.assertEqual(intent, "fix")
+        self.assertEqual(mode, "plan")
+        self.assertIn("debug", skills)
+        self.assertIn("capped", label)
+
+    def test_fix_in_build_phase_is_build_mode(self):
+        from stances import route_triple
+        snap = {"mission": {"id": "m"}, "phase": "BUILD"}
+        self.assertEqual(route_triple(snap, "fix the bug", "info")[1], "build")

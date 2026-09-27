@@ -41,7 +41,6 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import backends
 import loop as loop_module
 from backends import EchoBackend, OllamaBackend, ScriptedBackend, default_max_tokens
 from contract import MODES, compile_contract as _real_compile_contract
@@ -1501,7 +1500,6 @@ def _parse_providers_yaml(text: str) -> dict:
     try:
         root: dict = {}
         stack: list[tuple[int, dict]] = [(-1, root)]
-        seen_keys: dict[int, set[str]] = {-1: set()}
         for lineno, raw in enumerate(text.splitlines(), 1):
             line = _strip_yaml_comment(raw)
             if not line.strip() or line.strip().startswith("#"):
@@ -2574,11 +2572,11 @@ class Sidecar:
         # before the client is listening was dropped.
         notices: list[str] = []
         if offered:
-            esc = sum(1 for l in offered if l.startswith("[ESCALATED]"))
+            esc = sum(1 for ln in offered if ln.startswith("[ESCALATED]"))
             notices.append(
                 f"{len(offered)} lesson(s) from past receipts are in play"
                 + (f", {esc} escalated" if esc else "") + ": "
-                + " · ".join(l.split('] ', 1)[-1][:90] for l in offered[:3]))
+                + " · ".join(ln.split('] ', 1)[-1][:90] for ln in offered[:3]))
         repaired = getattr(self.loop.state, "repaired_mid", None)
         if repaired:
             notices.append(
@@ -4668,8 +4666,8 @@ class Sidecar:
         """Every lesson with its status, counts and ledger."""
         import lessons as L
         rows = sorted(L.load(self._awino_dir()).values(),
-                      key=lambda l: (l.get("status") == "learned",
-                                     -L._num(l.get("seen"))))
+                      key=lambda row: (row.get("status") == "learned",
+                                       -L._num(row.get("seen"))))
         return {"status": "ok", "lessons": rows}
 
     def _cmd_receipt(self, args: dict) -> dict:

@@ -378,7 +378,6 @@ def _render_story_block(s: dict) -> list[str]:
     if sessions:
         for sess in sessions:
             start = sess.get("started_ts") or sess.get("ts")
-            end = sess.get("ended_ts")
             when = _day(start)
             dur = _session_seconds(sess)
             stamp = (f"{when} ({format_duration(dur)})" if dur

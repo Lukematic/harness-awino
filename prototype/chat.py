@@ -32,6 +32,19 @@ def make_backend():
     else:
         raise ValueError(f"unknown AWINO_BACKEND={which!r} (use echo|local)")
 
+USAGE = """usage: python chat.py [STATE_HOME]
+
+Interactive A.W.I.N.O. chat in the current directory. STATE_HOME defaults
+to <cwd>/.awino. Backend: AWINO_BACKEND=echo (default, no model) or
+AWINO_BACKEND=local with OLLAMA_MODEL/OLLAMA_HOST for a local model.
+Type /help inside the chat for commands."""
+
+if len(sys.argv) > 1 and sys.argv[1].startswith("-"):
+    # `--help` used to become the state directory: a folder named "--help"
+    # plus a project scaffold wherever the command was run.
+    print(USAGE)
+    sys.exit(0 if sys.argv[1] in ("-h", "--help") else 2)
+
 HOME = Path(sys.argv[1]) if len(sys.argv) > 1 else default_home(Path.cwd())
 PROJECT = project_slug(Path.cwd())
 
@@ -179,8 +192,8 @@ def main() -> None:
                     print(f"  ? {q}")
                 for p in st["progress"]:
                     print(f"  · {p}")
-                for l in st["learnings"]:
-                    print(f"  ◈ [{l['kind']}] {l['text'][:120]}")
+                for lrn in st["learnings"]:
+                    print(f"  ◈ [{lrn['kind']}] {lrn['text'][:120]}")
                 if st["pending_approvals"]:
                     print(f"  pending approvals: {st['pending_approvals']}")
                 print(f"  contract approved: {st['contract_approved']} | stance: {st['stance']}")
@@ -191,8 +204,8 @@ def main() -> None:
                 learnings = loop.state.snapshot.get("learnings", [])
                 if not learnings:
                     print("(no learnings recorded yet)")
-                for l in learnings:
-                    print(f"[{l['kind']}] {l['text']}")
+                for lrn in learnings:
+                    print(f"[{lrn['kind']}] {lrn['text']}")
             elif cmd == "synthesize":
                 try:
                     idx = int(arg) if arg else -1

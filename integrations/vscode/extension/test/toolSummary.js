@@ -2,7 +2,7 @@
 // test/toolSummary.js — tool results and command results read as one plain
 // line instead of JSON.
 const assert = require("assert");
-const { toolResultSummary: s, commandResultText: c } = require("../webview/chat.js");
+const { toolResultSummary: s, commandResultText: c, statusChipText: chip, approvalResolvedText: res } = require("../webview/chat.js");
 let pass = 0, fail = 0;
 function t(name, fn) {
   try { fn(); pass++; console.log("ok   - " + name); }
@@ -42,5 +42,15 @@ t("command result prefers said", () => assert.strictEqual(
   "Closed 'Agentic learning review' — on the brag board."));
 t("command result without said", () => { assert.strictEqual(c({ ok: true, result: { status: "ok" } }), "done");
   assert.strictEqual(c({ ok: false, result: {} }), "failed"); });
+t("status chips speak plainly", () => {
+  assert.strictEqual(chip("ok"), "");
+  assert.strictEqual(chip("awaiting_approval"), "Waiting for approval");
+  assert.strictEqual(chip("some_new_state"), "some new state");
+});
+t("approval resolution text", () => {
+  assert.strictEqual(res("deny"), "Denied ✗");
+  assert.strictEqual(res("approve"), "Approved ✓");
+  assert.ok(res("always").includes("always allowed"));
+});
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

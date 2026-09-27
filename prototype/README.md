@@ -1,7 +1,9 @@
 # A.W.I.N.O. loop-owner — Phase 0 prototype
 
-Plain Python, stdlib only. No model API calls anywhere: all model behavior
-goes through `ModelBackend` with mock backends (scripted / hostile / echo).
+Plain Python, stdlib only. All model behavior goes through `ModelBackend`:
+real providers (Anthropic, OpenAI-compatible, Bedrock, Ollama) in
+`awino_sidecar.py`/`backends.py`, and mock backends (scripted / hostile /
+echo) for tests. Users start at [../docs/GETTING_STARTED.md](../docs/GETTING_STARTED.md).
 
 ## Layout
 

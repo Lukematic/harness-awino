@@ -508,9 +508,8 @@ def _check_three_strike(evs: list[dict], mission: dict) -> dict:
         sig, seq = d.get("signature", ""), first.get("seq")
         count = d.get("consecutive", 3)
     else:  # cluster form (pre-breaker journals)
-        sig, first_seq, last_seq, count = (first["signature"],
-                                          first["seqs"][0], first["seqs"][-1],
-                                          len(first["seqs"]))
+        sig, last_seq, count = (first["signature"], first["seqs"][-1],
+                                len(first["seqs"]))
         seq = last_seq
     # Recovered per protocol? rollback + a later validated turn.
     doom_seq = seq

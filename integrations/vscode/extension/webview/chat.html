@@ -191,7 +191,7 @@
     border: 1px solid var(--awino-gold, #D4A937);
     border-left: 4px solid var(--awino-gold, #D4A937);
     border-radius: 10px;
-    background: var(--awino-surface-1, var(--vscode-sideBar-background, #172036));
+    background: var(--awino-bg-2, var(--vscode-sideBar-background, #172036));
     flex: 0 0 auto;
   }
   #setup-card[hidden] { display: none; }
@@ -233,6 +233,18 @@
     color: var(--awino-gold-bright, var(--vscode-editorWarning-foreground, #F0C94A));
   }
   #chatheader .deco { display: inline-flex; gap: 4px; align-items: center; }
+  #chatheader { min-width: 0; }
+  #chatheader > * { flex: 0 0 auto; }
+  #chatheader #provider-pill { flex: 1 1 auto; min-width: 70px; }
+  #chatheader .spacer { flex: 0 1 0; }
+  #chatheader .brand { white-space: nowrap; }
+  #chatheader button { padding: 4px 8px; }
+  @media (max-width: 400px) {
+    #chatheader { flex-wrap: wrap; row-gap: 6px; }
+    #chatheader .brand-text, #theme-name { display: none; }
+    /* the mode picker takes its own row so the pill and ⚙ stay visible */
+    #mode-select { order: 10; flex: 1 1 100%; max-width: none; }
+  }
   #chatheader .spacer { flex: 1; }
   /* Persistent mission header (0.4.1): one line — mission, phase,
    * verified done-criteria x/y, mission revision. Rendered from the live
@@ -273,9 +285,9 @@
   .receipt-card .rc-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
   .receipt-card .rc-title { font-weight: 700; }
   .receipt-card .rc-badge { font-size: 11px; font-weight: 700; letter-spacing: .04em; padding: 1px 6px; border-radius: 4px; white-space: nowrap; color: #fff; }
-  .receipt-card .rc-badge.rc-ok { background: var(--awino-ok, #2EA043); }
+  .receipt-card .rc-badge.rc-ok { background: var(--awino-ok, #2EA043); color: var(--awino-on-vibranium, #04222E); }
   .receipt-card .rc-badge.rc-warn { background: var(--awino-warn, #D29922); color: #1a1405; }
-  .receipt-card .rc-badge.rc-bad { background: var(--awino-danger, #DA3633); }
+  .receipt-card .rc-badge.rc-bad { background: var(--awino-danger, #DA3633); color: #fff; }
   .receipt-card .rc-outcome { margin: 4px 0; }
   .receipt-card .rc-meta, .receipt-card .rc-dim { color: var(--awino-muted, var(--vscode-descriptionForeground, #8B98B0)); font-size: 12px; }
   .receipt-card .rc-sec { margin-top: 8px; font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--awino-gold, inherit); }
@@ -333,8 +345,8 @@
   .chips { margin: 6px 0; }
   .chip {
     display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 10px; margin-right: 6px;
-    background: var(--vscode-badge-background, #4D4D4D);
-    color: var(--vscode-badge-foreground, #FFFFFF);
+    background: var(--awino-bg-3, var(--vscode-badge-background, #4D4D4D));
+    color: var(--awino-text, var(--vscode-badge-foreground, #FFFFFF));
   }
   .chip.phase {
     background: var(--awino-vibranium-dim, rgba(0,198,255,.12));
@@ -385,19 +397,25 @@
   .targets .in { color: var(--vscode-descriptionForeground, #8A93A6); }
   .outside-banner {
     margin: 8px 0 0 0; padding: 8px; border-radius: 4px; font-size: 12px;
-    background: var(--vscode-inputValidation-warningBackground, #3A2E12);
-    border: 1px solid var(--vscode-editorWarning-foreground, #D4A937);
-    color: var(--vscode-editorWarning-foreground, #D4A937);
+    background: var(--awino-gold-dim, var(--vscode-inputValidation-warningBackground, #3A2E12));
+    border: 1px solid var(--awino-gold, var(--vscode-editorWarning-foreground, #D4A937));
+    color: var(--awino-text, var(--vscode-editorWarning-foreground, #D4A937));
   }
+  /* `hidden` must win over any display rule (the wizard's .wrow{flex}
+   * showed Bedrock/AWS fields for every provider). */
+  [hidden] { display: none !important; }
   button {
-    background: var(--vscode-button-background, #0E639C);
-    color: var(--vscode-button-foreground, #FFFFFF);
+    background: var(--awino-vibranium-deep, var(--vscode-button-background, #0E639C));
+    color: var(--awino-on-vibranium, var(--vscode-button-foreground, #FFFFFF));
     border: none; padding: 6px 14px; border-radius: 4px; cursor: pointer; font: inherit;
   }
   button.secondary {
-    background: var(--vscode-button-secondaryBackground, #3A3D41);
-    color: var(--vscode-button-secondaryForeground, #FFFFFF);
+    background: var(--awino-bg-3, var(--vscode-button-secondaryBackground, #3A3D41));
+    color: var(--awino-text, var(--vscode-button-secondaryForeground, #FFFFFF));
   }
+  .btnrow .resolved { font-size: 12px; font-weight: 600; }
+  .btnrow .resolved.approved { color: var(--awino-ok, #4EC9B0); }
+  .btnrow .resolved.denied { color: var(--awino-danger, #F14C4C); }
   button:disabled { opacity: .5; cursor: default; }
   .approval button[data-act="approve"] {
     background: linear-gradient(180deg,
@@ -626,7 +644,7 @@
     border: 1px solid var(--awino-gold, #D4A937);
     border-left: 4px solid var(--awino-gold, #D4A937);
     border-radius: 10px;
-    background: var(--awino-surface-1, var(--vscode-sideBar-background, #172036));
+    background: var(--awino-bg-2, var(--vscode-sideBar-background, #172036));
     flex: 0 0 auto;
     max-height: 70%; overflow-y: auto;
   }
@@ -788,7 +806,7 @@
 <body>
 <div id="chatheader">
   <span id="conn-dot" class="dot off" title="Not connected"></span>
-  <span class="brand">◈ Awino</span>
+  <span class="brand">◈<span class="brand-text"> Awino</span></span>
   <button id="provider-pill" class="none" title="No provider connected — choose a model / provider">No provider</button>
   <select id="mode-select" title="Active mode — switch at the point of use" hidden></select>
   <span class="spacer"></span>
@@ -808,7 +826,7 @@
   </div>
 </div>
 <div id="banner"></div>
-<div id="messages"></div>
+<div id="messages" role="log" aria-live="polite" aria-label="Conversation" tabindex="0"></div>
 <button id="jump-latest" hidden>&#8595; jump to latest</button>
 <div id="statusline">not connected</div>
 <div id="echo-banner"></div>
@@ -881,7 +899,7 @@
   </div>
 </div>
 <div id="inputbar">
-  <textarea id="input" rows="2" placeholder="Message the loop owner… (a mission starts with the discovery interview)"></textarea>
+  <textarea id="input" rows="2" aria-label="Message Awino" placeholder="Message the loop owner… (a mission starts with the discovery interview)"></textarea>
   <div style="display:flex;flex-direction:column;gap:6px;margin-left:8px;">
     <button id="send">Send</button>
     <button id="stop" class="secondary">Stop</button>

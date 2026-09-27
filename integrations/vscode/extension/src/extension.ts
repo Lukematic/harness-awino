@@ -759,10 +759,18 @@ async function handleChatMessage(
     case "openReceipt":
       await openReceiptDoc(String(m.markdown ?? ""));
       break;
-    case "approve":
-      log(`webview approve: id=${String(m.id)} decision=${m.decision}`);
-      session.client.approve(String(m.id), m.decision === "deny" ? "deny" : "approve");
+    case "approve": {
+      // The chat card is the one decision path (no modal): Approve,
+      // Always allow <tool> (this session), or Deny.
+      const decision = String(m.decision ?? "deny");
+      log(`webview approve: id=${String(m.id)} decision=${decision}`);
+      if (decision === "always" && typeof m.tool === "string") {
+        session.alwaysAllow.add(m.tool);
+      }
+      session.client.approve(String(m.id), decision === "deny" ? "deny" : "approve");
+      postToChat({ type: "approvalResolved", id: String(m.id), decision });
       break;
+    }
     case "viewDiff": {
       // Chat approval card's "View diff": open the native vscode.diff
       // editor (current <-> proposed). Decision stays on the card/modal.
@@ -1404,71 +1412,25 @@ async function handleApprovalRequested(ev: SidecarEvent): Promise<void> {
   // Remembered for the chat card's "View diff" action (viewDiff message).
   lastApprovalItems = approvals;
 
+  let waiting = 0;
   for (const a of approvals) {
     if (session.alwaysAllow.has(a.tool)) {
       log(`auto-approving ${a.tool} (session allow)`);
       session.client.approve(a.id, "approve");
+      postToChat({ type: "approvalResolved", id: a.id, decision: "auto" });
       continue;
     }
-    const detail = [
-      `tool: ${a.tool}`,
-      `args: ${JSON.stringify(a.args, null, 2)}`,
-      a.diff ? `\n--- diff ---\n${a.diff}` : "",
-      a.shell_targets ? `\n--- shell targets ---\n${formatShellTargets(a.shell_targets)}` : "",
-    ]
-      .filter(Boolean)
-      .join("\n");
-    // Native diff review: for file writes, offer a vscode.diff editor
-    // (current <-> proposed) instead of only the text diff in the modal.
-    // Choosing it opens the diff and re-shows the modal — the decision
-    // stays explicit. write_file carries the full content in args;
-    // patch_file carries the sidecar-computed proposed_content.
-    const canDiff =
-      (a.tool === "write_file" && typeof a.args["content"] === "string") ||
-      (a.tool === "patch_file" && typeof a.proposed_content === "string");
-    let choice: string | undefined;
-    for (;;) {
-      const buttons = canDiff
-        ? [
-            "Approve",
-            "View diff",
-            `Always allow ${a.tool} (this session)`,
-            "Deny",
-          ]
-        : ["Approve", `Always allow ${a.tool} (this session)`, "Deny"];
-      choice = await vscode.window.showWarningMessage(
-        `Awino requests approval: ${a.tool}`,
-        { modal: true, detail: detail.slice(0, 4000) },
-        ...buttons
-      );
-      if (choice !== "View diff") {
-        break;
-      }
-      const relPath = String(a.args["path"] ?? "");
-      const proposed =
-        a.tool === "write_file"
-          ? String(a.args["content"] ?? "")
-          : String(a.proposed_content ?? "");
-      try {
-        await showApprovalDiff(relPath, proposed, a.old_exists !== false, a.tool);
-      } catch (e) {
-        vscode.window.showErrorMessage(
-          `Awino: could not open the diff editor — ${
-            e instanceof Error ? e.message : String(e)
-          }`
-        );
-      }
-    }
-    if (choice === "Approve") {
-      session.client.approve(a.id, "approve");
-    } else if (choice && choice.startsWith("Always allow")) {
-      session.alwaysAllow.add(a.tool);
-      log(`session allow-listed: ${a.tool}`);
-      session.client.approve(a.id, "approve");
-    } else {
-      // Deny or dismissed — deny is the safe direction
-      session.client.approve(a.id, "deny");
-    }
+    waiting++;
+  }
+  // The decision lives on the chat card. A modal here used to block the
+  // card and the diff editor its own "View diff" opened. When the chat is
+  // hidden, a non-modal nudge brings it forward.
+  if (waiting && !chatPanel?.visible) {
+    void vscode.window
+      .showInformationMessage(`Awino is waiting for your approval (${waiting}).`, "Open chat")
+      .then((c) => {
+        if (c === "Open chat") void vscode.commands.executeCommand("awino.chat.focus");
+      });
   }
 }
 

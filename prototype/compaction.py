@@ -170,7 +170,7 @@ def rebuild_context_from_state(loop, search_dirs: list | None = None) -> list[di
         lines.extend(f"- {q}" for q in questions)
     else:
         lines.append("(none)")
-    learnings = [l.get("text", "") for l in (s.get("learnings") or [])
+    learnings = [lrn.get("text", "") for lrn in (s.get("learnings") or [])
                  [-_LEARNINGS_TAIL:]]
     lines.append("LEARNINGS:")
     if learnings:

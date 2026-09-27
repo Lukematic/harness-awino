@@ -230,6 +230,18 @@ def route_triple(snapshot: dict, text: str,
                         list(_MISSION_SKILLS),
                         f"intent pattern: {intent} (no mission yet — "
                         f"define it first)")
+            phase = snapshot.get("phase") or ""
+            if (phase in ("DEFINE", "PLAN")
+                    and mode in ("build", "verify", "ship")):
+                # The phase caps the mode: "plan the fix" in PLAN matched
+                # `fix`, routed build mode, hid story_plan, and the turn
+                # was rejected four times. Keep the intent's skills, but
+                # act with the phase's tools.
+                cap = FLOORS.get(phase, {}).get("mode", "plan")
+                return (intent, cap, list(chain),
+                        list(skills) + _INTENT_RIGOR.get(intent, []),
+                        f"intent pattern: {intent} (capped to {cap} "
+                        f"mode in {phase})")
             return (intent, mode, list(chain),
                     list(skills) + _INTENT_RIGOR.get(intent, []),
                     f"intent pattern: {intent}")

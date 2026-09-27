@@ -32,7 +32,7 @@ class TestDebugRpiRouting(unittest.TestCase):
         intent, mode, chain, skills, _ = route_triple(
             {"phase": "PLAN"}, "debug this bug in the login form", "info")
         self.assertEqual(intent, "fix")
-        self.assertEqual(mode, "build")
+        self.assertEqual(mode, "plan")  # capped by the PLAN phase (09-27)
         self.assertIn("debug", skills)
         self.assertIn("rpi", skills)
 

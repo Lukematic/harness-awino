@@ -1,0 +1,50 @@
+# ci — every push and pull request: engine tests, lint, extension tests.
+#
+# Before this, nothing checked the Python engine on push: the 09-27 team
+# review found a broken `pip install`, a 401 on every Anthropic tools round
+# and lint drift, all of which a CI run would have caught.
+
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  engine:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: prototype
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Lint (ruff, zero findings enforced)
+        run: pip install ruff==0.15.8 && ruff check --exclude tests .
+      - name: Package installs and the CLI runs
+        run: |
+          python -m venv /tmp/pkg && /tmp/pkg/bin/pip install -q .
+          mkdir -p /tmp/awino-proj && cd /tmp/awino-proj && /tmp/pkg/bin/awino status || true
+          /tmp/pkg/bin/python -c "import loop, receipt, lessons, setup_autopilot"
+      - name: Engine tests
+        run: python -m unittest discover -s tests -t .
+
+  extension:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: integrations/vscode/extension
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: npm ci
+      - run: npm run compile
+      - run: npm test
