@@ -276,7 +276,10 @@ function toolResultSummary(t) {
   var r = t.result != null ? t.result : {};
   var a = t.args || {};
   if (typeof r !== "object") return { ok: true, text: String(r).slice(0, 160) };
-  if (r.error) return { ok: false, text: String(r.error).split("\n")[0].slice(0, 200) };
+  if (r.error) {
+    var err = typeof r.error === "object" ? (r.error.message || JSON.stringify(r.error)) : r.error;
+    return { ok: false, text: String(err).split("\n")[0].slice(0, 200) };
+  }
   if (tool === "run_command" && "exit_code" in r) {
     var tail = String(r.exit_code === 0 ? (r.stdout || "") : (r.stderr || r.stdout || ""))
       .trim().split("\n").pop() || "";
@@ -287,7 +290,9 @@ function toolResultSummary(t) {
     return r.completed ? { ok: true, text: "completion accepted: " + String(r.summary || "").slice(0, 160) }
       : { ok: false, text: "completion rejected" + (r.missing_evidence ? ": missing evidence" : "") };
   }
-  if (r.said) return { ok: r.ok !== false, text: String(r.said).slice(0, 200) };
+  // A failure can come as {ok:false} or {status:"error"} as well as {error}.
+  var failed = r.ok === false || r.status === "error" || r.status === "refused";
+  if (r.said) return { ok: !failed, text: String(r.said).slice(0, 200) };
   if ((tool === "write_file" || tool === "patch_file") && (a.path || r.path)) {
     return { ok: true, text: "wrote " + (a.path || r.path) + (r.bytes != null ? " (" + r.bytes + " bytes)" : "") };
   }
@@ -296,7 +301,7 @@ function toolResultSummary(t) {
   if (tool === "read_file" && a.path) return { ok: true, text: "read " + a.path };
   if (tool === "list_dir") return { ok: true, text: "listed " + (a.path || ".") };
   if (tool === "search_files") return { ok: true, text: "searched for " + (a.query || a.pattern || "…") };
-  return { ok: true, text: JSON.stringify(r).slice(0, 160) };
+  return { ok: !failed, text: JSON.stringify(r).slice(0, 160) };
 }
 
 function commandResultText(ev) {
@@ -316,6 +321,8 @@ function receiptDuration(s) {
   if (s < 60) return s + "s";
   var m = Math.floor(s / 60), h = Math.floor(m / 60);
   m = m % 60;
+  // Same shape as the markdown receipt (receipt.py _fmt).
+  if (h >= 24) return Math.floor(h / 24) + "d " + (h % 24) + "h";
   return h ? h + "h " + (m < 10 ? "0" : "") + m + "m" : m + "m";
 }
 
@@ -323,6 +330,8 @@ function receiptCardHtml(r) {
   var e = __mdEscape;
   r = r || {};
   var st = r.story || {}, pr = r.proof || {}, le = r.lesson || {};
+  // Stored receipts are read back from disk: never trust their shape.
+  function arr(x) { return Array.isArray(x) ? x : []; }
   var cls = { "PROVEN": "ok", "PARTLY PROVEN": "warn", "SELF-CHECKED": "warn", "UNVERIFIED": "bad" }[r.status];
   var status = cls ? r.status : "UNVERIFIED";
   cls = cls || "bad";
@@ -331,42 +340,47 @@ function receiptCardHtml(r) {
   if (st.outcome) h += '<div class="rc-outcome">' + e(st.outcome) + "</div>";
   h += '<div class="rc-meta">' + e(st.type || "story") + " · " + e(st.branch || "") +
     " · time " + (st.time_s >= 1 ? receiptDuration(st.time_s) : "not tracked") + "</div>";
-  var crit = pr.criteria || [];
+  var crit = arr(pr.criteria);
   if (crit.length) {
     h += '<div class="rc-sec">Promise</div><ul class="rc-list">' + crit.map(function (c) {
+      c = c || {};
       var ok = c.proof !== "unproven";
       return '<li class="' + (ok ? "rc-ok" : "rc-bad") + '">' + (ok ? "✓ " : "✗ ") +
         e(c.criterion) + ' <span class="rc-dim">' + e(c.proof) + "</span></li>";
     }).join("") + "</ul>";
   }
-  var steps = pr.steps || [];
+  var steps = arr(pr.steps);
   if (steps.length) {
     h += '<table class="rc-steps"><tr><th>#</th><th>Step</th><th>Forecast</th><th>Actual</th><th>State</th></tr>' +
-      steps.map(function (x) {
+      steps.map(function (x, i) {
+        x = x || {};
+        var n = Number.isFinite(Number(x.index)) && x.index !== null && x.index !== "" ? Number(x.index) : i;
         var over = x.forecast_s && x.actual_s && x.actual_s > 1.25 * x.forecast_s;
-        return "<tr><td>" + (Number(x.index) + 1) + "</td><td>" + e(x.title) + "</td><td>" +
+        return "<tr><td>" + (n + 1) + "</td><td>" + e(x.title) + "</td><td>" +
           e(x.forecast || "—") + '</td><td class="' + (over ? "rc-bad" : "") + '">' +
           receiptDuration(x.actual_s) + "</td><td>" + e(x.state) + "</td></tr>";
       }).join("") + "</table>";
   }
   var proof = [];
-  (pr.checks || []).forEach(function (c) {
+  arr(pr.checks).forEach(function (c) {
+    c = c || {};
     proof.push('<li class="' + (c.last_exit === 0 ? "rc-ok" : "rc-bad") + '"><code>' + e(c.cmd) +
       "</code> → exit " + e(c.last_exit) + ' <span class="rc-dim">' + e(c.runs) + " run(s), " +
       e(c.failures) + " failed</span></li>");
   });
-  (pr.verdicts || []).forEach(function (v) {
+  arr(pr.verdicts).forEach(function (v) {
+    v = v || {};
     proof.push('<li class="' + (v.passed ? "rc-ok" : "rc-bad") + '">Verification ' +
       (v.passed ? "passed" : "failed") + ' <span class="rc-dim">' + e(v.by) + "</span></li>");
   });
-  if ((pr.files || []).length) proof.push("<li>" + pr.files.length + " file(s) written</li>");
-  if ((pr.commits || []).length) proof.push("<li>" + pr.commits.length + " commit(s)</li>");
+  if (arr(pr.files).length) proof.push("<li>" + pr.files.length + " file(s) written</li>");
+  if (arr(pr.commits).length) proof.push("<li>" + pr.commits.length + " commit(s)</li>");
   var j = pr.journal || {};
   proof.push('<li class="rc-dim">journal ' + e(j.events || 0) + " events" +
     (j.head ? " · head " + e(String(j.head).slice(0, 12)) : "") +
     (j.chain_ok === true ? " · chain intact" : j.chain_ok === false ? " · chain BROKEN" : "") + "</li>");
   h += '<div class="rc-sec">Proof</div><ul class="rc-list">' + proof.join("") + "</ul>";
-  var notes = le.notes || [];
+  var notes = arr(le.notes);
   if (notes.length) {
     h += '<div class="rc-sec">Lesson</div><ul class="rc-list">' +
       notes.map(function (n) { return "<li>" + e(n) + "</li>"; }).join("") + "</ul>";

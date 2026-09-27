@@ -29,6 +29,13 @@ t("completion accepted", () => assert.ok(
   s({ tool: "attempt_completion", result: { completed: true, summary: "all 7 covered" } }).text.startsWith("completion accepted: all 7")));
 t("completion rejected", () => assert.strictEqual(
   s({ tool: "attempt_completion", result: { completed: false, missing_evidence: ["x"] } }).ok, false));
+t("status:error with a said line is a failure, not a ✓", () => assert.deepStrictEqual(
+  s({ tool: "set_role_mode", result: { status: "error", said: "Unknown role 'x'." } }),
+  { ok: false, text: "Unknown role 'x'." }));
+t("ok:false without said is a failure", () => assert.strictEqual(
+  s({ tool: "x", result: { ok: false, reason: "nope" } }).ok, false));
+t("non-string error still reads as text", () => assert.strictEqual(
+  s({ tool: "x", result: { error: { code: "E1", message: "bad" } } }).text.includes("[object Object]"), false));
 t("unknown falls back to short JSON", () => assert.ok(s({ tool: "x", result: { a: 1 } }).text === '{"a":1}'));
 t("command result prefers said", () => assert.strictEqual(
   c({ name: "story_close", ok: true, result: { status: "ok", said: "Closed 'Agentic learning review' — on the brag board." } }),

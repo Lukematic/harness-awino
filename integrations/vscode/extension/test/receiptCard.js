@@ -58,5 +58,23 @@ t("values are escaped", () => {
   assert.ok(h.includes("&lt;img") && h.includes("&lt;script&gt;"));
 });
 t("empty receipt renders without throwing", () => { receiptCardHtml(undefined); receiptCardHtml({}); });
+t("durations of a day or more match the markdown receipt (2d 0h)", () => {
+  assert.strictEqual(receiptDuration(172800), "2d 0h");
+  assert.strictEqual(receiptDuration(90000), "1d 1h");
+});
+t("malformed stored receipt (non-array fields) renders without throwing", () => {
+  const h = receiptCardHtml({ status: "PROVEN", story: { title: "x" },
+    proof: { criteria: "oops", steps: { a: 1 }, checks: null, verdicts: 7, files: "abc", commits: "x" },
+    lesson: { notes: "single note" } });
+  assert.ok(h.includes("rc-actions"));
+  assert.ok(!h.includes("3 file(s)"), "a string is not a file list");
+  receiptCardHtml({ status: "PROVEN", proof: { criteria: [null], steps: [null], checks: [null], verdicts: [null] } });
+});
+t("step without an index is numbered by position, not NaN", () => {
+  const h = receiptCardHtml({ status: "PROVEN", story: {},
+    proof: { steps: [{ title: "a" }, { title: "b" }] } });
+  assert.ok(!h.includes("NaN"), h);
+  assert.ok(h.includes("<td>2</td><td>b</td>"), h);
+});
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
