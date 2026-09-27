@@ -1073,6 +1073,14 @@ def story_close(awino_dir: str | Path, story_id: str, outcome: str,
     """
     awino_dir = Path(awino_dir)
     store = StoryStore(awino_dir)
+    prev = store.get(story_id)
+    if prev.get("status") == "done":
+        # A second close would overwrite the close date and outcome, write
+        # a new receipt over a different window, and count its lessons
+        # twice (reinforcing or escalating them on no new evidence).
+        raise ValueError(
+            f"story '{prev.get('title', story_id)}' ({story_id}) is already "
+            f"closed ({_day(prev.get('closed_ts'))}): its receipt stands.")
     story = store.update(story_id, status="done", closed_ts=_now(),
                          outcome=outcome, ready_to_close=False)
     session_end(awino_dir, story_id, "story closed")

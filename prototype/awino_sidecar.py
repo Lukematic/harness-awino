@@ -4526,9 +4526,13 @@ class Sidecar:
                              events=events, chain_ok=chain_ok)
         except KeyError:
             return {"status": "error", "said": f"no story {sid!r}"}
+        except ValueError as ex:  # already closed
+            return {"status": "error", "said": str(ex)}
         self._say("story", f"Closed '{st['title']}' — on the brag board. "
                            f"{st.get('push_note', '')}".strip())
         out = {"status": "ok", "id": sid, "lessons": st.get("lessons")}
+        if st.get("receipt_error"):
+            out["receipt_error"] = st["receipt_error"]
         if self.loop is not None:
             self.loop.offer_lessons()
         rc = self._cmd_receipt({"id": sid})
@@ -4542,7 +4546,7 @@ class Sidecar:
         import lessons as L
         rows = sorted(L.load(self._awino_dir()).values(),
                       key=lambda l: (l.get("status") == "learned",
-                                     -l.get("seen", 0)))
+                                     -L._num(l.get("seen"))))
         return {"status": "ok", "lessons": rows}
 
     def _cmd_receipt(self, args: dict) -> dict:
@@ -4552,17 +4556,26 @@ class Sidecar:
         from receipt import build_receipt, load_receipt, render_receipt_md
         awd = self._awino_dir()
         sid = args.get("id")
-        rc = load_receipt(awd, sid)
-        if rc is None:
-            try:
+        from story import StoryStore
+        try:
+            StoryStore(awd).get(sid)
+        except KeyError:
+            return {"status": "error", "said": f"no story {sid!r}"}
+        # Any other failure (a hand-edited registry, an old stored receipt
+        # missing fields) is reported as what it is, not as "no story".
+        try:
+            rc = load_receipt(awd, sid)
+            if rc is None:
                 rc = build_receipt(
                     awd, sid,
                     events=self.loop.state.events if self.loop else None)
-            except KeyError:
-                return {"status": "error", "said": f"no story {sid!r}"}
-            rc["preview"] = True
-        return {"status": "ok", "receipt": rc,
-                "markdown": render_receipt_md(rc)}
+                rc["preview"] = True
+            md = render_receipt_md(rc)
+        except Exception as ex:  # noqa: BLE001
+            return {"status": "error",
+                    "said": f"could not build the receipt for {sid!r}: "
+                            f"{type(ex).__name__}: {ex}"}
+        return {"status": "ok", "receipt": rc, "markdown": md}
 
     def _cmd_verify_begin(self, args: dict) -> dict:
         """Spawn the verifier worker (Track G)."""
