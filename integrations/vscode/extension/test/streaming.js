@@ -239,7 +239,7 @@ fire({
 ok(messages.children.length === before + 1, "legacy turn_result renders a new card");
 const legacy = messages.children[messages.children.length - 1];
 ok(subtreeHtml(legacy).indexOf("<strong>body</strong>") >= 0, "legacy body rendered as markdown");
-ok(subtreeHtml(legacy).indexOf("<table") >= 0, "legacy tool table fallback present");
+ok(subtreeHtml(legacy).indexOf("tool-line") >= 0, "legacy tool results render as one-line summaries");
 
 // 12. stop posts the stop verb
 const postedBeforeStop = posted.length;

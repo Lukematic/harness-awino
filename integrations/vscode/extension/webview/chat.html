@@ -260,6 +260,11 @@
     border: 1px solid var(--vscode-panel-border, #232F45);
     border-radius: 6px;
   }
+  .tool-lines { margin-top: 6px; font-size: 12px; }
+  .tool-line summary { cursor: pointer; list-style: none; padding: 1px 0; color: var(--awino-muted, var(--vscode-descriptionForeground, #8B98B0)); }
+  .tool-line summary::-webkit-details-marker { display: none; }
+  .tool-line.bad summary { color: var(--awino-danger, #F14C4C); }
+  .tool-line .tool-raw { white-space: pre-wrap; word-break: break-all; font-size: 11px; max-height: 200px; overflow: auto; }
   .receipt-card { margin: 0 0 12px; padding: 10px 12px; border-radius: 8px;
     background: var(--awino-bg-2, var(--vscode-editor-background, #172036));
     color: var(--awino-text, var(--vscode-foreground, #DCE7F7));

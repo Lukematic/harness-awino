@@ -300,6 +300,9 @@ def apply_event(snap: dict, ev: dict) -> None:
         snap["awaiting_operator"] = True
         snap["awaiting_operator_reason"] = d.get("reason")
         snap["awaiting_operator_round"] = d.get("round")
+    elif t == "lessons_offered":
+        # Lessons from past receipts, rendered into every turn contract.
+        snap["lessons"] = list(d.get("lines", []))
     elif t == "learning_recorded":
         # Phase C: append-only learning record.
         snap.setdefault("learnings", []).append(

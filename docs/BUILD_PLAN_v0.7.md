@@ -399,6 +399,15 @@ Take items from the spec doc "A.W.I.N.O. — Spec: Beat Cline, Roo & Copilot" (r
 - **Accept:** `tests/test_receipt.py` (12), `test/receiptCard.js` (8), sidecar `receipt` command in `tests/test_sidecar_stories.py`. A story closed without a passing verdict reads UNVERIFIED; a criterion the verdict didn't name reads unproven.
 - **Open:** step 0 (live mission with the user's key) still gates everything; receipts from a live run are the real test.
 
+### T31. Lessons: receipts that teach the next session — DONE
+- **Why:** autoharness (tigerless-labs) showed the gap. Awino recorded learnings and could synthesize skills (`synthesis.py`), but only by a manual command, into a folder no turn ever read.
+- **Change:** `lessons.py` extracts lessons from receipts, merges by scenario key, ledgers each change, puts live ones in the turn contract, escalates on recurrence after being shown, graduates after 3 clean closes.
+- **Accept:** `tests/test_lessons.py` (7): merge not duplicate; escalate; learn and revive; bounded index; close → lesson → next contract.
+- **Open:** `synthesis.py` skills are still not loaded into turns; either route admitted skills or retire the module. Not decided.
+
+### T8 (partial). Chat reads plainly
+- Tool results, command results and file-write approvals no longer show raw JSON (`test/toolSummary.js`). The `mode:` chips remain until the mission bar (T9).
+
 ### T18. Name (needs the user)
 - **Change:** once a name is chosen, centralize display name and IDs so a rename is one change.
 

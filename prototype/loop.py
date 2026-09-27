@@ -1386,6 +1386,25 @@ class Loop:
         return {"ok": True, "story_id": story_id,
                 "dag_seeded": res.get("dag_seeded", 0), "said": said}
 
+    def offer_lessons(self, mark_shown: bool = False) -> list[str]:
+        """Put the project's live lessons into the turn contract (journaled
+        as lessons_offered). mark_shown=True once per session: from then
+        on a recurrence escalates the lesson and a clean close counts
+        toward it being learned."""
+        reg = getattr(self, "registry", None)
+        if reg is None:
+            return []
+        try:
+            import lessons as L
+            lines = L.index_lines(reg.awino_dir)
+            if mark_shown and lines:
+                L.mark_shown(reg.awino_dir)
+        except Exception:
+            return []
+        if lines != (self.state.snapshot.get("lessons") or []):
+            self.state.record("lessons_offered", {"lines": lines})
+        return lines
+
     @staticmethod
     def _calibration_note(awino_dir) -> str:
         """What past receipts say about this user's forecasts, so the plan

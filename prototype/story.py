@@ -1099,6 +1099,9 @@ def story_close(awino_dir: str | Path, story_id: str, outcome: str,
                            chain_ok=chain_ok)
         story["receipt_path"] = str(write_receipt(awino_dir, rc))
         story["receipt_status"] = rc["status"]
+        from lessons import learn_from_receipt
+        story["lessons"] = learn_from_receipt(
+            awino_dir, rc, evidence=f"receipts/{story_id}.md")
         _journal(awino_dir, "story_receipt",
                  f"Receipt for '{story['title']}' ({story_id}): "
                  f"{rc['status']}.")

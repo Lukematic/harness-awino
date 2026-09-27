@@ -2514,6 +2514,19 @@ class Sidecar:
         # misleadingly empty panel.
         self._registry_attach_error = None
         self._ensure_registry()
+        # Lessons from past receipts: in every turn contract from now on,
+        # and counted as shown for this session.
+        try:
+            offered = self.loop.offer_lessons(mark_shown=True)
+        except Exception:
+            offered = []
+        if offered:
+            esc = sum(1 for l in offered if l.startswith("[ESCALATED]"))
+            self._say("lessons",
+                      f"{len(offered)} lesson(s) from past receipts are in "
+                      f"play" + (f", {esc} escalated" if esc else "") +
+                      ": " + " · ".join(l.split('] ', 1)[-1][:90]
+                                         for l in offered[:3]))
         self.provider = binding["provider"]
         self.model_desc = getattr(backend, "model", self.provider)
         self._binding = dict(binding)
@@ -4044,6 +4057,7 @@ class Sidecar:
             "story_focus": self._cmd_story_focus,
             "story_close": self._cmd_story_close,
             "receipt": self._cmd_receipt,
+            "lessons": self._cmd_lessons,
             "verify_begin": self._cmd_verify_begin,
             "verify_turn": self._cmd_verify_turn,
             "verify_complete": self._cmd_verify_complete,
@@ -4514,12 +4528,22 @@ class Sidecar:
             return {"status": "error", "said": f"no story {sid!r}"}
         self._say("story", f"Closed '{st['title']}' — on the brag board. "
                            f"{st.get('push_note', '')}".strip())
-        out = {"status": "ok", "id": sid}
+        out = {"status": "ok", "id": sid, "lessons": st.get("lessons")}
+        if self.loop is not None:
+            self.loop.offer_lessons()
         rc = self._cmd_receipt({"id": sid})
         if rc.get("status") == "ok":
             out["receipt"] = rc["receipt"]
             out["markdown"] = rc["markdown"]
         return out
+
+    def _cmd_lessons(self, args: dict) -> dict:
+        """Every lesson with its status, counts and ledger."""
+        import lessons as L
+        rows = sorted(L.load(self._awino_dir()).values(),
+                      key=lambda l: (l.get("status") == "learned",
+                                     -l.get("seen", 0)))
+        return {"status": "ok", "lessons": rows}
 
     def _cmd_receipt(self, args: dict) -> dict:
         """A story's receipt (promise -> proof -> lesson) and its markdown,

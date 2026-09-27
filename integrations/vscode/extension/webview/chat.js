@@ -269,6 +269,44 @@ function harnessReplyMarkdown(said) {
   return next ? (body ? body + "\n\n" : "") + next : body;
 }
 
+// One plain line per tool result; the raw JSON stays one click away.
+function toolResultSummary(t) {
+  t = t || {};
+  var tool = String(t.tool || t.name || "?");
+  var r = t.result != null ? t.result : {};
+  var a = t.args || {};
+  if (typeof r !== "object") return { ok: true, text: String(r).slice(0, 160) };
+  if (r.error) return { ok: false, text: String(r.error).split("\n")[0].slice(0, 200) };
+  if (tool === "run_command" && "exit_code" in r) {
+    var tail = String(r.exit_code === 0 ? (r.stdout || "") : (r.stderr || r.stdout || ""))
+      .trim().split("\n").pop() || "";
+    return { ok: r.exit_code === 0, text: (a.cmd ? a.cmd + " → " : "") + "exit " + r.exit_code +
+      (tail ? " · " + tail.slice(0, 120) : "") };
+  }
+  if (tool === "attempt_completion") {
+    return r.completed ? { ok: true, text: "completion accepted: " + String(r.summary || "").slice(0, 160) }
+      : { ok: false, text: "completion rejected" + (r.missing_evidence ? ": missing evidence" : "") };
+  }
+  if (r.said) return { ok: r.ok !== false, text: String(r.said).slice(0, 200) };
+  if ((tool === "write_file" || tool === "patch_file") && (a.path || r.path)) {
+    return { ok: true, text: "wrote " + (a.path || r.path) + (r.bytes != null ? " (" + r.bytes + " bytes)" : "") };
+  }
+  if (tool === "task_update" && r.id) return { ok: true, text: "task " + r.id + " → " + (r.status || r.state || "updated") };
+  if (tool === "task_add" && r.id) return { ok: true, text: "added task " + r.id };
+  if (tool === "read_file" && a.path) return { ok: true, text: "read " + a.path };
+  if (tool === "list_dir") return { ok: true, text: "listed " + (a.path || ".") };
+  if (tool === "search_files") return { ok: true, text: "searched for " + (a.query || a.pattern || "…") };
+  return { ok: true, text: JSON.stringify(r).slice(0, 160) };
+}
+
+function commandResultText(ev) {
+  ev = ev || {};
+  var r = ev.result || {};
+  var said = typeof r === "object" ? (r.said || (r.status === "error" ? r.error : "")) : String(r);
+  if (said) return String(said);
+  return ev.ok ? "done" : "failed";
+}
+
 // Receipt card: promise -> proof -> lesson for a closed story. Built from
 // the receipt JSON (the markdown copy is what goes to the clipboard).
 // Every value is escaped; the status badge is one of four fixed labels.
@@ -341,7 +379,8 @@ function receiptCardHtml(r) {
 if (typeof window !== "undefined") window.AwinoMarkdown = AwinoMarkdown;
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { AwinoMarkdown: AwinoMarkdown, harnessReplyMarkdown: harnessReplyMarkdown,
-    receiptCardHtml: receiptCardHtml, receiptDuration: receiptDuration };
+    receiptCardHtml: receiptCardHtml, receiptDuration: receiptDuration,
+    toolResultSummary: toolResultSummary, commandResultText: commandResultText };
 }
 
 // The chat UI boots only inside a VS Code webview (acquireVsCodeApi +
@@ -1100,12 +1139,14 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     const results = r.results || r.tool_results || [];
     if (Array.isArray(results) && results.length) {
       const tw = mk("div");
-      tw.innerHTML = '<table class="tools"><tr><th>tool</th><th>result</th></tr>' +
-        results.map(function (t) {
-          const name = esc(t.tool || t.name || "?");
-          const tbd = esc(JSON.stringify(t.result != null ? t.result : t).slice(0, 400));
-          return "<tr><td>" + name + "</td><td><code>" + tbd + "</code></td></tr>";
-        }).join("") + "</table>";
+      tw.className = "tool-lines";
+      tw.innerHTML = results.map(function (t) {
+        const sm = toolResultSummary(t);
+        const raw = esc(JSON.stringify(t.result != null ? t.result : t).slice(0, 2000));
+        return '<details class="tool-line ' + (sm.ok ? "ok" : "bad") + '"><summary>' +
+          (sm.ok ? "✓ " : "✗ ") + "<code>" + esc(t.tool || t.name || "?") + "</code> " +
+          esc(sm.text) + '</summary><pre class="tool-raw">' + raw + "</pre></details>";
+      }).join("");
       card.appendChild(tw);
     }
     const checks = Array.isArray(r.checks) ? r.checks : [];
@@ -1138,7 +1179,13 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     approvals.forEach(function (a) {
       const d = addMsg("warn", "");
       let html = '<div class="approval"><h4>Approval requested: <code>' + esc(a.tool) + "</code></h4>";
-      html += "<pre class=\"diff\">" + esc(JSON.stringify(a.args, null, 2)) + "</pre>";
+      // With a diff, the diff IS the content: show the target, not the
+      // raw args (which repeat the whole file). Commands show their args.
+      if (a.diff && a.args && a.args.path) {
+        html += "<div>File: <code>" + esc(a.args.path) + "</code></div>";
+      } else {
+        html += "<pre class=\"diff\">" + esc(JSON.stringify(a.args, null, 2)) + "</pre>";
+      }
       if (a.diff) {
         html += '<div>Diff preview:</div>' + AwinoMarkdown("```diff\n" + String(a.diff) + "\n```");
       }
@@ -1259,9 +1306,8 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
         renderCompaction(ev);
         break;
       case "command_result":
-        addMsg("", "<i>command <code>" + esc(ev.name) + "</code>: " +
-          (ev.ok ? "ok" : "<b>failed</b>") + " — <code>" +
-          esc(JSON.stringify(ev.result).slice(0, 500)) + "</code></i>");
+        addMsg(ev.ok ? "" : "error", (ev.ok ? "" : "<b>" + esc(ev.name) + " failed:</b> ") +
+          esc(commandResultText(ev)));
         break;
       case "cancel_ack": {
         let frozen = false;

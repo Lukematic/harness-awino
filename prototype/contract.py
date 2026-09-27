@@ -590,6 +590,12 @@ def compile_contract(state, turn_no: int | None = None,
     A(f"## CONTEXT\nproject: {s['project_id']} | turn: {turn_no} "
       f"| knowledge: {knowledge[0]}/{knowledge[1]}")
     A("")
+    if s.get("lessons"):
+        A("## LESSONS (from this project's past receipts — plan around them;")
+        A("## an ESCALATED one recurred after being shown: raise it with the user)")
+        for ln in s["lessons"]:
+            A(f"- {ln}")
+        A("")
     A("## REQUIREMENTS")
     if s.get("plan"):
         for i, p in enumerate(s["plan"], 1):

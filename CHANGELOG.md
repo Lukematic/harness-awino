@@ -1,6 +1,21 @@
 # Changelog
 
-## Unreleased — Receipts
+## Unreleased — Receipts and lessons
+
+- **Lessons** (`prototype/lessons.py`), after autoharness's self-learning
+  skill layer but judged by outcomes: each closed story's receipt yields
+  lessons (steps that ran 2x+ their forecast, checks that failed before
+  passing, three-strike loops, criteria closed unproven). The same
+  scenario reinforces one lesson instead of adding a duplicate; every
+  change is ledgered with the receipt that caused it. Live lessons go
+  into every turn contract (`## LESSONS`, max 6) and are announced at
+  session start. A lesson that recurs after being shown is ESCALATED; one
+  shown across 3 clean closes is LEARNED and leaves the prompt (it comes
+  back if the problem does). Sidecar command `lessons` lists them.
+- Chat: tool results are one plain line each (`✓ run_command pytest → exit
+  0 · 2 passed`), raw JSON one click away; command results show their
+  sentence, not JSON; a file-write approval shows the file and the diff,
+  not the whole file twice.
 
 - Every closed story gets a **receipt**: promise (done criteria, plan steps
   with forecasts) → proof (check commands and exit codes, verifier
