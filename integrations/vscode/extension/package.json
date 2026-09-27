@@ -183,6 +183,11 @@
           },
           "type": "array"
         },
+        "awino.autoApproveAfterPlan": {
+          "default": true,
+          "description": "After you approve a plan and its files, run safe actions without asking: writes to those files and commands that stay in the workspace. Deleting, force flags, git push/reset, installs, network and sudo always ask.",
+          "type": "boolean"
+        },
         "awino.model": {
           "default": "",
           "description": "Model name. Empty = provider default.",

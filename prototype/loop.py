@@ -2038,6 +2038,16 @@ class Loop:
             need_idx = {i for i, c in rest
                         if TOOL_DEFS[c["name"]]["consequential"]
                         and not self._has_valid_approval(c)}
+            # Session autopilot: after the plan is approved, safe actions
+            # inside it run without a click; destructive ones still ask.
+            for i in sorted(need_idx):
+                why = self._autopilot_reason(calls[i])
+                if why:
+                    self.state.record("auto_approved",
+                                      {"tool": calls[i]["name"],
+                                       "args": calls[i]["args"],
+                                       "reason": why})
+                    need_idx.discard(i)
             immediate = [(i, c) for i, c in rest if i not in need_idx]
             # Index-keyed execution (not _execute_calls' positional list)
             # so harness + executor results merge back into call order.
@@ -2657,6 +2667,34 @@ class Loop:
         return results
 
     # --------------------------------------------------------------- approvals
+    def _autopilot_reason(self, call: dict) -> str | None:
+        """Why this consequential call may run without a click, or None.
+
+        Only after the plan was approved with its file list (same mission
+        revision and scope epoch), only in BUILD/VERIFY, only writes to
+        files in that list, and only commands that destructive_reason()
+        finds harmless. Off in the engine by default; the sidecar turns
+        it on (VS Code setting awino.autoApproveAfterPlan, default on)."""
+        from approval_targets import destructive_reason
+        s = self.state.snapshot
+        ap = s.get("autopilot")
+        if (not self.config.get("autopilot", False) or not ap
+                or ap.get("revision") != self._revision()
+                or ap.get("scope_epoch") != s.get("scope_epoch", 0)
+                or s.get("phase") not in ("BUILD", "VERIFY")):
+            return None
+        name, args = call.get("name"), call.get("args") or {}
+        if name in ("write_file", "patch_file"):
+            path = str(args.get("path") or "")
+            return ("write inside the approved plan"
+                    if path and path in (s.get("scope") or []) else None)
+        if name == "run_command":
+            if destructive_reason(str(args.get("cmd") or ""),
+                                  str(self.sandbox.root)):
+                return None
+            return "non-destructive command inside the workspace"
+        return None
+
     def _pause_for_approval(self, turn_id: str, turn: dict, results_so_far: list,
                             need: list[tuple[int, dict]], routing: dict,
                             expected_header: str, base: int = 0,

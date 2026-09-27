@@ -101,6 +101,7 @@ def initial_snapshot(project_id: str, conversation_id: str) -> dict:
         "role_mode": None,  # Track D: active role lens {role, reason, source}
         "verify_pass": None,  # Track G: journaled verifier verdict that passed
         "verify_pending": None,  # Track G: {worker_id} while verifier runs
+        "autopilot": None,  # {revision, scope_epoch} once the plan is approved
         "awaiting_approval": False,
         "awaiting_inspection": None,  # call_id or None
         # v0.6: set when the recursive loop halts on round budget or stall.
@@ -211,6 +212,14 @@ def apply_event(snap: dict, ev: dict) -> None:
     elif t == "contract_approved":
         snap["contract_approved"] = True
         snap["scope"] = d.get("scope")  # None = draft approval, list = scoped
+        if isinstance(d.get("scope"), list) and d.get("phase") == "PLAN":
+            # Approving the plan with its files turns on the session
+            # autopilot for this mission revision and scope epoch: safe
+            # actions inside the plan run without a click (see
+            # Loop._autopilot_reason). A new mission or a scope change
+            # turns it off.
+            snap["autopilot"] = {"revision": d.get("revision"),
+                                 "scope_epoch": snap.get("scope_epoch", 0)}
     elif t == "premortem_completed":
         snap["premortem_completed"] = True
     elif t == "ship_requested":

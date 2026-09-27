@@ -2540,6 +2540,11 @@ class Sidecar:
             loop.state.persist_snapshot()
         # The IDE loop works on the real workspace, not a demo sandbox.
         loop.sandbox = WorkspaceSandbox(wsp)
+        # Session autopilot after plan approval (user asked 09-27): safe
+        # writes and commands inside the plan run without a click; the
+        # extension can turn it off (awino.autoApproveAfterPlan).
+        loop.config["autopilot"] = cmd.get("auto_approve_after_plan", True) \
+            is not False
         self.loop = loop
         # Native tool application (extension builder): the extension
         # advertises delegated apply/terminal capability in hello. When
@@ -4533,6 +4538,10 @@ class Sidecar:
             row = {k: st.get(k) for k in self._STORY_FIELDS}
             row["time_s"] = story_time_spent(awd, st["id"])
             row["revisit_due"] = st["id"] in due
+            if st.get("status") == "done":
+                from receipt import load_receipt
+                rc = load_receipt(awd, st["id"]) or {}
+                row["receipt_status"] = rc.get("status")
             rows.append(row)
         brag = sorted((r for r in rows if r["status"] == "done"),
                       key=lambda r: r.get("closed_ts") or 0, reverse=True)

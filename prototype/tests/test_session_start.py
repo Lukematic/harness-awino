@@ -51,6 +51,12 @@ class SessionStartTest(unittest.TestCase):
         journals = list((self.ws / ".awino").rglob("events.jsonl"))
         self.assertTrue(journals)
         j = journals[0]
+        # Add our own events so the test doesn't depend on how many the
+        # background session-start work had written yet (CI was slower).
+        from state import ProjectState
+        st = ProjectState(j.parent.parent.parent, j.parent.name)
+        for i in range(3):
+            st.record("note", {"i": i})
         lines = j.read_text().splitlines()
         self.assertGreater(len(lines), 2)
         lines[1] = "{not json"

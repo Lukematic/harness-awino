@@ -163,6 +163,7 @@ async function main() {
       sidecarPath: SIDECAR,
       workspace: ws,
       provider: "scripted",
+      autoApproveAfterPlan: false, // exercises the approval card path
       script,
       home,
       capabilities: { delegated_apply: true, terminal_stream: true },

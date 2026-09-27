@@ -29,6 +29,7 @@ import socketserver
 import subprocess
 import tempfile
 import textwrap
+from pathlib import Path
 import threading
 import time
 import unittest
@@ -298,17 +299,20 @@ def _noop_turn(delta):
 class WorkspaceToolsTest(unittest.TestCase):
     """End-to-end through real harness turns (scripted model)."""
 
-    def _launch(self, script):
+    def _launch(self, script, autopilot=False, scope=()):
         # v0.6: each test supplies its own script — the autonomous loop
         # consumes turns across the old per-user-message boundaries, so a
         # shared sequential script no longer lines up with the test steps.
+        # These tests exercise the approval card, so the session autopilot
+        # (on by default in the product) is off unless a test asks for it.
         self.c = SidecarClient()
-        e = self.c.hello(provider="scripted", script=script)
+        e = self.c.hello(provider="scripted", script=script,
+                         auto_approve_after_plan=autopilot)
         self.assertEqual(e["event"], "ready")
         r = self.c.cmd("mission", {"text": "Fix the login bug",
                                    "criteria": ["manual"]})
         self.assertTrue(r["ok"], r)
-        r = self.c.cmd("approve-contract", {"scope": []})
+        r = self.c.cmd("approve-contract", {"scope": list(scope)})
         self.assertTrue(r["ok"], r)
         # Run the planning turn while in PLAN: the harness refuses BUILD
         # turns (NO_PLAN) until a plan is recorded.
@@ -374,6 +378,34 @@ class WorkspaceToolsTest(unittest.TestCase):
         j = self.c.cmd("journal")
         tools = [x["tool"] for x in j["result"]["journal"]]
         self.assertIn("write_file", tools)
+
+    def test_autopilot_runs_safe_write_but_asks_for_rm(self):
+        # After the plan is approved with its files, the write inside it
+        # runs without a card; deleting a file still asks.
+        self._launch([
+            _plan_turn(),
+            _turn(tool_calls=[{"name": "write_file",
+                               "args": {"path": "notes.txt",
+                                        "content": "Hello from the harness\n"}}],
+                  assumptions=["Hypothesis: notes.txt does not exist yet; "
+                                 "creating it addresses the objective."],
+                  progress_delta="Creating notes.txt."),
+            _turn(tool_calls=[{"name": "run_command",
+                               "args": {"cmd": "rm notes.txt"}}],
+                  assumptions=["Attack: the command could fail silently, so "
+                                 "its absence afterwards is the falsifier."],
+                  progress_delta="Removing it again."),
+            _noop_turn("Delete denied; nothing further."),
+        ], autopilot=True, scope=["notes.txt"])
+        self.c.send({"cmd": "user_message", "text": "create the notes file"})
+        e = self.c.recv(timeout=60)
+        self.assertEqual(e["result"]["status"], "awaiting_approval", e)
+        # the only card is the delete; the write already happened
+        aid = self._approve_first("run_command")
+        self.assertTrue((Path(self.c.ws) / "notes.txt").is_file())
+        self.c.send({"cmd": "approve", "id": aid, "decision": "deny"})
+        self.c.recv(timeout=60)
+        self.assertTrue((Path(self.c.ws) / "notes.txt").is_file())
 
     def test_run_command_deny_leaves_no_effect(self):
         # v0.6: approving the write resumes the loop, which then pauses for

@@ -136,6 +136,8 @@ async function main() {
     sidecarPath: SIDECAR,
     workspace: ws,
     provider: "scripted",
+    // this test drives the approval card; session autopilot off
+    autoApproveAfterPlan: false,
     script,
     home,
   }, 60000);

@@ -51,6 +51,8 @@ export interface StartOptions {
    * exercise the in-process sandbox path.
    */
   capabilities?: Record<string, unknown>;
+  /** Session autopilot after plan approval (awino.autoApproveAfterPlan). */
+  autoApproveAfterPlan?: boolean;
   /**
    * AWS profile name for provider "bedrock" (SigV4 mode). Forwarded to the
    * sidecar as `aws_profile` in hello; the Python side resolves it from
@@ -201,6 +203,9 @@ export class SidecarClient extends EventEmitter {
       // exercise the in-process sandbox path omit it.
       if (opts.capabilities) {
         hello["capabilities"] = opts.capabilities;
+      }
+      if (opts.autoApproveAfterPlan !== undefined) {
+        hello["auto_approve_after_plan"] = opts.autoApproveAfterPlan;
       }
       if (opts.model) {
         hello["model"] = opts.model;

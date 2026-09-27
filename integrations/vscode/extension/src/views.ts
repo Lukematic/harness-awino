@@ -374,6 +374,7 @@ export interface StoryRow {
   status: string;
   problem?: string;
   outcome?: string;
+  receipt_status?: string | null;
   branch?: string;
   closed_ts?: number | null;
   time_s?: number;
@@ -451,12 +452,16 @@ export class StoriesView extends BaseView {
     const brag = ((r["brag"] ?? []) as StoryRow[]);
     const g = new Group(`Brag board (${brag.length})`);
     for (const s of brag) {
+      // Brag entry: the task, the day, the result. Proof level in the tooltip.
       const item = new StoryItem(
         s,
         `✓ ${esc(s.title)}`,
-        [day(s.closed_ts), formatDuration(s.time_s), esc(s.outcome ?? "")].filter(Boolean).join(" · ")
+        [day(s.closed_ts), esc(s.outcome ?? "")].filter(Boolean).join(" · ")
       );
-      item.tooltip = `closed ${day(s.closed_ts)}\noutcome: ${s.outcome ?? ""}\ntime dedicated: ${formatDuration(s.time_s)}`;
+      item.tooltip =
+        `${s.title} — closed ${day(s.closed_ts)}\n${s.outcome ?? ""}` +
+        (s.receipt_status ? `\nreceipt: ${s.receipt_status}` : "") +
+        ((s.time_s ?? 0) >= 60 ? `\ntime: ${formatDuration(s.time_s)}` : "");
       g.children.push(item);
     }
     if (!brag.length) g.children.push(new Leaf("(nothing closed yet)"));

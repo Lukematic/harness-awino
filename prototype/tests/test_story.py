@@ -562,7 +562,10 @@ class OrderingTest(StoryTestBase):
         brag = text.split("## Brag board")[1]
         self.assertIn("Newer story", brag)
         self.assertIn("shipped it", brag)
-        self.assertIn("Time dedicated:", brag)
+        # Brag entry = task, date, result; the long plan stays in the receipt.
+        self.assertRegex(brag, r"### ✓ Newer story — \d{4}-\d{2}-\d{2}\nshipped it")
+        self.assertNotIn("**Approach:**", brag)
+        self.assertIn("receipts/", brag)
 
 
 class GitCloseTest(StoryTestBase):

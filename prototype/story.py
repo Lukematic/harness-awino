@@ -388,6 +388,29 @@ def _render_story_block(s: dict) -> list[str]:
     return lines
 
 
+def _brag_entry(awino_dir: Path, s: dict) -> list[str]:
+    """One brag-board entry: the task, the day it closed, the result in a
+    sentence, and how well it was proven. Detail lives in the receipt."""
+    spent = sum(_session_seconds(e) for e in (s.get("sessions") or []))
+    out = [f"### ✓ {s['title']} — {_day(s.get('closed_ts'))}",
+           f"{s.get('outcome') or '(no result recorded)'}"]
+    facts = []
+    try:
+        from receipt import load_receipt  # local: keep story light
+        rc = load_receipt(awino_dir, s["id"])
+    except Exception:
+        rc = None
+    if rc:
+        facts.append(str(rc.get("status", "")))
+    if spent >= 60:
+        facts.append(format_duration(spent))
+    if rc:
+        facts.append(f"receipt: .awino/registry/receipts/{s['id']}.md")
+    if facts:
+        out.append(f"<sub>{' · '.join(f for f in facts if f)}</sub>")
+    return out
+
+
 def render_story_md(awino_dir: str | Path) -> str:
     """Render <project_root>/STORY.md from the registry. Idempotent.
 
@@ -432,29 +455,15 @@ def render_story_md(awino_dir: str | Path) -> str:
 
         lines.append("## Brag board")
         lines.append("")
-        lines.append("Finished stories, with closed date, outcome, and "
-                     "time dedicated.")
+        lines.append("Finished work: what, when, and the result. The full "
+                     "promise and proof are in each story's receipt.")
         lines.append("")
         if not done:
             lines.append("No finished stories yet.")
             lines.append("")
         for s in sorted(done, key=lambda s: s.get("closed_ts", 0),
                         reverse=True):
-            spent = sum(_session_seconds(e) for e in (s.get("sessions") or []))
-            lines.append(
-                f"### `{s['id']}` — {s['title']} [{s['type']}] — "
-                f"closed {_day(s.get('closed_ts'))}")
-            lines.append(f"- **Outcome:** {s.get('outcome') or '—'}")
-            lines.append(f"- **Time dedicated:** {format_duration(spent)}")
-            lines.append(f"- **Problem:** {s.get('problem') or '—'}")
-            lines.append(f"- **Approach:** {s.get('approach') or '—'}")
-            crit = s.get("done_criteria") or []
-            if crit:
-                lines.append("- **Done criteria:**")
-                lines.extend(f"  - [x] {c}" for c in crit)
-            seeds = s.get("seeds") or []
-            if seeds:
-                lines.append(f"- **Seeds:** {', '.join(seeds)}")
+            lines.extend(_brag_entry(awino_dir, s))
             lines.append("")
 
         text = "\n".join(lines)

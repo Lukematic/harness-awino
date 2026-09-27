@@ -1834,6 +1834,9 @@ async function doConnectInner(
       // writes via WorkspaceEdit (one undo unit) and runs delegated
       // shell commands in the integrated terminal with live streaming.
       capabilities: { delegated_apply: true, terminal_stream: true },
+      autoApproveAfterPlan: vscode.workspace
+        .getConfiguration("awino")
+        .get<boolean>("autoApproveAfterPlan", true),
     });
     lastConnectError = null;
     log(

@@ -44,7 +44,8 @@ function ok(cond, name) { if (cond) { pass++; console.log("ok   - " + name); } e
   ok(String(parked[0].description).includes("revisit due"), "revisit-due flag shown");
   const brag = await view.getChildren(top[3]);
   ok(brag[0].contextValue === "awinoStoryDone", "done story has no close action");
-  ok(/\d{4}-\d{2}-\d{2} · 2h 0m · shipped/.test(brag[0].description), "brag row: date · time · outcome (" + brag[0].description + ")");
+  ok(/^\d{4}-\d{2}-\d{2} · shipped/.test(brag[0].description), "brag row: date · result (" + brag[0].description + ")");
+  ok(String(brag[0].tooltip).includes("time: 2h 0m"), "time spent kept in the tooltip");
   ok(formatDuration(59) === "<1m" && formatDuration(0) === "0m" && formatDuration(3660) === "1h 1m", "duration formatting");
 
   const empty = new StoriesView(async () => ({ stories: [], brag: [], attached: false }));

@@ -43,6 +43,7 @@ pure data attached to the approval card. STDLIB ONLY.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 
 __all__ = ["resolve_shell_targets", "in_workspace"]
@@ -255,3 +256,89 @@ def resolve_shell_targets(cmd: str, workspace_root: str) -> dict:
     return {"command": cmd or "", "workspace_root": root,
             "effective_cwd": eff_cwd, "targets": targets,
             "unresolved": unresolved, "outside_workspace": outside}
+
+
+# ---------------------------------------------------------------------------
+# Session autopilot: what may run without a click once the plan is approved
+# ---------------------------------------------------------------------------
+# Destructive or outward-facing commands always ask, whatever the session
+# allows: they delete, rewrite history, publish, escalate, or reach the
+# network. Matched per command segment on the program name and its flags.
+_DESTRUCTIVE_PROGRAMS = {
+    "rm", "rmdir", "del", "erase", "rd", "shred", "unlink", "mkfs", "dd",
+    "sudo", "su", "doas", "chown", "chmod", "chgrp", "kill", "killall",
+    "pkill", "shutdown", "reboot", "curl", "wget", "scp", "rsync", "ssh",
+    "ftp", "nc", "docker", "kubectl", "terraform", "helm",
+}
+_DESTRUCTIVE_SUBCOMMANDS = {
+    "git": {"push", "reset", "clean", "rebase", "filter-branch", "rm",
+            "checkout", "restore", "stash", "branch", "tag", "remote",
+            "gc", "prune", "update-ref", "reflog", "switch"},
+    "npm": {"publish", "unpublish", "uninstall", "install", "i", "ci",
+            "link", "deprecate", "adduser", "login"},
+    "pnpm": {"publish", "remove", "add", "install", "i"},
+    "yarn": {"publish", "remove", "add", "install"},
+    "pip": {"install", "uninstall"},
+    "pip3": {"install", "uninstall"},
+    "uv": {"pip", "add", "remove", "publish"},
+    "cargo": {"publish", "install", "uninstall", "yank"},
+    "twine": {"upload"},
+    "gh": {"pr", "release", "repo", "issue", "api", "secret", "workflow"},
+    "find": {"-delete", "-exec"},
+}
+_FORCE_FLAGS = {"-f", "--force", "-rf", "-fr", "--hard", "--no-verify",
+                "--force-with-lease", "-D"}
+
+
+def destructive_reason(cmd: str, workspace_root: str) -> str | None:
+    """Why this command must still ask (None = safe to auto-approve).
+
+    Conservative by construction: anything unparseable, any shell
+    expansion, redirection that could overwrite, or a target outside the
+    workspace counts as destructive."""
+    cmd = cmd or ""
+    if not cmd.strip():
+        return "empty command"
+    if re.search(r"(^|[^<>])>(?!&)", cmd) and not re.search(r"2>&1|>\s*/dev/null", cmd):
+        return "redirects output into a file"
+    for segment in _split_segments(cmd):
+        seg = segment.strip()
+        if not seg:
+            continue
+        if _has_expansion(seg):
+            return "uses shell expansion"
+        try:
+            tokens = shlex.split(seg, posix=True)
+        except ValueError:
+            return "unparseable quoting"
+        if tokens and os.path.basename(tokens[0]) in ("sudo", "doas", "su"):
+            return "runs with elevated privileges"
+        idx = 0
+        while idx < len(tokens) and tokens[idx] in _WRAPPER_PREFIXES:
+            idx += 1
+        if idx >= len(tokens):
+            continue
+        name = os.path.basename(tokens[idx])
+        rest = tokens[idx + 1:]
+        if name in _DESTRUCTIVE_PROGRAMS:
+            return f"`{name}` can delete, escalate or reach the network"
+        subs = _DESTRUCTIVE_SUBCOMMANDS.get(name)
+        if subs and any(t in subs for t in rest):
+            hit = next(t for t in rest if t in subs)
+            return f"`{name} {hit}` changes state outside the work"
+        if any(t in _FORCE_FLAGS for t in rest):
+            return "uses a force flag"
+        if name in ("python", "python3", "node", "bash", "sh", "zsh",
+                    "powershell", "pwsh") and any(
+                t in ("-c", "-e", "--eval", "-Command") for t in rest):
+            return "runs inline code"
+    # Expansion and bad quoting were refused above; what remains unresolved
+    # are ordinary non-path arguments (`git status`, `npm test`).
+    targets = resolve_shell_targets(cmd, workspace_root)
+    root = os.path.realpath(os.path.abspath(workspace_root))
+    if not in_workspace(targets.get("effective_cwd") or root, root):
+        return "runs outside the workspace"
+    if any(not t["in_workspace"] and t["path"] not in ("/dev/null", "NUL")
+           for t in targets.get("targets", [])):
+        return "touches files outside the workspace"
+    return None
