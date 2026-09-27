@@ -63,10 +63,29 @@ def _day(ts: float | None) -> str:
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts)) if ts else "—"
 
 
+def _words(text) -> str:
+    """Lowercase words joined by single spaces: 'Counts.csv  has X.' ->
+    'counts csv has x'."""
+    return " ".join(re.findall(r"[^\W_]+", str(text or "").lower()))
+
+
+def _cell(text) -> str:
+    """A markdown table cell: pipes escaped, line breaks flattened."""
+    return re.sub(r"\s*[\r\n]+\s*", " ", str(text if text is not None else "")
+                  ).replace("|", "\\|")
+
+
 # ---------------------------------------------------------------- proof
+def _ts(x) -> float | None:
+    """A usable timestamp, or None (missing, null, or not a number)."""
+    v = x.get("ts") if isinstance(x, dict) else None
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) \
+        else None
+
+
 def _window(events: list[dict], start: float, end: float) -> list[dict]:
     return [e for e in events or []
-            if isinstance(e, dict) and start <= e.get("ts", 0) <= end]
+            if _ts(e) is not None and start <= _ts(e) <= end]
 
 
 def _checks(events: list[dict]) -> list[dict]:
@@ -157,7 +176,7 @@ def _step_actuals(awino_dir: Path, story: dict) -> list[dict]:
     rows, prev_done = [], None
     for i, st in enumerate(story.get("steps") or []):
         t = by_index.get(i) or {}
-        hist = t.get("history") or []
+        hist = [h for h in t.get("history") or [] if _ts(h) is not None]
         doing = next((h["ts"] for h in hist if h.get("state") == "doing"), None)
         done = next((h["ts"] for h in reversed(hist)
                      if h.get("state") == "done"), None)
@@ -195,21 +214,31 @@ def build_receipt(awino_dir: str | Path, story_id: str, *,
 
     steps = _step_actuals(awd, story)
     verdicts = _verdicts(win)
-    passed = [v for v in verdicts if v["passed"]]
+    # Only passes after the last failure count: a verification that failed
+    # after a pass (a regression) means the earlier pass no longer holds.
+    last_fail = max((i for i, v in enumerate(verdicts) if not v["passed"]),
+                    default=-1)
+    passed = [v for v in verdicts[last_fail + 1:] if v["passed"]]
+    superseded = any(v["passed"] for v in verdicts[:last_fail + 1])
     checks = _checks(win)
     head = next((e.get("hash") for e in reversed(win) if e.get("hash")), "")
 
-    # Which done criteria did a verifier verdict actually name?
-    named = " ".join(c["criterion"].lower() for v in passed
-                     for c in v.get("criteria", [])
-                     if c.get("accomplished") == "yes")
+    # Which done criteria did a verifier verdict actually name? Compared
+    # per named criterion (never across two of them), ignoring case,
+    # punctuation and spacing.
+    named = [_words(c["criterion"]) for v in passed
+             for c in v.get("criteria", [])
+             if c.get("accomplished") == "yes"]
     # A verdict that lists criteria only proves the ones it names; a pass
     # with no per-criterion list (auto-verify) covers the mission as a whole.
     itemized = any(v.get("criteria") for v in passed)
     criteria = []
     for c in story.get("done_criteria") or []:
         text = c if isinstance(c, str) else json.dumps(c)
-        if named and text.lower()[:60] in named:
+        key = _words(text)
+        if len(key) > 60:  # a long criterion: its first ~60 chars, whole words
+            key = key[:61].rsplit(" ", 1)[0]
+        if key and any(f" {key} " in f" {n} " for n in named):
             how = "named in verifier verdict"
         elif passed and not itemized:
             how = "covered by passing verification"
@@ -254,6 +283,9 @@ def build_receipt(awino_dir: str | Path, story_id: str, *,
     fails = [v for v in verdicts if not v["passed"]]
     if fails:
         lessons.append(f"{len(fails)} failed verification(s) before close.")
+    if superseded and not passed:
+        lessons.append("Verification failed after the last pass; the "
+                       "earlier pass no longer proves the story.")
     loops = [e for e in win if e.get("type") == "doom_loop_detected"]
     if loops:
         lessons.append(f"Three-strike breaker fired {len(loops)} time(s).")
@@ -305,16 +337,18 @@ def render_receipt_md(r: dict) -> str:
         out += [p["problem"], ""]
     if pr["criteria"]:
         out += ["| Done criterion | Proof |", "|---|---|"]
-        out += [f"| {c['criterion']} | {c['proof']} |" for c in pr["criteria"]]
+        out += [f"| {_cell(c['criterion'])} | {_cell(c['proof'])} |"
+                for c in pr["criteria"]]
         out.append("")
     if pr["steps"]:
         out += ["| # | Step | Forecast | Actual | State | Evidence |",
                 "|---|---|---|---|---|---|"]
         for st in pr["steps"]:
             ev = ", ".join(f"`{x}`" for x in st["evidence"]) or "—"
-            out.append(f"| {st['index'] + 1} | {st['title']} | "
-                       f"{st['forecast'] or '—'} | {_fmt(st['actual_s'])} | "
-                       f"{st['state']} | {ev} |")
+            out.append(f"| {st['index'] + 1} | {_cell(st['title'])} | "
+                       f"{_cell(st['forecast'] or '—')} | "
+                       f"{_fmt(st['actual_s'])} | {_cell(st['state'])} | "
+                       f"{_cell(ev)} |")
         out.append("")
     out += ["### Proof", ""]
     if pr["checks"]:
@@ -355,18 +389,22 @@ def write_receipt(awino_dir: str | Path, receipt: dict) -> Path:
     d = receipts_dir(awino_dir)
     d.mkdir(parents=True, exist_ok=True)
     sid = receipt["story"]["id"]
-    (d / f"{sid}.json").write_text(json.dumps(receipt, indent=2, default=str))
+    # UTF-8 always: the markdown carries arrows and dashes, and the
+    # platform default (cp1252 on Windows, ASCII under LANG=C) can't.
+    (d / f"{sid}.json").write_text(json.dumps(receipt, indent=2, default=str),
+                                   encoding="utf-8")
     md = d / f"{sid}.md"
-    md.write_text(render_receipt_md(receipt))
+    md.write_text(render_receipt_md(receipt), encoding="utf-8")
     return md
 
 
 def load_receipt(awino_dir: str | Path, story_id: str) -> dict | None:
     p = receipts_dir(awino_dir) / f"{story_id}.json"
     try:
-        return json.loads(p.read_text())
-    except (OSError, json.JSONDecodeError):
+        r = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
         return None
+    return r if isinstance(r, dict) else None
 
 
 def calibration_history(awino_dir: str | Path, limit: int = 10) -> list[dict]:
@@ -375,14 +413,17 @@ def calibration_history(awino_dir: str | Path, limit: int = 10) -> list[dict]:
     d = receipts_dir(awino_dir)
     rows = []
     for p in d.glob("*.json") if d.is_dir() else []:
+        # One unreadable or hand-edited receipt must not hide the rest.
         try:
-            r = json.loads(p.read_text())
-        except (OSError, json.JSONDecodeError):
+            r = json.loads(p.read_text(encoding="utf-8"))
+            story, ratio = r["story"], r["lesson"]["ratio"]
+            if not isinstance(ratio, (int, float)) or isinstance(ratio, bool):
+                continue
+            rows.append({"story_id": story["id"],
+                         "title": story.get("title", ""),
+                         "closed_ts": story.get("closed_ts") or 0,
+                         "ratio": ratio})
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
             continue
-        if r.get("lesson", {}).get("ratio") is not None:
-            rows.append({"story_id": r["story"]["id"],
-                         "title": r["story"]["title"],
-                         "closed_ts": r["story"].get("closed_ts") or 0,
-                         "ratio": r["lesson"]["ratio"]})
     rows.sort(key=lambda x: x["closed_ts"], reverse=True)
     return rows[:limit]
