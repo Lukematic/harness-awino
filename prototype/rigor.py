@@ -949,27 +949,6 @@ def render_text(report: dict) -> str:
     return "\n".join(L)
 
 
-def render_markdown(report: dict) -> str:
-    L = [f"# Rigor report — `{report['mission_id']}`",
-         f"**RigorScore: {report['score']:.2f}** "
-         f"({report['n_scored']}/{report['n_checks']} checks scored)",
-         ""]
-    for c in report["checks"]:
-        mark = _STATUS_MARK[c["status"]]
-        L.append(f"## [{mark}] {c['check']} — {c['status']}")
-        L.append(f"*{c['law']}* — {c['title']}")
-        for ev in c["evidence"]:
-            L.append(f"- {ev}")
-        if c["nudge"]:
-            L.append(f"> {c['nudge']}")
-        L.append("")
-    if report["overrides"]:
-        L.append("## User overrides (principal — logged, not penalized)")
-        for o in report["overrides"]:
-            L.append(f"- seq {o['seq']}: {o['detail']}")
-    return "\n".join(L)
-
-
 # ---------------------------------------------------------------------------
 # Entry points
 # ---------------------------------------------------------------------------
@@ -1082,25 +1061,3 @@ def _rule_r4_verify_claim(turn: dict, summary: dict):
 def rigor_extra_rules() -> list:
     """Extra judge rules implementing Laws 1–2 at turn scope."""
     return [_rule_r3_no_verify_done, _rule_r4_verify_claim]
-
-
-# ---------------------------------------------------------------------------
-# Five Laws rubric — the coach's core, for SPEC/docs reference.
-# ---------------------------------------------------------------------------
-FIVE_LAWS = [
-    ("Law 1 — Observable Proof",
-     "Every completion claim needs verifiable evidence. No exceptions.",
-     ["observable_proof", "tests_run", "tests_green", "regression_test"]),
-    ("Law 2 — Atomic State Transitions",
-     "Known-good → known-good. Broken states are reverted, never committed.",
-     ["atomic_transitions", "lint_evidence"]),
-    ("Law 3 — Preserved Intent",
-     "Never change code whose purpose you cannot articulate.",
-     ["preserved_intent"]),
-    ("Law 4 — Declared Uncertainty",
-     "Say 'I don't know' immediately. Fabricating knowledge is critical.",
-     ["declared_uncertainty"]),
-    ("Law 5 — Minimal Authority",
-     "Only the permissions, files, and scope the task needs.",
-     ["minimal_authority"]),
-]

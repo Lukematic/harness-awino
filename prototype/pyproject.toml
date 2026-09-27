@@ -29,7 +29,6 @@ py-modules = [
     "compaction",
     "contract",
     "contract_loop",
-    "demo",
     "export_kilo_skills",
     "floor_checks",
     "hooks",

@@ -461,10 +461,6 @@ class Sandbox:
         if not p.is_dir():
             return {"error": f"not a directory: {path}"}
         return {"path": path or ".", "entries": sorted(x.name for x in p.iterdir())}
-        p = self._resolve(path)
-        if not p.is_dir():
-            return {"error": f"not a directory: {path}"}
-        return {"path": path or ".", "entries": sorted(x.name for x in p.iterdir())}
 
     # ------------------------------------------------- v0.6 project-context
     # tools. Read-only by construction: they never write. Timeouts are
