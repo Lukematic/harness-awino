@@ -39,25 +39,72 @@ def _store_path(awino_dir) -> Path:
     return Path(awino_dir) / "lessons" / "lessons.json"
 
 
-def load(awino_dir) -> dict:
+def _read(awino_dir) -> dict | None:
+    """The stored lessons ({} when there is no store yet), or None when
+    the file exists but is not a JSON object. Entries that are not
+    lesson dicts (hand edits, older formats) are dropped."""
     try:
-        data = json.loads(_store_path(awino_dir).read_text())
-        return data if isinstance(data, dict) else {}
-    except (OSError, json.JSONDecodeError):
+        data = json.loads(_store_path(awino_dir).read_text(encoding="utf-8"))
+    except FileNotFoundError:
         return {}
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return {k: v for k, v in data.items() if isinstance(v, dict)}
+
+
+def load(awino_dir) -> dict:
+    return _read(awino_dir) or {}
+
+
+def _load_for_write(awino_dir) -> dict:
+    """Like load(), but a corrupt store is moved aside first (to
+    lessons.json.corrupt-<ts>) so the next save can't silently wipe the
+    lessons and their ledgers."""
+    data = _read(awino_dir)
+    if data is None:
+        p = _store_path(awino_dir)
+        try:
+            p.replace(p.with_name(f"{p.name}.corrupt-{int(time.time())}"))
+        except OSError:
+            pass
+        return {}
+    return data
 
 
 def _save(awino_dir, lessons: dict) -> None:
     p = _store_path(awino_dir)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(lessons, indent=2, sort_keys=True))
+    tmp.write_text(json.dumps(lessons, indent=2, sort_keys=True),
+                   encoding="utf-8")
     tmp.replace(p)
+
+
+def _num(v) -> float:
+    """A count or timestamp from a stored lesson; 0 when missing or bad."""
+    if isinstance(v, bool):
+        return 0
+    if isinstance(v, (int, float)):
+        return v
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _norm(text: str) -> str:
     words = re.findall(r"[a-z0-9]+", (text or "").lower())
     return "-".join(w for w in words if len(w) > 2)[:48] or "general"
+
+
+def _clip(text, n: int) -> str:
+    """One line, whitespace collapsed, at most n chars. Lesson text goes
+    into every turn contract: a multi-line command or title must not add
+    lines (or headings) to it, nor blow its size."""
+    one = " ".join(str(text if text is not None else "").split())
+    return one if len(one) <= n else one[:n - 1] + "…"
 
 
 def extract(receipt: dict) -> list[dict]:
@@ -70,15 +117,17 @@ def extract(receipt: dict) -> list[dict]:
             out.append({
                 "key": f"forecast:{_norm(st.get('title'))}",
                 "kind": "forecast",
-                "text": (f"Steps like '{st.get('title')}' ran "
-                         f"{a / f:.1f}x the forecast ({st.get('forecast')}). "
+                "text": (f"Steps like '{_clip(st.get('title'), 80)}' ran "
+                         f"{a / f:.1f}x the forecast "
+                         f"({_clip(st.get('forecast'), 20)}). "
                          f"Forecast higher or split the step.")})
     for c in pr.get("checks", []):
         if c.get("failures"):
             out.append({
                 "key": f"check:{c.get('cmd')}",
                 "kind": "check",
-                "text": (f"`{c.get('cmd')}` failed {c['failures']} of "
+                "text": (f"`{_clip(c.get('cmd'), 100)}` failed "
+                         f"{c['failures']} of "
                          f"{c.get('runs')} run(s) before the story closed. "
                          f"Run it before claiming a step is done.")})
     loops = [n for n in receipt.get("lesson", {}).get("notes", [])
@@ -93,13 +142,15 @@ def extract(receipt: dict) -> list[dict]:
     if unproven:
         out.append({"key": "proof:unproven", "kind": "proof",
                     "text": (f"Stories closed with unproven criteria (last: "
-                             f"'{unproven[0][:80]}'). Make every done "
+                             f"'{_clip(unproven[0], 80)}'). Make every done "
                              f"criterion checkable before BUILD.")})
     return out
 
 
 def _ledger(lesson: dict, action: str, reason: str, evidence: str) -> None:
-    lesson.setdefault("ledger", []).append(
+    if not isinstance(lesson.get("ledger"), list):
+        lesson["ledger"] = []
+    lesson["ledger"].append(
         {"ts": time.time(), "action": action, "reason": reason,
          "evidence": evidence})
 
@@ -110,7 +161,7 @@ def learn_from_receipt(awino_dir, receipt: dict,
 
     Returns {"created": [...], "reinforced": [...], "escalated": [...],
     "learned": [...], "revived": [...]} (lesson keys)."""
-    lessons = load(awino_dir)
+    lessons = _load_for_write(awino_dir)
     sid = receipt.get("story", {}).get("id", "?")
     title = receipt.get("story", {}).get("title", "")
     evidence = evidence or f"receipt:{sid}"
@@ -128,15 +179,19 @@ def learn_from_receipt(awino_dir, receipt: dict,
             _ledger(cur, "create", f"story '{title}'", evidence)
             res["created"].append(key)
             continue
-        cur["seen"] = cur.get("seen", 0) + 1
+        cur["seen"] = int(_num(cur.get("seen"))) + 1
         cur["text"] = cand["text"]
         cur["clean"] = 0
-        cur["evidence"] = (cur.get("evidence", []) + [evidence])[-10:]
+        prior = cur.get("evidence")
+        cur["evidence"] = ((prior if isinstance(prior, list) else [])
+                           + [evidence])[-10:]
+        if cur.get("status") not in ("live", "escalated", "learned"):
+            cur["status"] = "live"  # older/hand-edited entry: make it visible
         if cur.get("status") == "learned":
             cur["status"] = "live"
             _ledger(cur, "revive", f"recurred in '{title}'", evidence)
             res["revived"].append(key)
-        elif cur.get("shown", 0) > 0:
+        elif _num(cur.get("shown")) > 0:
             cur["status"] = "escalated"
             _ledger(cur, "escalate",
                     f"recurred in '{title}' after being shown "
@@ -149,8 +204,8 @@ def learn_from_receipt(awino_dir, receipt: dict,
     for key, cur in lessons.items():
         if key in found or cur.get("status") == "learned":
             continue
-        if cur.get("shown", 0) > 0:
-            cur["clean"] = cur.get("clean", 0) + 1
+        if _num(cur.get("shown")) > 0:
+            cur["clean"] = int(_num(cur.get("clean"))) + 1
             if cur["clean"] >= LEARNED_AFTER:
                 cur["status"] = "learned"
                 _ledger(cur, "learned",
@@ -166,14 +221,17 @@ def live(awino_dir) -> list[dict]:
     rows = [l for l in load(awino_dir).values()
             if l.get("status") in ("live", "escalated")]
     rows.sort(key=lambda l: (l.get("status") != "escalated",
-                             -l.get("seen", 0), -l.get("created_ts", 0)))
+                             -_num(l.get("seen")), -_num(l.get("created_ts"))))
     return rows
 
 
 def index_lines(awino_dir, limit: int = INDEX_LIMIT) -> list[str]:
     out = []
     for l in live(awino_dir)[:limit]:
-        tag = "ESCALATED" if l["status"] == "escalated" else f"x{l['seen']}"
+        if not l.get("text"):
+            continue
+        seen = int(_num(l.get("seen"))) or 1
+        tag = "ESCALATED" if l["status"] == "escalated" else f"x{seen}"
         out.append(f"[{tag}] {l['text']}")
     return out
 
@@ -181,11 +239,11 @@ def index_lines(awino_dir, limit: int = INDEX_LIMIT) -> list[str]:
 def mark_shown(awino_dir, keys: list[str] | None = None) -> None:
     """A session (or story) saw these lessons: from here, a recurrence is
     a lesson not taken, and a clean close counts toward LEARNED_AFTER."""
-    lessons = load(awino_dir)
+    lessons = _load_for_write(awino_dir)
     want = set(keys) if keys is not None else {
         l["key"] for l in live(awino_dir)[:INDEX_LIMIT]}
     for k in want:
         if k in lessons:
-            lessons[k]["shown"] = lessons[k].get("shown", 0) + 1
+            lessons[k]["shown"] = int(_num(lessons[k].get("shown"))) + 1
     if want:
         _save(awino_dir, lessons)

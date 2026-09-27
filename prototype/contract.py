@@ -594,7 +594,10 @@ def compile_contract(state, turn_no: int | None = None,
         A("## LESSONS (from this project's past receipts — plan around them;")
         A("## an ESCALATED one recurred after being shown: raise it with the user)")
         for ln in s["lessons"]:
-            A(f"- {ln}")
+            # One line each, bounded: lesson text quotes commands and
+            # titles, which must never add lines or headings here.
+            one = " ".join(str(ln).split())
+            A(f"- {one if len(one) <= 300 else one[:299] + '…'}")
         A("")
     A("## REQUIREMENTS")
     if s.get("plan"):
