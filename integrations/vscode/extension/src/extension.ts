@@ -1178,36 +1178,71 @@ async function runStoryCommand(name: string, args: Record<string, unknown>): Pro
   await postSessionResume();
 }
 
+/** Why a sidecar command failed, or undefined when it did not. A handler
+ * that raised comes back as {error} with no status, so status alone is
+ * not enough. */
+export function commandFailure(r: unknown): string | undefined {
+  if (!r || typeof r !== "object") return "no result";
+  const o = r as Record<string, unknown>;
+  if (o["error"] !== undefined && o["error"] !== null && o["error"] !== "") {
+    return String(o["said"] ?? o["error"]);
+  }
+  if (o["status"] === "error") return String(o["said"] ?? "failed");
+  return undefined;
+}
+
 async function closeStoryFlow(story?: StoryRow): Promise<void> {
-  const s = story ?? (await pickStory("Close which story?", (x) => x.status !== "done"));
-  if (!s) return;
-  const outcome = await vscode.window.showInputBox({
-    prompt: `Close "${s.title}" — what was accomplished? (goes on the brag board)`,
-    validateInput: (v) => (v.trim() ? undefined : "An outcome is required for the brag board"),
-  });
-  if (!outcome) return;
-  const r = (await query("story_close", { id: s.id, outcome: outcome.trim() })) as Record<string, unknown>;
-  if (r["status"] === "error") {
-    vscode.window.showErrorMessage(`Awino: ${String(r["said"] ?? "story_close failed")}`);
+  if (!session) {
+    vscode.window.showWarningMessage("Awino: not connected — cannot close a story.");
     return;
   }
-  if (r["receipt"]) postToChat({ type: "receipt", receipt: r["receipt"], markdown: r["markdown"] });
-  refreshViews();
-  await postSessionResume();
+  try {
+    const s = story ?? (await pickStory("Close which story?", (x) => x.status !== "done"));
+    if (!s) return;
+    const outcome = await vscode.window.showInputBox({
+      prompt: `Close "${s.title}" — what was accomplished? (goes on the brag board)`,
+      validateInput: (v) => (v.trim() ? undefined : "An outcome is required for the brag board"),
+    });
+    if (!outcome) return;
+    const r = (await query("story_close", { id: s.id, outcome: outcome.trim() })) as Record<string, unknown>;
+    const failure = commandFailure(r);
+    if (failure) {
+      vscode.window.showErrorMessage(`Awino: story_close failed — ${failure}`);
+      return;
+    }
+    if (r["receipt"]) {
+      postToChat({ type: "receipt", receipt: r["receipt"], markdown: r["markdown"] });
+    } else if (r["receipt_error"]) {
+      vscode.window.showWarningMessage(`Awino: story closed, but its receipt failed — ${String(r["receipt_error"])}`);
+    }
+    refreshViews();
+    await postSessionResume();
+  } catch (e) {
+    vscode.window.showErrorMessage(`Awino: story_close failed — ${String(e)}`);
+  }
 }
 
 // Receipt: promise -> proof -> lesson. Closed stories show the stored
 // receipt; open ones a live preview from the journal.
 async function showReceiptFlow(story?: StoryRow): Promise<void> {
-  const s = story ?? (await pickStory("Receipt for which story?", () => true));
-  if (!s) return;
-  const r = (await query("receipt", { id: s.id })) as Record<string, unknown>;
-  if (r["status"] === "error") {
-    vscode.window.showErrorMessage(`Awino: ${String(r["said"] ?? "no receipt")}`);
+  if (!session) {
+    vscode.window.showWarningMessage("Awino: not connected — no receipt available.");
     return;
   }
-  postToChat({ type: "receipt", receipt: r["receipt"], markdown: r["markdown"] });
-  void vscode.commands.executeCommand("awino.chat.focus").then(undefined, () => undefined);
+  try {
+    const s = story ?? (await pickStory("Receipt for which story?", () => true));
+    if (!s) return;
+    const r = (await query("receipt", { id: s.id })) as Record<string, unknown>;
+    const failure = commandFailure(r);
+    if (failure || !r["receipt"]) {
+      vscode.window.showErrorMessage(`Awino: ${failure ?? "no receipt"}`);
+      return;
+    }
+    postToChat({ type: "receipt", receipt: r["receipt"], markdown: r["markdown"] });
+    void vscode.commands.executeCommand("awino.chat.focus").then(undefined, () => undefined);
+  } catch (e) {
+    vscode.window.showErrorMessage(`Awino: receipt failed — ${String(e)}`);
+  }
 }
 
 async function openReceiptDoc(markdown: string): Promise<void> {

@@ -188,6 +188,23 @@ async function main() {
     assert.strictEqual(bar.hidden, true, "non-finite score must hide the bar");
   });
 
+  await t("commandFailure: handler exceptions ({error}) count as failures", () => {
+    assert.strictEqual(ext.commandFailure({ error: "KeyError: 'ts'" }), "KeyError: 'ts'");
+    assert.strictEqual(ext.commandFailure({ status: "error", said: "no story 'x'" }), "no story 'x'");
+    assert.strictEqual(ext.commandFailure({ status: "error" }), "failed");
+    assert.strictEqual(ext.commandFailure({ status: "ok", said: "fine" }), undefined);
+    assert.strictEqual(ext.commandFailure(undefined), "no result");
+  });
+
+  for (const cmd of ["awino.showReceipt", "awino.closeStory"]) {
+    await t(`${cmd} disconnected: warning, no throw`, async () => {
+      warnings.length = 0;
+      await registered[cmd](); // must not reject
+      assert.ok(warnings.some((w) => /not connected/i.test(w)),
+                "expected a 'not connected' warning, got: " + JSON.stringify(warnings));
+    });
+  }
+
   console.log(`\nrigor extension tests: ${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 }
