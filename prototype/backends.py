@@ -391,7 +391,23 @@ def _extract_json(text: str):
         return None
 
 
+# Prompt history budget (characters) and the output-token default for
+# hosted providers. AWINO_MAX_TOKENS overrides; 1024 truncated any write
+# over ~3 KB mid-JSON.
+HISTORY_ENTRIES = 12
+HISTORY_BUDGET_CHARS = 60000
+
+
+def default_max_tokens(fallback: int = 8192) -> int:
+    try:
+        v = int(os.environ.get("AWINO_MAX_TOKENS", "") or fallback)
+    except ValueError:
+        v = fallback
+    return max(256, v)
+
+
 class OllamaBackend(ModelBackend):
+    tool_dialect = "openai"  # provider_tools dialect for native tool calls
     """Real model backend: talks to a local LLM server over HTTP.
 
     Host from OLLAMA_HOST (default http://localhost:11434), model from
@@ -408,8 +424,9 @@ class OllamaBackend(ModelBackend):
     never a tool call the harness did not see validated.
     """
 
-    def __init__(self, model=None, host=None, timeout=180, num_predict=512,
+    def __init__(self, model=None, host=None, timeout=180, num_predict=None,
                  temperature=0.2):
+        num_predict = num_predict or default_max_tokens(2048)
         self.model = model or os.environ.get("OLLAMA_MODEL", "qwen2.5:1.5b")
         self.host = (host or os.environ.get("OLLAMA_HOST",
                                             "http://localhost:11434")).rstrip("/")
@@ -433,7 +450,7 @@ class OllamaBackend(ModelBackend):
         offered_names: list[str] = []
         if tools:
             from provider_tools import to_provider
-            native_defs = to_provider("openai", tools)
+            native_defs = to_provider(self.tool_dialect, tools)
             offered_names = [t["name"] for t in tools]
         self.calls.append({"contract": contract_block[:200], "feedback": feedback,
                            "history_len": len(history),
@@ -483,7 +500,7 @@ class OllamaBackend(ModelBackend):
             # here: native_defs were built from exactly the offered tools.
             from provider_tools import from_provider, merge_native_calls, NormalizationError
             try:
-                native = from_provider("openai", raw_tool_calls)
+                native = from_provider(self.tool_dialect, raw_tool_calls)
             except NormalizationError as ex:
                 turn["_native_tool_errors"] = [str(ex)]
             else:
@@ -593,8 +610,20 @@ class OllamaBackend(ModelBackend):
     def _user_prompt(self, contract_block, history, feedback,
                      native_tools: bool = False):
         lines = [contract_block, "", "--- recent history ---"]
-        for h in (history or [])[-6:]:
-            lines.append(f"[{h.get('role', '?')}] {str(h.get('text', ''))[:300]}")
+        # Newest entries get the budget: tool output in full (it is what
+        # the model acts on), other entries trimmed. Oldest drop first.
+        budget, kept = HISTORY_BUDGET_CHARS, []
+        for h in reversed((history or [])[-HISTORY_ENTRIES:]):
+            role = h.get("role", "?")
+            cap = 40000 if role == "tool" else 2000
+            text = str(h.get("text", ""))[:cap]
+            if len(text) > budget:
+                text = text[:max(budget, 0)] + " [...]" if budget > 200 else ""
+            if not text:
+                break
+            budget -= len(text)
+            kept.append(f"[{role}] {text}")
+        lines += reversed(kept)
         lines += ["", "--- harness feedback (fix and resubmit) ---",
                   feedback or "(none)", "",
                   "Reply with ONLY the JSON turn object."]

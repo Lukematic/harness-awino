@@ -43,7 +43,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import backends
 import loop as loop_module
-from backends import EchoBackend, OllamaBackend, ScriptedBackend
+from backends import EchoBackend, OllamaBackend, ScriptedBackend, default_max_tokens
 from contract import MODES, compile_contract as _real_compile_contract
 from contract import parse_criteria
 from judges import build_judge_panel
@@ -829,7 +829,7 @@ class OpenAICompatibleBackend(OllamaBackend):
     local endpoints need no key at all."""
 
     def __init__(self, model=None, endpoint=None, timeout=180,
-                 num_predict=1024, api_key=None):
+                 num_predict=None, api_key=None):
         self.model = (model or os.environ.get("AWINO_MODEL")
                       or os.environ.get("OLLAMA_MODEL") or "default")
         e = (endpoint or os.environ.get("AWINO_ENDPOINT")
@@ -846,7 +846,7 @@ class OpenAICompatibleBackend(OllamaBackend):
         self.api_key = (api_key if api_key is not None
                         else os.environ.get("AWINO_API_KEY"))
         self.timeout = timeout
-        self.num_predict = num_predict
+        self.num_predict = num_predict or default_max_tokens()
         # Read by the inherited native-tools path when no per-call
         # temperature is given; matches the 0.2 used by _chat/_chat_stream.
         self.temperature = 0.2
@@ -993,7 +993,7 @@ class BedrockSigV4Backend(OpenAICompatibleBackend):
     """
 
     def __init__(self, model=None, endpoint=None, timeout=180,
-                 num_predict=1024, aws_profile=None):
+                 num_predict=None, aws_profile=None):
         self.aws_profile = (aws_profile.strip() if isinstance(aws_profile, str)
                             and aws_profile.strip() else None)
         # Eager: connect fails here when the chain yields nothing usable.
@@ -1029,8 +1029,47 @@ class BedrockSigV4Backend(OpenAICompatibleBackend):
 class AnthropicBackend(OllamaBackend):
     """Anthropic Messages API. Key from ANTHROPIC_API_KEY (env only)."""
 
+    tool_dialect = "anthropic"
+
+    def _headers(self) -> dict:
+        return {"Content-Type": "application/json",
+                "x-api-key": self.api_key or "",
+                "anthropic-version": "2023-06-01"}
+
+    def _chat_tools(self, prompt: str, system: str, native_defs: list,
+                    temperature: float | None = None,
+                    cancel=None) -> tuple[str, list]:
+        """Native tools over the Messages API. Returns (text, tool_use
+        blocks). The inherited version posted to /v1/chat/completions with
+        no x-api-key header, so every tools round got HTTP 401."""
+        body = json.dumps({
+            "model": self.model,
+            "max_tokens": self.num_predict,
+            "system": system,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": self.temperature if temperature is None
+                           else temperature,
+            "tools": native_defs,
+        }).encode()
+        req = urllib.request.Request(self.messages_url, data=body,
+                                     headers=self._headers())
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                raw = resp.read()
+                payload = json.loads(raw.decode())
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(f"anthropic HTTP {e.code}")
+        self.last_egress = {"destination": self.messages_url,
+                            "bytes_out": len(body), "bytes_in": len(raw)}
+        blocks = payload.get("content") or []
+        text = "".join(b.get("text", "") for b in blocks
+                       if isinstance(b, dict) and b.get("type") == "text")
+        calls = [b for b in blocks
+                 if isinstance(b, dict) and b.get("type") == "tool_use"]
+        return text, calls
+
     def __init__(self, model=None, endpoint=None, timeout=180,
-                 num_predict=1024, api_key=None):
+                 num_predict=None, api_key=None):
         self.model = (model or os.environ.get("AWINO_MODEL")
                       or "claude-sonnet-4-20250514")
         base = (endpoint or os.environ.get("AWINO_ENDPOINT")
@@ -1040,7 +1079,10 @@ class AnthropicBackend(OllamaBackend):
         self.api_key = (api_key if api_key is not None
                         else os.environ.get("ANTHROPIC_API_KEY"))
         self.timeout = timeout
-        self.num_predict = num_predict
+        self.num_predict = num_predict or default_max_tokens()
+        # Read by the inherited generate() when no per-call temperature is
+        # given (it was missing: AttributeError on every tools round).
+        self.temperature = 0.2
         self.calls: list[dict] = []
         # Track C: consumed by Loop._record_egress -> journaled as an
         # `egress` event (destination, bytes). None when no HTTP happened.
@@ -2264,7 +2306,8 @@ class Sidecar:
                      f"awino-checkpoint:{changeset_id}",
                      "--", ".", ":!.awino"],
                     capture_output=True, text=True, timeout=60)
-                if r.returncode == 0:
+                said = (r.stdout or "") + (r.stderr or "")
+                if r.returncode == 0 and "No local changes" not in said:
                     # Locate our stash entry by message (robust against
                     # concurrent stashes from other tools).
                     ref = None
@@ -2275,9 +2318,16 @@ class Sidecar:
                         if f"awino-checkpoint:{changeset_id}" in line:
                             ref = line.split(":")[0].strip()
                             break
-                    cp.update({"type": "stash", "ref": ref or "stash@{0}",
-                               "new_files": new_files})
-                elif "No local changes" in (r.stderr or ""):
+                    if ref:
+                        cp.update({"type": "stash", "ref": ref,
+                                   "new_files": new_files})
+                    else:
+                        # Nothing was stashed after all: restoring is
+                        # just reset + delete the new files. Pointing at
+                        # "stash@{0}" made revert fail on a clean tree
+                        # (or apply someone else's stash).
+                        cp.update({"type": "clean", "new_files": new_files})
+                elif "No local changes" in said:
                     cp.update({"type": "clean", "new_files": new_files})
                 else:
                     cp["note"] = (r.stderr or r.stdout or "")[:200]
@@ -2520,13 +2570,40 @@ class Sidecar:
             offered = self.loop.offer_lessons(mark_shown=True)
         except Exception:
             offered = []
+        # Session-start notices ride on the ready event: a `say` emitted
+        # before the client is listening was dropped.
+        notices: list[str] = []
         if offered:
             esc = sum(1 for l in offered if l.startswith("[ESCALATED]"))
-            self._say("lessons",
-                      f"{len(offered)} lesson(s) from past receipts are in "
-                      f"play" + (f", {esc} escalated" if esc else "") +
-                      ": " + " · ".join(l.split('] ', 1)[-1][:90]
-                                         for l in offered[:3]))
+            notices.append(
+                f"{len(offered)} lesson(s) from past receipts are in play"
+                + (f", {esc} escalated" if esc else "") + ": "
+                + " · ".join(l.split('] ', 1)[-1][:90] for l in offered[:3]))
+        repaired = getattr(self.loop.state, "repaired_mid", None)
+        if repaired:
+            notices.append(
+                f"The session journal had a corrupt line ({repaired['line']}); "
+                f"kept everything before it and saved the full file to "
+                f"{repaired['backup']}.")
+        try:
+            from story import open_stories_summary
+            open_rows = open_stories_summary(self._awino_dir())
+        except Exception:
+            open_rows = []
+        try:
+            import setup_autopilot
+            proposals = setup_autopilot.plan(self.workspace)
+        except Exception:
+            proposals = []
+        if proposals:
+            notices.append(
+                "Project setup I can do for you (asks first, never "
+                "overwrites): " + "; ".join(
+                    f"{a['path']} — {a['why']}" for a in proposals))
+        if open_rows:
+            notices.append("Open stories: " + ", ".join(
+                f"{r.get('title')} ({r.get('status')})" for r in open_rows[:4]))
+        self._hello_notices = notices
         self.provider = binding["provider"]
         self.model_desc = getattr(backend, "model", self.provider)
         self._binding = dict(binding)
@@ -2576,7 +2653,8 @@ class Sidecar:
                "modes": self._modes_summary(),
                "active_mode": self._active_mode_info(),
                "auto_init": None,
-               "stories_review": None})
+               "stories_review": None,
+               "notices": getattr(self, "_hello_notices", [])})
         self._run_auto_init_async(wsp)
 
     def _run_auto_init_async(self, wsp) -> None:
@@ -4057,6 +4135,10 @@ class Sidecar:
             "story_focus": self._cmd_story_focus,
             "story_close": self._cmd_story_close,
             "receipt": self._cmd_receipt,
+            "resolve_inspection": self._cmd_resolve_inspection,
+            "setup_plan": self._cmd_setup_plan,
+            "setup_apply": self._cmd_setup_apply,
+            "setup_decline": self._cmd_setup_decline,
             "lessons": self._cmd_lessons,
             "verify_begin": self._cmd_verify_begin,
             "verify_turn": self._cmd_verify_turn,
@@ -4518,7 +4600,11 @@ class Sidecar:
         if self.loop is not None:
             events = self.loop.state.events
             try:
-                chain_ok = self.loop.verify_journal()[0]
+                # Both checks: the hash chain on disk (tamper evidence)
+                # and tool-call pairing. The receipt said "chain intact"
+                # from the pairing check alone, even over a forged event.
+                chain_ok = (self.loop.state.verify_chain()[0]
+                            and self.loop.verify_journal()[0])
             except Exception:
                 chain_ok = None
         try:
@@ -4540,6 +4626,43 @@ class Sidecar:
             out["receipt"] = rc["receipt"]
             out["markdown"] = rc["markdown"]
         return out
+
+    # ------------------------------------------------ setup autopilot
+    def _cmd_setup_plan(self, args: dict) -> dict:
+        """Deterministic project chores the harness proposes (nothing is
+        written by this command)."""
+        import setup_autopilot
+        return {"status": "ok",
+                "detected": setup_autopilot.detect(self.workspace),
+                "actions": setup_autopilot.plan(self.workspace)}
+
+    def _cmd_setup_apply(self, args: dict) -> dict:
+        import setup_autopilot
+        r = setup_autopilot.apply(self.workspace, list(args.get("ids") or []))
+        said = ("Set up: " + ", ".join(r["applied"])) if r["applied"] \
+            else "Nothing applied."
+        if r["skipped"]:
+            said += " Skipped: " + ", ".join(r["skipped"]) + "."
+        if self.loop is not None:
+            self.loop.state.record("setup_applied", r)
+        return {"status": "ok", "said": said, **r}
+
+    def _cmd_setup_decline(self, args: dict) -> dict:
+        import setup_autopilot
+        setup_autopilot.decline(self.workspace, list(args.get("ids") or []),
+                                never=bool(args.get("never")))
+        return {"status": "ok",
+                "said": ("Won't ask again." if args.get("never")
+                         else "Skipped for now.")}
+
+    def _cmd_resolve_inspection(self, args: dict) -> dict:
+        """After a crash mid-effect: the user says whether it took effect."""
+        cid = args.get("id") or self.loop.state.snapshot.get(
+            "awaiting_inspection")
+        if not cid:
+            return {"status": "none", "said": "Nothing to resolve."}
+        return self.loop.resolve_inspection(
+            cid, args.get("resolution") or "not_applied")
 
     def _cmd_lessons(self, args: dict) -> dict:
         """Every lesson with its status, counts and ledger."""

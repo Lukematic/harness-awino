@@ -1286,9 +1286,11 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
         // Once per project: reconnects only refresh the status line above.
         if (readyAnnouncedFor !== ev.project) {
           readyAnnouncedFor = ev.project;
-          addMsg("", "<i>Sidecar ready — project <b>" + esc(ev.project) + "</b>, provider <b>" +
-            esc(b.provider || ev.provider) + "</b>. MCP: " +
-            esc(JSON.stringify((ev.mcp || []).map(function (m) { return m.name + ":" + (m.ok ? "ok" : "error"); }))) + "</i>");
+          const mcp = (ev.mcp || []).map(function (m) { return m.name + (m.ok ? "" : " (error)"); });
+          addMsg("", "<i>Ready — project <b>" + esc(ev.project) + "</b>, provider <b>" +
+            esc(b.provider || ev.provider) + "</b>" +
+            (mcp.length ? ". MCP servers: " + esc(mcp.join(", ")) : "") + ".</i>");
+          (ev.notices || []).forEach(function (n) { addMsg("", esc(n)); });
         }
         break;
       }

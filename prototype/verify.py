@@ -43,7 +43,8 @@ def criterion_text(criterion: dict) -> str:
     return str(criterion)
 
 
-def find_recipe(project_root: str | Path) -> tuple[str, str] | None:
+def find_recipe(project_root: str | Path,
+                name: str = "test") -> tuple[str, str] | None:
     """Locate the project's test recipe: (runner, recipe).
 
     Prefers `just test` when a justfile exists and declares a `test`
@@ -60,19 +61,19 @@ def find_recipe(project_root: str | Path) -> tuple[str, str] | None:
             text = p.read_text()
         except OSError:
             continue
-        if _declares_test_recipe(text, runner):
-            return runner, "test"
+        if _declares_test_recipe(text, runner, name):
+            return runner, name
     return None
 
 
-def _declares_test_recipe(text: str, runner: str) -> bool:
+def _declares_test_recipe(text: str, runner: str, name: str = "test") -> bool:
     for line in text.splitlines():
         stripped = line.strip()
         if runner == "just":
-            if stripped.startswith("test:") or stripped.startswith("test "):
+            if stripped.startswith(name + ":") or stripped.startswith(name + " "):
                 return True
         else:  # make
-            if stripped.startswith("test:"):
+            if stripped.startswith(name + ":"):
                 return True
     return False
 

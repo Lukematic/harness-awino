@@ -713,19 +713,24 @@ def run_startup_checklist(project_root: str | Path,
             awino_dir, root.name, mission_text, criteria)
         checks.append(yaml_check)
 
-        checks.append(scaffold_project_dirs(root))
+        # Outside .awino/ is the user's repo. `awino init` (typed by the
+        # user) scaffolds it; a session start in the extension does not —
+        # it proposes chores through setup_autopilot and asks first.
+        if not _sidecar:
+            checks.append(scaffold_project_dirs(root))
 
-        # Track E: apply only the missing scaffold for the configured
-        # profile. Existing project.yaml wins; default is software-engineer.
-        prof = DEFAULT_PROFILE
-        try:
-            if project_yaml is not None:
-                prof = read_project_yaml(project_yaml).get("profile") \
-                    or DEFAULT_PROFILE
-        except Exception:
+            # Track E: apply only the missing scaffold for the configured
+            # profile. Existing project.yaml wins; default is
+            # software-engineer.
             prof = DEFAULT_PROFILE
-        prof_report = ensure_profile_scaffold(root, prof)
-        checks.append(prof_report["check"])
+            try:
+                if project_yaml is not None:
+                    prof = read_project_yaml(project_yaml).get("profile") \
+                        or DEFAULT_PROFILE
+            except Exception:
+                prof = DEFAULT_PROFILE
+            prof_report = ensure_profile_scaffold(root, prof)
+            checks.append(prof_report["check"])
 
         seeds_check, seed_tasks = collect_seed_tasks(awino_dir / "seeds")
         checks.append(seeds_check)

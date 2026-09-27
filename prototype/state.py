@@ -22,6 +22,7 @@ tamper-evident.
 from __future__ import annotations
 
 import hashlib
+import threading
 import json
 import os
 import time
@@ -395,9 +396,16 @@ class ProjectState:
         self.events_path = self.dir / "events.jsonl"
         self.snapshot_path = self.dir / "snapshot.json"
         self.events: list[dict] = []
+        # One writer at a time: the auto-init thread and the turn thread
+        # both journal, and interleaved appends broke the hash chain
+        # (duplicate seq, verify_chain False) with no tampering at all.
+        self._lock = threading.RLock()
         self.snapshot: dict = initial_snapshot(project_id, conversation_id or _uid())
         self.repaired_tail = False
+        self.repaired_mid: dict | None = None
         self._load()
+        if self.repaired_mid:
+            self.record("journal_repaired", dict(self.repaired_mid))
         self._reconcile_tail()
 
     # ---- loading / recovery -------------------------------------------------
@@ -426,7 +434,18 @@ class ProjectState:
                     self.events_path.write_bytes(good)
                     self.repaired_tail = True
                     break
-                raise ValueError(f"corrupt event log at line {i} (not the tail)")
+                # Corrupt line mid-file: keep the valid prefix (its hash
+                # chain still verifies), set the whole file aside for
+                # inspection, and say so. Refusing to start left the user
+                # with an internal ValueError and no way forward.
+                backup = self.events_path.with_name(
+                    f"events.corrupt-{int(time.time())}.jsonl")
+                backup.write_bytes(data)
+                good = b"\n".join(lines[:i]) + (b"\n" if i > 0 else b"")
+                self.events_path.write_bytes(good)
+                self.repaired_mid = {"line": i + 1, "dropped": len(lines) - i,
+                                     "backup": str(backup)}
+                break
         return events
 
     def _reconcile_tail(self) -> None:
@@ -459,6 +478,10 @@ class ProjectState:
         # AND kept in memory, so every downstream consumer (journal export,
         # compaction, turn history) only ever sees the redacted form.
         # redact() returns a new structure; the caller's dict is untouched.
+        with self._lock:
+            return self._record_locked(etype, data)
+
+    def _record_locked(self, etype: str, data: dict | None) -> dict:
         redacted_data = redact(data or {})
         if self.events:
             prev_hash = hashlib.sha256(

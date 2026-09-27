@@ -105,3 +105,66 @@ class TestRecovery(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRecoveryUnstick(unittest.TestCase):
+    """Team review 09-27: after kill -9 the session was stuck forever —
+    every turn said "call resolve_inspection", which nothing offered."""
+
+    def _crash_during(self, tool, args):
+        loop, home = make_loop(backend=ScriptedBackend([]), project="unstick")
+        loop.set_mission("Recover", ["manual"])
+        loop.state.record("tool_called", {"call_id": "t0.9", "tool": tool,
+                                          "args": args, "idem_key": "k1"})
+        del loop
+        return Loop(home, "unstick", ScriptedBackend([]), ScriptedJudge())
+
+    def test_interrupted_read_is_rerun_without_asking(self):
+        loop2 = self._crash_during("git_status", {})
+        self.assertEqual(loop2.state.snapshot["awaiting_inspection"], "t0.9")
+        r = loop2.run_user_turn("hello")
+        self.assertNotEqual(r["status"], "awaiting_inspection")
+        self.assertIsNone(loop2.state.snapshot["awaiting_inspection"])
+
+    def test_interrupted_write_asks_in_plain_words(self):
+        loop2 = self._crash_during("write_file",
+                                   {"path": "x.txt", "content": "x"})
+        r = loop2.run_user_turn("hello")
+        self.assertEqual(r["status"], "awaiting_inspection")
+        self.assertIn("write_file x.txt", r["said"])
+        self.assertIn("'not applied'", r["said"])
+        self.assertNotIn("resolve_inspection(", r["said"])
+
+    def test_user_answer_not_applied_reruns_the_write(self):
+        loop2 = self._crash_during("write_file",
+                                   {"path": "x.txt", "content": "x"})
+        r = loop2.run_user_turn("not applied")
+        self.assertEqual(r["status"], "ok", r)
+        self.assertTrue((loop2.sandbox.root / "x.txt").exists())
+        self.assertIsNone(loop2.state.snapshot["awaiting_inspection"])
+
+    def test_user_answer_applied_does_not_rerun(self):
+        loop2 = self._crash_during("write_file",
+                                   {"path": "x.txt", "content": "x"})
+        r = loop2.run_user_turn("Applied.")
+        self.assertEqual(r["status"], "ok", r)
+        self.assertFalse((loop2.sandbox.root / "x.txt").exists())
+
+
+class TestJournalConcurrency(unittest.TestCase):
+    def test_two_threads_keep_the_chain_intact(self):
+        import threading
+        loop, _ = make_loop(backend=ScriptedBackend([]), project="threads")
+
+        def burst(tag):
+            for i in range(200):
+                loop.state.record("note", {"tag": tag, "i": i})
+
+        ts = [threading.Thread(target=burst, args=(n,)) for n in "ab"]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        seqs = [e["seq"] for e in loop.state.events]
+        self.assertEqual(len(seqs), len(set(seqs)))
+        self.assertEqual(loop.state.verify_chain(), (True, None))

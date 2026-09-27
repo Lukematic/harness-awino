@@ -408,8 +408,10 @@ class Loop:
                 self.history.append({"role": "assistant",
                                      "text": f"[{d['turn_id']}] {d['delta'][:300]}"})
             elif t == "tool_result" and not d.get("reused"):
+                detail = self._result_detail({"tool": d.get("tool"),
+                                              "result": d.get("result")})
                 self.history.append({"role": "system",
-                                     "text": f"tool {d['tool']} -> {str(d['result'])[:200]}"})
+                                     "text": f"tool {d['tool']} -> {detail[:2000]}"})
         self.history = self.history[-20:]
 
     def _hist(self, role: str, text: str) -> None:
@@ -707,10 +709,33 @@ class Loop:
 
         if s["awaiting_inspection"]:
             cid = s["awaiting_inspection"]
-            return {"status": "awaiting_inspection",
-                    "said": f"Paused: effect {cid} is unknown (crash mid-effect). "
-                            f"Inspect, then resolve_inspection('{cid}', "
-                            "'already_applied'|'not_applied')."}
+            called = self.state.find_event("tool_called", cid)
+            tool = (called or {}).get("data", {}).get("tool", "?")
+            args = (called or {}).get("data", {}).get("args", {}) or {}
+            answer = re.sub(r"[^a-z ]", "", text.lower()).strip()
+            if called is None or not hasattr(self.sandbox, tool):
+                # No record, or a harness tool (state is event-sourced, so
+                # an interrupted harness call left nothing half-done).
+                self.state.record("inspection_resolved",
+                                  {"call_id": cid, "resolution": "not_applied"})
+            elif tool in self._SAFE_TO_RERUN:
+                # Nothing to inspect: a read has no effect to double-apply.
+                self.resolve_inspection(cid, "not_applied")
+            elif answer in ("applied", "already applied", "yes applied"):
+                self.resolve_inspection(cid, "already_applied")
+                return {"status": "ok", "said": f"Noted: {tool} was already "
+                        f"applied. Carry on."}
+            elif answer in ("not applied", "notapplied", "no", "redo",
+                            "run it again"):
+                r = self.resolve_inspection(cid, "not_applied")
+                return {"status": "ok", "said": f"Re-ran {tool}. {r['said']}"}
+            else:
+                target = args.get("path") or args.get("cmd") or ""
+                return {"status": "awaiting_inspection",
+                        "said": (f"The last session stopped in the middle of "
+                                 f"{tool} {target}. Check whether it took "
+                                 f"effect, then reply 'applied' or 'not "
+                                 f"applied' (not applied re-runs it).")}
 
         if s["awaiting_approval"]:
             if kind == "approval":
@@ -1575,18 +1600,51 @@ class Loop:
             return f"task {res.get('id')} -> {res.get('status')}"
         return json.dumps(res, default=str)[:200]
 
+    # What the model gets back from one tool call. The summary above is for
+    # the ROUND list and the stall detector; this is the payload itself —
+    # without it the model is told "3120 chars read" and never sees the file.
+    _DETAIL_CHARS = 12000
+
+    @classmethod
+    def _result_detail(cls, env) -> str:
+        if not isinstance(env, dict):
+            return str(env)[:cls._DETAIL_CHARS]
+        name = env.get("tool", "?")
+        res = env.get("result", env)
+        if not isinstance(res, dict) or res.get("error") or res.get("cancelled"):
+            return cls._result_summary(env)
+        cap = cls._DETAIL_CHARS
+        if name == "read_file" and "content" in res:
+            body = str(res.get("content", ""))
+            more = (f"\n[... {len(body) - cap} more chars; read a range]"
+                    if len(body) > cap else "")
+            return f"{res.get('path', '')}:\n{body[:cap]}{more}"
+        if name == "run_command":
+            out = str(res.get("stdout", "") or "")
+            err = str(res.get("stderr", "") or "")
+            half = cap // 2
+            return (f"exit={res.get('exit_code')}\n"
+                    + (f"stdout:\n{out[-half:]}\n" if out else "")
+                    + (f"stderr:\n{err[-half:]}" if err else "")).rstrip()
+        if name in ("write_file", "patch_file", "task_add", "task_update"):
+            return cls._result_summary(env)
+        return json.dumps(res, default=str)[:cap]
+
     def _record_round_tool(self, round_pairs: list[tuple[int, dict]],
                            calls: list[dict], note: str | None = None) -> None:
         """round_pairs: [(call index, result envelope)] in call order."""
-        parts = []
+        parts, short = [], []
         for i, env in round_pairs:
             name = calls[i]["name"] if 0 <= i < len(calls) else env.get("tool", "?")
-            parts.append(f"{name} -> {self._result_summary(env)}")
+            parts.append(f"{name} -> {self._result_detail(env)}")
+            short.append(f"{name} -> {self._result_summary(env)}")
         if note:
             parts.append(note)
+            short.append(note)
         text = "\n".join(parts) if parts else "(no tool calls)"
-        self._round_transcript.append({"role": "tool", "text": text[:4000],
-                                       "summary": text[:500]})
+        summary = "\n".join(short) if short else "(no tool calls)"
+        self._round_transcript.append({"role": "tool", "text": text[:40000],
+                                       "summary": summary[:500]})
 
     def _round_signature(self, turn: dict, results_all: list[dict]):
         """Stall detector: identical (phase, tool calls, last result
@@ -1611,6 +1669,12 @@ class Loop:
             self.request_phase("VERIFY", reason="write effects produced")
             s = self.state.snapshot
         last = self._last_verify_run() if s["phase"] == "VERIFY" else None
+        if (last is not None and last.get("exit_code") == 0
+                and not last.get("harness_recipe")):
+            # The model's run passed; now the project's own recipes decide.
+            recipe = self._harness_recipe_run()
+            if recipe is not None:
+                last = recipe
         if last is not None and last.get("exit_code") not in (0, None):
             # VERIFY exit gate, failing side: the latest test run failed, so
             # the work is not done — route back to BUILD to repair instead
@@ -2997,11 +3061,26 @@ class Loop:
                     f"means: the approach is defined during planning — "
                     f"BUILD without it is illegal, the mission would run "
                     f"without knowing how it will be solved or when it's "
-                    f"done. Next action: fill in the missing fields "
-                    f"(story_update), then retry.")
+                    f"done. Next action: plan the story with the model "
+                    f"(it records the plan with the story_plan tool), "
+                    f"then retry.")
         return None
 
     # ------------------------------------------------- mechanical: floor gate
+    # Environments and build output are not the mission's change: a .venv
+    # the harness created made the SHIP floor scan 11 MB and fail forever.
+    _VENDOR_DIRS = frozenset({
+        ".venv", "venv", "env", ".env.d", "node_modules", "__pycache__",
+        ".git", ".awino", "dist", "build", ".tox", ".nox", ".mypy_cache",
+        ".pytest_cache", ".ruff_cache", ".next", "target", "coverage"})
+    _EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+    @classmethod
+    def _is_vendor_path(cls, rel: str) -> bool:
+        parts = rel.replace("\\", "/").split("/")
+        return (any(p in cls._VENDOR_DIRS for p in parts[:-1])
+                or "site-packages" in parts)
+
     def _mission_diff(self) -> str | None:
         """Best-effort unified diff of the mission workspace vs HEAD.
 
@@ -3013,9 +3092,25 @@ class Loop:
         import subprocess
         from floor_checks import diff_for_new_file
         root = self.sandbox.root
+        excludes = [f":(exclude){d}" for d in sorted(self._VENDOR_DIRS)]
         try:
+            head = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "--verify", "HEAD"],
+                capture_output=True, text=True, timeout=30)
+            if head.returncode != 0:
+                inside = subprocess.run(
+                    ["git", "-C", str(root), "rev-parse",
+                     "--is-inside-work-tree"],
+                    capture_output=True, text=True, timeout=30)
+                if inside.returncode != 0:
+                    return None
+                # A repo with no commits yet: everything is new, so diff
+                # against git's empty tree instead of skipping the gate.
+                base = self._EMPTY_TREE
+            else:
+                base = "HEAD"
             p = subprocess.run(
-                ["git", "-C", str(root), "diff", "HEAD", "--"],
+                ["git", "-C", str(root), "diff", base, "--", "."] + excludes,
                 capture_output=True, text=True, timeout=30)
             if p.returncode != 0:
                 return None
@@ -3027,9 +3122,11 @@ class Loop:
             if q.returncode == 0:
                 for rel in q.stdout.splitlines():
                     rel = rel.strip()
-                    if not rel:
+                    if not rel or self._is_vendor_path(rel):
                         continue
                     try:
+                        if (root / rel).stat().st_size > 512_000:
+                            continue
                         content = (root / rel).read_text()
                     except (OSError, UnicodeDecodeError):
                         continue
@@ -3118,6 +3215,11 @@ class Loop:
                          f"contract to continue.")}
 
     # -------------------------------------------------------------- inspection
+    # Tools with no side effect: an interrupted call is simply re-run.
+    _SAFE_TO_RERUN = frozenset({
+        "read_file", "list_dir", "search_files", "find_symbol", "git_status",
+        "git_diff", "diagnostics"})
+
     def resolve_inspection(self, call_id: str, resolution: str) -> dict:
         s = self.state.snapshot
         if s["awaiting_inspection"] != call_id:
@@ -3173,8 +3275,43 @@ class Loop:
                     and d.get("mission_rev") == rev
                     and isinstance(d.get("result"), dict)
                     and "exit_code" in d["result"]):
-                last = dict(d["result"], cmd=(d.get("args") or {}).get("cmd"))
+                last = dict(d["result"], cmd=(d.get("args") or {}).get("cmd"),
+                            harness_recipe=bool(d.get("harness_recipe")))
         return last
+
+    def _harness_recipe_run(self) -> dict | None:
+        """VERIFY runs the project's own `test` and `lint` recipes
+        (justfile/Makefile) instead of trusting whatever command the model
+        ran last (`echo ok` used to count). Journaled as run_command
+        results so the gate and the receipt see them. Returns the first
+        failing run, else the last run, else None (no recipes)."""
+        from verify import find_recipe, run_recipe
+        root = self.sandbox.root
+        rev = self.state.snapshot["mission_revision"]
+        runs = []
+        for name in ("test", "lint"):
+            found = find_recipe(root, name)
+            if not found:
+                continue
+            runner, recipe = found
+            r = run_recipe(root, runner, recipe)
+            result = {"exit_code": r["exit_code"], "stdout": r["output"],
+                      "stderr": ""}
+            cid = f"harness.recipe.{name}.{len(self.state.events)}"
+            args = {"cmd": f"{runner} {recipe}"}
+            self.state.record("tool_called",
+                              {"call_id": cid, "tool": "run_command",
+                               "args": args, "idem_key": cid,
+                               "harness": True})
+            self.state.record("tool_result",
+                              {"call_id": cid, "tool": "run_command",
+                               "args": args, "idem_key": cid,
+                               "result": result, "harness": True,
+                               "harness_recipe": True, "mission_rev": rev})
+            runs.append(dict(result, cmd=args["cmd"], harness_recipe=True))
+            if r["exit_code"] != 0:
+                return runs[-1]
+        return runs[-1] if runs else None
 
     _TEST_STRIKES = 3
 

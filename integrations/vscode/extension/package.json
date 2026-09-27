@@ -133,6 +133,10 @@
         "icon": "$(check)"
       },
       {
+        "command": "awino.projectSetup",
+        "title": "Awino: Set Up Project (justfile, .gitignore, …)"
+      },
+      {
         "command": "awino.showReceipt",
         "title": "Awino: Show Story Receipt",
         "icon": "$(checklist)"

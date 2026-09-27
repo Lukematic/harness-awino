@@ -893,6 +893,7 @@ async function onSidecarEvent(ev: SidecarEvent): Promise<void> {
       await postSessionResume(); // session-focus summary on (re)connect
       refreshViews(); // populate tree views on connect, not just after the first turn
       void refreshModesCache(); // Spec 1.4: header mode selector options
+      void offerProjectSetup(false);
       break;
     case "turn_result": {
       const result = (ev["result"] ?? {}) as Record<string, unknown>;
@@ -1220,6 +1221,66 @@ async function closeStoryFlow(story?: StoryRow): Promise<void> {
   } catch (e) {
     vscode.window.showErrorMessage(`Awino: story_close failed — ${String(e)}`);
   }
+}
+
+// ------------------------------------------------------ setup autopilot
+// Deterministic project chores (justfile for the detected language,
+// .gitignore lines, .env.example, .editorconfig). The sidecar proposes;
+// nothing outside .awino/ is written without a yes here. Never overwrites.
+interface SetupAction { id: string; path: string; why: string; content: string; kind: string }
+let setupOfferedFor: string | undefined;
+
+export function setupPickItems(actions: SetupAction[]): Array<{ label: string; description: string; detail: string; picked: boolean; id: string }> {
+  return actions.map((a) => ({
+    label: a.path,
+    description: a.kind === "append" ? "add lines" : "new file",
+    detail: a.why,
+    picked: true,
+    id: a.id,
+  }));
+}
+
+async function offerProjectSetup(explicit: boolean): Promise<void> {
+  if (!session) return;
+  const ws = String((session.ready as Record<string, unknown> | undefined)?.["workspace"] ?? "");
+  if (!explicit && setupOfferedFor === ws) return;
+  setupOfferedFor = ws;
+  let actions: SetupAction[] = [];
+  try {
+    const r = (await query("setup_plan", {})) as { actions?: SetupAction[] };
+    actions = r.actions ?? [];
+  } catch {
+    return;
+  }
+  if (!actions.length) {
+    if (explicit) vscode.window.showInformationMessage("Awino: this project is already set up.");
+    return;
+  }
+  const ids = actions.map((a) => a.id);
+  if (!explicit) {
+    const choice = await vscode.window.showInformationMessage(
+      `Awino can set up ${actions.map((a) => a.path).join(", ")} for this project. Nothing is overwritten.`,
+      "Review", "Not now", "Never");
+    if (choice === "Never") {
+      await query("setup_decline", { ids, never: true });
+      return;
+    }
+    if (choice !== "Review") {
+      if (choice === "Not now") await query("setup_decline", { ids, never: false });
+      return;
+    }
+  }
+  const picked = await vscode.window.showQuickPick(setupPickItems(actions), {
+    canPickMany: true,
+    placeHolder: "Choose what Awino should add (untick to skip)",
+  });
+  if (!picked) return;
+  const chosen = picked.map((p) => p.id);
+  const skipped = ids.filter((i) => !chosen.includes(i));
+  if (skipped.length) await query("setup_decline", { ids: skipped, never: false });
+  if (!chosen.length) return;
+  const r = (await query("setup_apply", { ids: chosen })) as Record<string, unknown>;
+  postToChat({ type: "event", payload: { event: "say", kind: "setup", message: String(r["said"] ?? "Done.") } });
 }
 
 // Receipt: promise -> proof -> lesson. Closed stories show the stored
@@ -2025,6 +2086,7 @@ function registerCommands(context: vscode.ExtensionContext): void {
   });
   reg("awino.closeStory", async (arg: unknown) => closeStoryFlow(storyFromArg(arg)));
   reg("awino.showReceipt", async (arg: unknown) => showReceiptFlow(storyFromArg(arg)));
+  reg("awino.projectSetup", async () => offerProjectSetup(true));
   reg("awino.refreshStories", () => storiesView?.refresh());
   // Native tool application: revert the workspace to the last git
   // checkpoint taken before a delegated build-mode write batch. The
