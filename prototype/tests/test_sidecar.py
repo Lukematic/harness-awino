@@ -517,9 +517,9 @@ class OpenAIBackendTest(unittest.TestCase):
             def do_POST(self):
                 length = int(self.headers.get("Content-Length", 0))
                 body = json.loads(self.rfile.read(length))
-                system = next(m["content"] for m in body["messages"]
-                              if m["role"] == "system")
-                m = re.search(r"```\n\s*(.*?)\n\s*```", system, re.S)
+                user = next(m["content"] for m in body["messages"]
+                            if m["role"] == "user")
+                m = re.search(r"HEADER TO ECHO:\n(.*)$", user)
                 header = m.group(1) if m else "X"
                 turn = {"header": header, "objective": "stub objective",
                         "plan": ["stub step"], "tool_calls": [],

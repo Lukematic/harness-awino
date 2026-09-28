@@ -496,10 +496,24 @@ def knowledge_counts(snapshot: dict, events: list,
 # ---------------------------------------------------------------------------
 # Contract compiler: renders code-owned state as the injected block.
 # ---------------------------------------------------------------------------
+def skill_context_text(names: list[str]) -> str:
+    """This turn's skill bodies, for the system prompt (stable across the
+    turn's rounds, so providers can cache it). Fail-closed like the inline
+    form: an unverified body raises."""
+    if not names:
+        return ""
+    store = get_skill_store()
+    parts = ["## SKILLS (routed by the harness for this turn — follow them)"]
+    for name in names:
+        parts.append(f"### {name}\n{store.get_verified(name)}")
+    return "\n".join(parts)
+
+
 def compile_contract(state, turn_no: int | None = None,
                      knowledge: tuple[int, int] | None = None,
                      round_no: int | None = None,
-                     round_context: dict | None = None) -> str:
+                     round_context: dict | None = None,
+                     skills_in_system: bool = False) -> str:
     """v0.6: round_no renders the header as `loop: turn.round` and appends a
     ## ROUND section with the in-turn history. The harness tools
     (attempt_completion, task_add, task_update) are shown as offered in
@@ -621,9 +635,17 @@ def compile_contract(state, turn_no: int | None = None,
     # Phase C: mandatory loading — an unknown routed skill name raises
     # (fail-closed) instead of silently skipping.
     store = get_skill_store()
-    for name in s.get("skills", []):
-        body = store.get_verified(name)
-        A(f"### {name}\n{body}")
+    if skills_in_system and s.get("skills"):
+        # Bodies travel in the (cached) system prompt; verify them here too
+        # so the fail-closed check still runs every round.
+        for name in s["skills"]:
+            store.get_verified(name)
+        A("Routed this turn: " + ", ".join(s["skills"])
+          + " (full text is in the system prompt).")
+    else:
+        for name in s.get("skills", []):
+            body = store.get_verified(name)
+            A(f"### {name}\n{body}")
     if not s.get("skills"):
         A("(none routed)")
     A("")

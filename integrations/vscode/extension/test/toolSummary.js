@@ -2,7 +2,7 @@
 // test/toolSummary.js — tool results and command results read as one plain
 // line instead of JSON.
 const assert = require("assert");
-const { toolResultSummary: s, commandResultText: c, statusChipText: chip, approvalResolvedText: res } = require("../webview/chat.js");
+const { toolResultSummary: s, commandResultText: c, statusChipText: chip, approvalResolvedText: res, tokenMeterText: meter } = require("../webview/chat.js");
 let pass = 0, fail = 0;
 function t(name, fn) {
   try { fn(); pass++; console.log("ok   - " + name); }
@@ -51,6 +51,11 @@ t("approval resolution text", () => {
   assert.strictEqual(res("deny"), "Denied ✗");
   assert.strictEqual(res("approve"), "Approved ✓");
   assert.ok(res("always").includes("always allowed"));
+});
+t("token meter text", () => {
+  assert.strictEqual(meter({ turn_tokens: 12345, turn_budget: 60000, cached_pct: 85, mission_tokens: 40210, mission_budget: 200000, measured: true }),
+    "This reply: 12k / 60k tokens · 85% cached · mission 40k / 200k");
+  assert.ok(meter({ turn_tokens: 900, measured: false }).startsWith("This reply: ~900 tokens"));
 });
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

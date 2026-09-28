@@ -188,6 +188,26 @@
           "description": "After you approve a plan and its files, run safe actions without asking: writes to those files and commands that stay in the workspace. Deleting, force flags, git push/reset, installs, network and sudo always ask.",
           "type": "boolean"
         },
+        "awino.models.best": {
+          "default": "",
+          "description": "Optional. Model for planning, challenges and review (the strongest you have, e.g. claude-opus-5). Blank = the main model. Same provider and key as the main model.",
+          "type": "string"
+        },
+        "awino.models.medium": {
+          "default": "",
+          "description": "Optional. Model for building from an approved plan (e.g. claude-sonnet-5). Blank = the main model. After two failed verifications the work moves up to the best model.",
+          "type": "string"
+        },
+        "awino.models.basic": {
+          "default": "",
+          "description": "Optional. Model for single planned steps run by workers (e.g. claude-haiku-4-5). Blank = the main model.",
+          "type": "string"
+        },
+        "awino.turnTokenBudget": {
+          "default": 60000,
+          "description": "Tokens one reply may use across its rounds before Awino pauses and asks you to continue. 0 turns the limit off.",
+          "type": "number"
+        },
         "awino.model": {
           "default": "",
           "description": "Model name. Empty = provider default.",

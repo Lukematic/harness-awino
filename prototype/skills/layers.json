@@ -203,6 +203,10 @@
     "layer": "ceremony",
     "route": "intent"
   },
+  "tutor": {
+    "layer": "ceremony",
+    "route": "intent"
+  },
   "verification": {
     "layer": "ceremony",
     "route": "phase"

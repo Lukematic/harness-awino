@@ -467,3 +467,24 @@ class PhaseCapsModeTest(unittest.TestCase):
         from stances import route_triple
         snap = {"mission": {"id": "m"}, "phase": "BUILD"}
         self.assertEqual(route_triple(snap, "fix the bug", "info")[1], "build")
+
+
+class TutorRoutingTest(unittest.TestCase):
+    """09-28: learning a skill routes the tutor practice loop."""
+
+    def test_learning_requests_route_the_tutor_skill(self):
+        from stances import route_triple
+        for text in ("tutor me in SQL", "I want to become good at negotiation",
+                     "help me learn rust from scratch", "coach me on public speaking"):
+            intent, mode, chain, skills, _ = route_triple(
+                {"mission": None, "phase": "IDLE"}, text, "info")
+            self.assertEqual((intent, mode), ("tutor", "observe"), text)
+            self.assertIn("tutor", skills)
+            self.assertEqual(chain, ["feynman"])
+
+    def test_tutor_skill_is_pinned_and_has_the_loop(self):
+        from contract import get_skill_store
+        body = get_skill_store().get_verified("tutor")
+        for step in ("Roadmap", "80/20", "ONE challenge", "biggest weakness",
+                     "three biggest gaps"):
+            self.assertIn(step, body)

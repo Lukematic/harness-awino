@@ -272,6 +272,11 @@
     border: 1px solid var(--vscode-panel-border, #232F45);
     border-radius: 6px;
   }
+  #token-meter { font-size: 11px; padding: 0 10px 4px; color: var(--awino-muted, #8B98B0); display: flex; align-items: center; gap: 8px; }
+  #token-meter .bar { flex: 0 0 90px; height: 4px; border-radius: 2px; background: var(--awino-bg-3, #1E2A45); overflow: hidden; }
+  #token-meter .fill { height: 100%; background: var(--awino-vibranium, #00C6FF); }
+  #token-meter.warn .fill { background: var(--awino-warn, #CCA700); }
+  #token-meter.over .fill { background: var(--awino-danger, #F14C4C); }
   .tool-lines { margin-top: 6px; font-size: 12px; }
   .tool-line summary { cursor: pointer; list-style: none; padding: 1px 0; color: var(--awino-muted, var(--vscode-descriptionForeground, #8B98B0)); }
   .tool-line summary::-webkit-details-marker { display: none; }
@@ -829,6 +834,7 @@
 <div id="messages" role="log" aria-live="polite" aria-label="Conversation" tabindex="0"></div>
 <button id="jump-latest" hidden>&#8595; jump to latest</button>
 <div id="statusline">not connected</div>
+<div id="token-meter" hidden title="Tokens used by this reply (turn) and the whole mission"></div>
 <div id="echo-banner"></div>
 <div id="wizard" hidden>
   <div class="wizard-body">

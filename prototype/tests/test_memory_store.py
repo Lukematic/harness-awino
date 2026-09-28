@@ -158,7 +158,7 @@ class TestDurableMemoryRouting(unittest.TestCase):
         # 53: 49 base + durable-memory + debug + rpi + layered-loading (see
         # test_rigor.py::TestRigorSkills::test_pins_load, the canonical
         # count assertion — this one guards the routing surface only)
-        self.assertEqual(len(store.names()), 53)
+        self.assertEqual(len(store.names()), 54)  # +tutor (09-28)
         self.assertIn("durable-memory", store.names())
 
 

@@ -1606,6 +1606,11 @@ const SIDECAR_SETTINGS = [
   "awino.bedrockAuthMode",
   "awino.bedrockAwsProfile",
   "awino.pythonPath",
+  "awino.models.best",
+  "awino.models.medium",
+  "awino.models.basic",
+  "awino.turnTokenBudget",
+  "awino.autoApproveAfterPlan",
 ] as const;
 
 function settingsSnapshot(): Record<string, unknown> {
@@ -1837,6 +1842,12 @@ async function doConnectInner(
       autoApproveAfterPlan: vscode.workspace
         .getConfiguration("awino")
         .get<boolean>("autoApproveAfterPlan", true),
+      modelTiers: {
+        best: vscode.workspace.getConfiguration("awino").get<string>("models.best", ""),
+        medium: vscode.workspace.getConfiguration("awino").get<string>("models.medium", ""),
+        basic: vscode.workspace.getConfiguration("awino").get<string>("models.basic", ""),
+      },
+      turnTokenBudget: vscode.workspace.getConfiguration("awino").get<number>("turnTokenBudget", 60000),
     });
     lastConnectError = null;
     log(

@@ -129,18 +129,25 @@ class TestOllamaBackend(unittest.TestCase):
         roles = [m["role"] for m in captured["body"]["messages"]]
         self.assertEqual(roles, ["system", "user"])
 
-    def test_system_prompt_embeds_exact_header_for_echo(self):
-        captured = {}
+    def test_header_to_echo_is_last_and_system_prompt_is_stable(self):
+        # The per-round header is repeated at the END of the user message
+        # (09-28); the system prompt holds only stable text so providers
+        # can cache it across rounds.
+        captured = []
 
         def fake_urlopen(req, timeout=None):
-            captured["body"] = json.loads(req.data.decode())
+            captured.append(json.loads(req.data.decode()))
             return _resp(json.dumps(_good_turn()))
 
         b = OllamaBackend(model="m", host="http://h:11434")
         with patch("urllib.request.urlopen", side_effect=fake_urlopen):
             b.generate(HEADER + "\ncontract", [], None)
-        system = captured["body"]["messages"][0]["content"]
-        self.assertIn("```\n  " + HEADER + "\n  ```", system)
+            b.generate(HEADER.replace("test", "round2") + "\ncontract", [], None)
+        user = captured[0]["messages"][1]["content"]
+        self.assertTrue(user.endswith("HEADER TO ECHO:\n" + HEADER))
+        systems = [c["messages"][0]["content"] for c in captured]
+        self.assertEqual(systems[0], systems[1])
+        self.assertNotIn(HEADER, systems[0])
 
 
 class TestExtractJson(unittest.TestCase):

@@ -104,7 +104,7 @@ class TestLayerPlacement(unittest.TestCase):
         counts = {}
         for name in store.names():
             counts[store.layer_of(name)] = counts.get(store.layer_of(name), 0) + 1
-        self.assertEqual(counts, {"ceremony": 46, "reference": 7})
+        self.assertEqual(counts, {"ceremony": 47, "reference": 7})  # +tutor (09-28)
 
     def test_spot_assignments(self):
         store = SkillStore.default()

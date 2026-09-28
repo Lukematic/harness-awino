@@ -349,13 +349,11 @@ def explain_backend_failure(why: str) -> tuple[str, str]:
 
 
 _OLLAMA_SYSTEM = """You are the model inside the A.W.I.N.O. turn loop. The harness owns the turn: it compiled the contract below from its own state. Reply with ONLY a JSON object — no prose, no markdown fences — with exactly these fields:
-- "header": echo the FIRST LINE of the contract block below EXACTLY,
-  character for character. It is shown again here in a code block — copy
-  it exactly, do NOT paraphrase it, do NOT turn it into a title, do NOT
-  shorten it. Even one changed character gets the turn rejected.
-  ```
-  {header}
-  ```
+- "header": echo the FIRST LINE of the contract block EXACTLY,
+  character for character. It is repeated at the very end of the message
+  under HEADER TO ECHO — copy it exactly, do NOT paraphrase it, do NOT
+  turn it into a title, do NOT shorten it. Even one changed character gets
+  the turn rejected.
 - "objective": the current objective, in your own words.
 - "plan": list of step strings. Use [] when there is no plan.
 - "tool_calls": list of {"name": ..., "args": {...}}. Call ONLY tools the contract lists as offered for the current mode. Tools ("?" = optional argument):
@@ -398,6 +396,28 @@ HISTORY_ENTRIES = 12
 HISTORY_BUDGET_CHARS = 60000
 
 
+def usage_from_payload(payload: dict) -> dict | None:
+    """Real token counts from a provider response (Anthropic or
+    OpenAI-compatible): {input, output, cached, cache_write}. None when
+    the provider reported nothing."""
+    u = (payload or {}).get("usage") if isinstance(payload, dict) else None
+    if not isinstance(u, dict):
+        return None
+    if "input_tokens" in u:  # Anthropic
+        cached = int(u.get("cache_read_input_tokens") or 0)
+        write = int(u.get("cache_creation_input_tokens") or 0)
+        return {"input": int(u.get("input_tokens") or 0) + cached + write,
+                "output": int(u.get("output_tokens") or 0),
+                "cached": cached, "cache_write": write}
+    if "prompt_tokens" in u:  # OpenAI-compatible
+        details = u.get("prompt_tokens_details") or {}
+        return {"input": int(u.get("prompt_tokens") or 0),
+                "output": int(u.get("completion_tokens") or 0),
+                "cached": int(details.get("cached_tokens") or 0),
+                "cache_write": 0}
+    return None
+
+
 def default_max_tokens(fallback: int = 8192) -> int:
     try:
         v = int(os.environ.get("AWINO_MAX_TOKENS", "") or fallback)
@@ -408,6 +428,11 @@ def default_max_tokens(fallback: int = 8192) -> int:
 
 class OllamaBackend(ModelBackend):
     tool_dialect = "openai"  # provider_tools dialect for native tool calls
+    # The loop puts this turn's skill bodies here (system prompt, cached)
+    # instead of in the per-round contract.
+    supports_skill_context = True
+    skill_context = ""
+    last_usage: dict | None = None
     """Real model backend: talks to a local LLM server over HTTP.
 
     Host from OLLAMA_HOST (default http://localhost:11434), model from
@@ -458,10 +483,16 @@ class OllamaBackend(ModelBackend):
                            "native_tools": bool(native_defs)})
         expected_header = contract_block.split("\n", 1)[0]
         from tool_schema import tool_catalog  # local: avoids import cycle
-        system = (_OLLAMA_SYSTEM.replace("{header}", expected_header)
-                  .replace("{tools}", tool_catalog()))
+        # Stable prefix first (cacheable): instructions, tool catalog and
+        # this turn's skill bodies never change between rounds. What does
+        # change (the header, the contract, history) goes in the message,
+        # with the header repeated last.
+        system = _OLLAMA_SYSTEM.replace("{tools}", tool_catalog())
+        if getattr(self, "skill_context", ""):
+            system += "\n\n" + self.skill_context
         prompt = self._user_prompt(contract_block, history, feedback,
                                    native_tools=bool(native_defs))
+        prompt += f"\n\nHEADER TO ECHO:\n{expected_header}"
         raw_tool_calls: list = []
         from cancel import Cancelled  # local import: avoids a hard
         # dependency at module load; matches the other backend methods.
@@ -540,6 +571,7 @@ class OllamaBackend(ModelBackend):
         # Track C: report the network I/O so the loop can journal it.
         self.last_egress = {"destination": self.host + "/v1/chat/completions",
                             "bytes_out": len(body), "bytes_in": len(raw)}
+        self.last_usage = usage_from_payload(payload)
         message = payload["choices"][0]["message"]
         return message.get("content") or "", message.get("tool_calls") or []
 
@@ -657,6 +689,7 @@ class OllamaBackend(ModelBackend):
         # Track C: report the network I/O so the loop can journal it.
         self.last_egress = {"destination": self.host + "/v1/chat/completions",
                             "bytes_out": len(body), "bytes_in": len(raw)}
+        self.last_usage = usage_from_payload(payload)
         return payload["choices"][0]["message"]["content"]
 
     @staticmethod

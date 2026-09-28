@@ -184,6 +184,12 @@ INTENT_TABLE = [
                 r"mission\b|\bi want to (build|make|create)\b|"
                 r"\blet'?s (build|make|create)\b|\bnew project\b"),
      "plan", ["planning-grill"], _MISSION_SKILLS),
+    ("tutor",
+     re.compile(r"\btutor me\b|\bcoach me\b|\bhelp me (learn|get better|practi[cs]e)\b|"
+                r"\b(get|become|be) (good|better|great|skilled) at\b|"
+                r"\bfrom (zero|scratch)\b.*\blearn|\blearn\b.*\bfrom (zero|scratch)\b|"
+                r"\broadmap (to|for) (learn|master)|\bpractice (plan|exercises?)\b"),
+     "observe", ["feynman"], ["tutor", "explainer"]),
     ("teach",
      re.compile(r"\bteach me\b|\bhow does\b|\bhow do\b|\blearn\b"),
      "observe", ["feynman"], ["explainer", "domain"]),

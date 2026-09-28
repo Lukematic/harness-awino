@@ -314,6 +314,18 @@ function statusChipText(status) {
   return String(status).replace(/_/g, " ");
 }
 
+// Token meter text: this reply's tokens against its budget, cache share,
+// and the mission total. "~" marks an estimate (provider sent no counts).
+function tokenMeterText(m) {
+  m = m || {};
+  function k(n) { n = Number(n) || 0; return n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k" : String(n); }
+  var approx = m.measured === false ? "~" : "";
+  var out = "This reply: " + approx + k(m.turn_tokens) + (m.turn_budget ? " / " + k(m.turn_budget) : "") + " tokens";
+  if (m.cached_pct) out += " · " + m.cached_pct + "% cached";
+  if (m.mission_tokens) out += " · mission " + approx + k(m.mission_tokens) + (m.mission_budget ? " / " + k(m.mission_budget) : "");
+  return out;
+}
+
 function approvalResolvedText(decision) {
   if (decision === "deny") return "Denied ✗";
   if (decision === "always") return "Approved ✓ (always allowed this session)";
@@ -412,7 +424,8 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports = { AwinoMarkdown: AwinoMarkdown, harnessReplyMarkdown: harnessReplyMarkdown,
     receiptCardHtml: receiptCardHtml, receiptDuration: receiptDuration,
     toolResultSummary: toolResultSummary, commandResultText: commandResultText,
-    approvalResolvedText: approvalResolvedText, statusChipText: statusChipText };
+    approvalResolvedText: approvalResolvedText, statusChipText: statusChipText,
+    tokenMeterText: tokenMeterText };
 }
 
 // The chat UI boots only inside a VS Code webview (acquireVsCodeApi +
@@ -1342,6 +1355,17 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
       case "tool_progress":
         renderToolProgress(ev);
         break;
+      case "token_meter": {
+        const tm = document.getElementById("token-meter");
+        if (tm) {
+          const frac = ev.turn_budget ? Math.min(1, (ev.turn_tokens || 0) / ev.turn_budget) : 0;
+          tm.innerHTML = '<span class="bar"><span class="fill" style="width:' + Math.round(frac * 100) +
+            '%"></span></span><span>' + esc(tokenMeterText(ev)) + "</span>";
+          tm.className = frac >= 1 ? "over" : frac >= 0.8 ? "warn" : "";
+          tm.hidden = false;
+        }
+        break;
+      }
       case "harness_check":
         renderHarnessCheck(ev);
         break;

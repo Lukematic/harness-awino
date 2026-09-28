@@ -136,3 +136,74 @@ class ToolOutputReachesTheModelTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TokenEfficiencyTest(unittest.TestCase):
+    """09-28: skills in the cached system prompt, real usage, turn budget."""
+
+    def test_anthropic_system_is_one_cacheable_block_with_skills(self):
+        _Anthropic.seen = []
+        srv = socketserver.TCPServer(("127.0.0.1", 0), _Anthropic)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        b = s.AnthropicBackend(model="claude-x", api_key="k",
+                               endpoint=f"http://127.0.0.1:{srv.server_address[1]}")
+        b.skill_context = "## SKILLS\n### debug\nFind the cause first."
+        b.generate(CONTRACT, [], tools=TOOLS)
+        system = _Anthropic.seen[0]["body"]["system"]
+        self.assertEqual(system[0]["cache_control"], {"type": "ephemeral"})
+        self.assertIn("Find the cause first.", system[0]["text"])
+        self.assertNotIn("HEADER-1", system[0]["text"])
+
+    def test_contract_names_skills_when_backend_holds_the_bodies(self):
+        from contract import compile_contract, skill_context_text
+        from common import make_loop
+        loop, _ = make_loop(project="skills-sys")
+        loop.state.snapshot["skills"] = ["debug"]
+        inline = compile_contract(loop.state)
+        named = compile_contract(loop.state, skills_in_system=True)
+        body = skill_context_text(["debug"])
+        self.assertIn("### debug", inline)
+        self.assertNotIn("### debug", named)
+        self.assertIn("Routed this turn: debug", named)
+        self.assertLess(len(named), len(inline) - 200)
+        self.assertIn("### debug", body)
+
+    def test_usage_parsing(self):
+        from backends import usage_from_payload
+        self.assertEqual(usage_from_payload({"usage": {
+            "input_tokens": 100, "output_tokens": 50,
+            "cache_read_input_tokens": 900, "cache_creation_input_tokens": 0}}),
+            {"input": 1000, "output": 50, "cached": 900, "cache_write": 0})
+        self.assertEqual(usage_from_payload({"usage": {
+            "prompt_tokens": 800, "completion_tokens": 20,
+            "prompt_tokens_details": {"cached_tokens": 600}}}),
+            {"input": 800, "output": 20, "cached": 600, "cache_write": 0})
+        self.assertIsNone(usage_from_payload({}))
+
+    def test_meter_uses_real_counts_and_budget_stops_the_turn(self):
+        from common import make_loop
+        loop, _ = make_loop(project="meter")
+        loop.backend.last_usage = {"input": 1000, "output": 50, "cached": 900}
+        loop._charge_tokens("contract", {}, "t1")
+        m = loop.token_meter("t1")
+        self.assertEqual((m["turn_tokens"], m["cached_pct"], m["measured"]),
+                         (1050, 90, True))
+        loop.config["turn_token_budget"] = 1000
+        r = loop._halt_turn("token_budget", "t1", 1, 3)
+        self.assertEqual(r["status"], "budget_exhausted")
+        self.assertIn("1,050 tokens", r["said"])
+
+
+class WrapperForwardsTurnStateTest(unittest.TestCase):
+    def test_skill_context_and_usage_reach_the_real_backend(self):
+        inner = s.AnthropicBackend(model="m", api_key="k")
+        w = s._ModeAwareBackend(inner, sidecar=None)
+        w.skill_context = "## SKILLS x"
+        self.assertEqual(inner.skill_context, "## SKILLS x")
+        inner.last_usage = {"input": 1, "output": 1, "cached": 0}
+        self.assertEqual(w.last_usage["input"], 1)
+        w.last_usage = None
+        self.assertIsNone(inner.last_usage)
+        self.assertTrue(w.supports_skill_context)

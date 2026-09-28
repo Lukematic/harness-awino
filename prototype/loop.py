@@ -318,10 +318,16 @@ class Loop:
         self.home = Path(home)
         self.state = ProjectState(home, project_id, conversation_id)
         self.backend = backend
+        # Optional model tiers {"best", "medium", "basic"} -> backend. Empty
+        # means one model for everything (the default). See _apply_tier.
+        self.tier_backends: dict = {}
         self.judge = judge or ScriptedJudge()
         self.sandbox = Sandbox(sandbox_dir or (self.state.dir / "sandbox"))
         cfg = {"max_retries": 3, "max_turns": 50, "stall_limit": 5,
                "token_budget": 200_000, "max_seconds": 3600,
+               # Per-turn token budget (a turn = one user message and the
+               # rounds it drives). 0/None disables.
+               "turn_token_budget": 60_000,
                # v0.6 recursive loop: per-turn round budget and in-turn
                # stall detector (3 consecutive identical rounds).
                "max_rounds_per_turn": 25, "round_stall_limit": 3}
@@ -954,10 +960,19 @@ class Loop:
         did. Returns (block, expected_header)."""
         summaries = [e.get("summary", "") for e in self._round_transcript
                      if e.get("role") == "tool" and e.get("summary")]
+        in_system = bool(getattr(self.backend, "supports_skill_context",
+                                 False))
+        if in_system:
+            # Skill bodies go in the backend's system prompt: identical for
+            # every round of the turn, so the provider can cache them.
+            from contract import skill_context_text
+            self.backend.skill_context = skill_context_text(
+                self.state.snapshot.get("skills") or [])
         block = compile_contract(
             self.state, turn_no=turn_no, round_no=round_no,
             round_context={"max_rounds": self.config["max_rounds_per_turn"],
-                           "results": summaries})
+                           "results": summaries},
+            skills_in_system=in_system)
         return block, block.split("\n", 1)[0]
 
     def _validate_round(self, turn_id: str, turn_no: int, round_no: int,
@@ -1016,7 +1031,7 @@ class Loop:
             if not errs:
                 # Track C (egress audit): journal network I/O the backend did.
                 self._record_egress(turn_id)
-                self._charge_tokens(contract_block, raw)
+                self._charge_tokens(contract_block, raw, turn_id, stream)
                 errs = validate_schema(raw)
                 if not errs and ("mode_hint" in raw or "phase_hint" in raw):
                     self.state.record("turn_hint_ignored",
@@ -1824,6 +1839,21 @@ class Loop:
                              f"repeated the same round {cfg['round_stall_limit']} "
                              f"times with no new information. Escalated to the "
                              f"operator.")}
+        if reason == "token_budget":
+            used = self.token_meter(turn_id)["turn_tokens"]
+            self.state.record("round_budget_exhausted",
+                              {"turn_id": turn_id, "round": round_no,
+                               "reason": "token_budget",
+                               "detail": (f"{used} tokens this turn; "
+                                          f"turn_token_budget="
+                                          f"{cfg['turn_token_budget']}")})
+            self.state.persist_snapshot()
+            return {"status": "budget_exhausted",
+                    "said": (f"Turn paused at round {round_no}: it used "
+                             f"{used:,} tokens, over this turn's budget of "
+                             f"{cfg['turn_token_budget']:,}. Nothing is "
+                             f"lost; say 'continue' to keep going, or raise "
+                             f"the budget in settings.")}
         # round_budget
         # state.py's `round_budget_exhausted` handler sets awaiting_operator
         # with reason + round — replay restores the operator-wait state.
@@ -1898,6 +1928,10 @@ class Loop:
             if round_no >= max_rounds:
                 return self._halt_turn("round_budget", turn_id, turn_no,
                                        round_no)
+            tb = cfg.get("turn_token_budget")
+            if tb and self.token_meter(turn_id)["turn_tokens"] >= tb:
+                return self._halt_turn("token_budget", turn_id, turn_no,
+                                       round_no)
             tok = self._cancel_token
             if tok is not None and tok.is_set():
                 return self._halt_turn("cancelled", turn_id, turn_no, round_no)
@@ -1905,6 +1939,7 @@ class Loop:
             # transcript grows within a turn; compact down to state when
             # over budget. Approval-free: state is untouched.
             self.maybe_compact("round")
+            self._apply_tier(turn_id)
             self._round_no = round_no
             # Per-round control-plane refresh: the elevator may have moved
             # the phase (after the last round's tool results, or after an
@@ -3496,9 +3531,83 @@ class Loop:
         parts.append(next_action_line(self.state.snapshot))
         return "\n".join(parts)
 
-    def _charge_tokens(self, contract_block: str, turn) -> None:
-        approx = len(contract_block) // 4 + len(json.dumps(turn, default=str)) // 4
-        self.state.record("tokens_charged", {"tokens": approx})
+    def _charge_tokens(self, contract_block: str, turn, turn_id: str = "",
+                       stream=None) -> None:
+        """Journal what this model call cost. Real provider counts when the
+        backend reports them (input, output, cached); a length estimate
+        otherwise, marked as such. Emits the token meter to the chat."""
+        usage = getattr(self.backend, "last_usage", None)
+        if isinstance(usage, dict):
+            self.backend.last_usage = None
+            data = {"tokens": usage["input"] + usage["output"],
+                    "input": usage["input"], "output": usage["output"],
+                    "cached": usage.get("cached", 0), "measured": True}
+        else:
+            approx = (len(contract_block) // 4
+                      + len(json.dumps(turn, default=str)) // 4)
+            data = {"tokens": approx, "measured": False}
+        data["turn_id"] = turn_id
+        self.state.record("tokens_charged", data)
+        meter = self.token_meter(turn_id)
+        if stream is not None and hasattr(stream, "_emit"):
+            stream._emit({"event": "token_meter", "turn_id": turn_id, **meter})
+
+    # Which model tier thinks in which phase. Planning and review need the
+    # strongest reasoning; building follows a plan whose steps carry their
+    # own success/failure checks; workers execute single steps.
+    TIER_BY_PHASE = {"IDLE": "best", "DEFINE": "best", "PLAN": "best",
+                     "BUILD": "medium", "VERIFY": "medium",
+                     "REVIEW": "best", "SHIP": "best"}
+    ESCALATE_AFTER_FAILS = 2
+
+    def _select_tier(self) -> str:
+        """The phase's tier, escalated one step after repeated failed
+        verifications since the last pass (a weaker model that keeps
+        failing hands the step up instead of looping)."""
+        s = self.state.snapshot
+        tier = self.TIER_BY_PHASE.get(s.get("phase") or "IDLE", "best")
+        fails = 0
+        for e in reversed(self.state.events):
+            if e["type"] in ("verify_passed", "mission_set"):
+                break
+            if e["type"] == "verify_failed":
+                fails += 1
+        if fails >= self.ESCALATE_AFTER_FAILS:
+            tier = {"basic": "medium", "medium": "best"}.get(tier, tier)
+        return tier
+
+    def _apply_tier(self, turn_id: str = "") -> None:
+        """Swap in the backend for the current tier (no-op without tiers).
+        Journals model_tier when it changes, so receipts can show which
+        model did which part."""
+        if not self.tier_backends:
+            return
+        tier = self._select_tier()
+        chosen = self.tier_backends.get(tier)
+        if chosen is None or chosen is self.backend:
+            return
+        self.backend = chosen
+        self.state.record("model_tier", {
+            "tier": tier, "turn_id": turn_id,
+            "model": str(getattr(chosen, "model", "") or "")})
+
+    def token_meter(self, turn_id: str = "") -> dict:
+        """Tokens this turn and this mission, against their budgets."""
+        turn_tokens = cached = inp = 0
+        measured = True
+        for e in self.state.events:
+            d = e["data"]
+            if e["type"] == "tokens_charged" and d.get("turn_id") == turn_id:
+                turn_tokens += d.get("tokens", 0)
+                cached += d.get("cached", 0)
+                inp += d.get("input", 0)
+                measured = measured and bool(d.get("measured"))
+        return {"turn_tokens": turn_tokens,
+                "turn_budget": self.config.get("turn_token_budget"),
+                "cached_pct": round(100 * cached / inp) if inp else 0,
+                "measured": measured,
+                "mission_tokens": self.state.snapshot.get("tokens_used", 0),
+                "mission_budget": self.config.get("token_budget")}
 
     def _record_egress(self, turn_id: str) -> None:
         """Track C: journal network I/O the backend performed for a turn.
@@ -3747,7 +3856,10 @@ class Loop:
         worker_dir.mkdir(parents=True, exist_ok=True)
         # worker Loop with its own project id
         wloop = Loop(self.home, f"{s['project_id']}/{wid}",
-                     self.backend, self.judge,
+                     # A worker runs one planned step with its own success
+                     # and failure checks: the basic tier when configured.
+                     self.tier_backends.get("basic") or self.backend,
+                     self.judge,
                      sandbox_dir=str(worker_dir / "sandbox"),
                      config={"max_turns": requested,
                              "max_seconds": budget_share.get("max_seconds", 3600)},

@@ -42,6 +42,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import loop as loop_module
+import backends  # noqa: E402
 from backends import EchoBackend, OllamaBackend, ScriptedBackend, default_max_tokens
 from contract import MODES, compile_contract as _real_compile_contract
 from contract import parse_criteria
@@ -887,6 +888,7 @@ class OpenAICompatibleBackend(OllamaBackend):
             raise RuntimeError(f"endpoint HTTP {e.code}")
         self.last_egress = {"destination": self.chat_url,
                             "bytes_out": len(body), "bytes_in": len(raw)}
+        self.last_usage = backends.usage_from_payload(payload)
         message = payload["choices"][0]["message"]
         return message.get("content") or "", message.get("tool_calls") or []
 
@@ -923,6 +925,7 @@ class OpenAICompatibleBackend(OllamaBackend):
         # Track C: report the network I/O so the loop can journal it.
         self.last_egress = {"destination": self.chat_url,
                             "bytes_out": len(body), "bytes_in": len(raw)}
+        self.last_usage = backends.usage_from_payload(payload)
         return payload["choices"][0]["message"]["content"]
 
     def _chat_stream(self, prompt: str, system: str):
@@ -1030,6 +1033,14 @@ class AnthropicBackend(OllamaBackend):
 
     tool_dialect = "anthropic"
 
+    @staticmethod
+    def _system_blocks(system: str) -> list:
+        """The system prompt as one cacheable block. It holds only stable
+        text (instructions, tools, this turn's skills), so rounds after the
+        first read it from the prompt cache at a fraction of the price."""
+        return [{"type": "text", "text": system,
+                 "cache_control": {"type": "ephemeral"}}]
+
     def _headers(self) -> dict:
         return {"Content-Type": "application/json",
                 "x-api-key": self.api_key or "",
@@ -1044,7 +1055,7 @@ class AnthropicBackend(OllamaBackend):
         body = json.dumps({
             "model": self.model,
             "max_tokens": self.num_predict,
-            "system": system,
+            "system": self._system_blocks(system),
             "messages": [{"role": "user", "content": prompt}],
             "temperature": self.temperature if temperature is None
                            else temperature,
@@ -1060,6 +1071,7 @@ class AnthropicBackend(OllamaBackend):
             raise RuntimeError(f"anthropic HTTP {e.code}")
         self.last_egress = {"destination": self.messages_url,
                             "bytes_out": len(body), "bytes_in": len(raw)}
+        self.last_usage = backends.usage_from_payload(payload)
         blocks = payload.get("content") or []
         text = "".join(b.get("text", "") for b in blocks
                        if isinstance(b, dict) and b.get("type") == "text")
@@ -1091,7 +1103,7 @@ class AnthropicBackend(OllamaBackend):
         body = json.dumps({
             "model": self.model,
             "max_tokens": self.num_predict,
-            "system": system,
+            "system": self._system_blocks(system),
             "messages": [{"role": "user", "content": prompt}],
         }).encode()
         headers = {"Content-Type": "application/json",
@@ -1108,6 +1120,7 @@ class AnthropicBackend(OllamaBackend):
         # Track C: report the network I/O so the loop can journal it.
         self.last_egress = {"destination": self.messages_url,
                             "bytes_out": len(body), "bytes_in": len(raw)}
+        self.last_usage = backends.usage_from_payload(payload)
         return payload["content"][0]["text"]
 
     def _chat_stream(self, prompt: str, system: str):
@@ -1123,7 +1136,7 @@ class AnthropicBackend(OllamaBackend):
         body = json.dumps({
             "model": self.model,
             "max_tokens": self.num_predict,
-            "system": system,
+            "system": self._system_blocks(system),
             "messages": [{"role": "user", "content": prompt}],
             "stream": True,
         }).encode()
@@ -1146,6 +1159,16 @@ class AnthropicBackend(OllamaBackend):
                     try:
                         obj = json.loads(line[5:].strip())
                     except ValueError:
+                        continue
+                    if obj.get("type") == "message_start":
+                        self.last_usage = backends.usage_from_payload(
+                            obj.get("message") or {})
+                        continue
+                    if (obj.get("type") == "message_delta"
+                            and self.last_usage is not None):
+                        out = (obj.get("usage") or {}).get("output_tokens")
+                        if out is not None:
+                            self.last_usage["output"] = int(out)
                         continue
                     if obj.get("type") != "content_block_delta":
                         continue
@@ -1397,12 +1420,14 @@ _COMPILE_PATCHED = False
 
 
 def _patched_compile_contract(state, turn_no=1, knowledge=None,
-                              round_no=None, round_context=None):
+                              round_no=None, round_context=None,
+                              skills_in_system=False):
     # v0.6: forward the round kwargs — the recursive loop recompiles the
     # contract per round with a `loop: turn.round` header.
     block = _real_compile_contract(state, turn_no=turn_no,
                                     knowledge=knowledge, round_no=round_no,
-                                    round_context=round_context)
+                                    round_context=round_context,
+                                    skills_in_system=skills_in_system)
     if _ACTIVE_SIDECAR is not None:
         # Persona is front-loaded (pinned tier, right after the header
         # sensor line, which must stay first): a lens on how to think.
@@ -1669,7 +1694,15 @@ BUILTIN_MODES: list[dict] = [
          "the grill tenet of the discovery interview applies here too: a "
          "comfortable wrong answer is worse than an uncomfortable right "
          "question. Higher temperature is deliberate: explore the idea "
-         "space, then converge on what the evidence supports."),
+         "space, then converge on what the evidence supports. "
+         "When the user wants to get good at a skill, coach instead of "
+         "lecture: place them (current level, what 'good' means), give a "
+         "stage roadmap with only what's needed, name the 80/20, then one "
+         "challenge at a time — they attempt it first, you review it, name "
+         "the single biggest weakness and set a harder challenge aimed at "
+         "it. Every few rounds, find their three biggest gaps to expert "
+         "level and plan practice for each. Keep stage, last challenge and "
+         "weakness in progress so the next session resumes there."),
      "tool_policy": None, "sampling": {"temperature": 0.8}},
     {"id": "release", "label": "Release",
      "stages": ["SHIP"],
@@ -1770,6 +1803,17 @@ class _ModeAwareBackend:
 
     def __getattr__(self, name):
         return getattr(self._inner, name)
+
+    # Per-turn state the loop writes (skill bodies for the cached system
+    # prompt) or consumes (provider token usage) must live on the real
+    # backend; __getattr__ only forwards reads.
+    _FORWARDED = ("skill_context", "last_usage")
+
+    def __setattr__(self, name, value):
+        if name in _ModeAwareBackend._FORWARDED:
+            setattr(self._inner, name, value)
+        else:
+            object.__setattr__(self, name, value)
 
     def generate(self, contract_block, history, feedback=None,
                  stream_cb=None, tools=None, cancel=None, temperature=None):
@@ -2545,7 +2589,11 @@ class Sidecar:
         # extension can turn it off (awino.autoApproveAfterPlan).
         loop.config["autopilot"] = cmd.get("auto_approve_after_plan", True) \
             is not False
+        if isinstance(cmd.get("turn_token_budget"), int):
+            loop.config["turn_token_budget"] = cmd["turn_token_budget"]
         self.loop = loop
+        self._model_tiers = dict(cmd.get("model_tiers") or {})
+        self._bind_tiers(binding, env_cmd, backend)
         # Native tool application (extension builder): the extension
         # advertises delegated apply/terminal capability in hello. When
         # present, file writes and run_command execute through the
@@ -2793,6 +2841,34 @@ class Sidecar:
             prof = getattr(backend, "aws_profile", None) or "default"
             key_status = f"sigv4-profile:{prof}"
         return _ModeAwareBackend(backend, self), key_status
+
+    def _bind_tiers(self, binding: dict, cmd: dict, main) -> None:
+        """Optional model tiers (user-chosen; empty = one model for all).
+        Each named tier gets the same provider, key and endpoint with its
+        own model; a blank tier uses the main model. Never breaks hello:
+        a tier that can't be built falls back to the main model."""
+        tiers = {k: str(v).strip() for k, v in
+                 (getattr(self, "_model_tiers", {}) or {}).items()
+                 if k in ("best", "medium", "basic") and str(v or "").strip()}
+        if self.loop is None:
+            return
+        if not tiers:
+            self.loop.tier_backends = {}
+            return
+        out = {}
+        for tier in ("best", "medium", "basic"):
+            model = tiers.get(tier)
+            if not model or model == binding.get("model"):
+                out[tier] = main
+                continue
+            try:
+                b, _ = self._apply_binding(dict(binding, model=model), cmd)
+                out[tier] = b
+            except Exception as e:  # noqa: BLE001 - fall back, say so
+                print(f"model tier {tier} ({model}) unavailable: {e}",
+                      file=sys.stderr)
+                out[tier] = main
+        self.loop.tier_backends = out
 
     def _make_backend(self, provider: str, cmd: dict, api_key=None):
         timeout = cmd.get("timeout") or float(
@@ -3216,6 +3292,7 @@ class Sidecar:
                     "detail": str(e)}
         self.loop.backend = backend  # the Loop is untouched; we swap the
         # backend object it already calls, like changing a battery.
+        self._bind_tiers(binding, {"environment": name}, backend)
         self.provider = binding["provider"]
         self.model_desc = getattr(backend, "model", self.provider)
         self._binding = dict(binding)
