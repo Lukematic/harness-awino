@@ -88,6 +88,24 @@ every turn and lists it when you open a session. If the same problem comes back
 after the lesson was shown, the lesson is escalated and Awino raises it with
 you. After three clean stories it is marked learned and drops out.
 
+## 6b. Models, tokens and tutoring
+
+- **Three models (optional).** Set `awino.models.best` (planning, challenges,
+  review), `awino.models.medium` (building from the approved plan) and
+  `awino.models.basic` (single planned steps run by workers). Leave any of them
+  blank to use the main model. If a step fails verification twice, the work
+  moves up to the next model. Example on Anthropic: `claude-opus-5` /
+  `claude-sonnet-5` / `claude-haiku-4-5`.
+- **Token meter.** Under the chat: tokens used by this reply against its budget,
+  the share read from the prompt cache, and the mission total. When a reply
+  reaches `awino.turnTokenBudget` (default 60,000), it pauses and you say
+  "continue". Skill text sits in the cached part of the prompt, so later
+  rounds of a reply cost much less.
+- **Tutor.** Say "tutor me in …", "help me learn … from scratch" or pick the
+  Tutor mode. Awino places your level, gives a roadmap and the 80/20, then one
+  challenge at a time: you try it, it reviews your attempt, names your biggest
+  weakness and sets a harder challenge aimed at it.
+
 ## 7. Words you'll see
 
 | Word | Meaning |

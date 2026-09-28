@@ -5,7 +5,7 @@ Every turn the harness computes, independently and in code:
   stance — thinking procedure chain (from input intent, else the floor default)
   skills — capability set (from input intent, else the floor binding)
 
-The floor binding table (BUILD_SPEC section 3) gives each elevator floor an
+The floor binding table (docs/history/BUILD_SPEC.md section 3) gives each elevator floor an
 autonomy level (supervised = human approves transitions; bounded = free
 action inside the approved contract/scope), router-default stance, skills,
 mode (permission profile), and exit gate. Intent patterns override the floor
@@ -43,7 +43,7 @@ def _words(s: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Floor binding table (BUILD_SPEC section 3). Six elevator floors (IDLE is
+# Floor binding table (docs/history/BUILD_SPEC.md section 3). Six elevator floors (IDLE is
 # pre-mission and unbound). Autonomy: supervised = the human approves each
 # transition; bounded = the harness acts freely but only inside the approved
 # contract/scope.

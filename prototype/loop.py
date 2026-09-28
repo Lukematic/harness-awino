@@ -780,7 +780,7 @@ class Loop:
                               cancel_token=cancel_token)
 
     # ------------------------------------------------------------------ loop
-    # The per-turn pipeline (BUILD_SPEC section 3), executed in order, in code:
+    # The per-turn pipeline (docs/history/BUILD_SPEC.md section 3), executed in order, in code:
     #   0. contract loop      — compile the typed turn contract from code-owned
     #                          state; refuse the turn on a named break BEFORE
     #                          the backend acts (contract_loop.py)

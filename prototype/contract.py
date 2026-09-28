@@ -383,7 +383,7 @@ def route_mode(snapshot: dict, input_kind: str = "info") -> str:
 
 
 # ---------------------------------------------------------------------------
-# Skills: code-side retrieval via the pinned SkillStore (skills.py). The
+# Skills: code-side retrieval via the pinned SkillStore (skills/__init__.py). The
 # harness loads full skill bodies into the contract; the model never
 # fetches skills voluntarily. Routed per turn by the triple router and
 # stored on state["skills"]. Bodies live in skills/<name>.md, pinned by

@@ -2,6 +2,16 @@
 
 ## Unreleased — Receipts and lessons
 
+- **Tokens:** skill text moved into a stable, cached system prompt and the
+  per-round header moved to the end, so providers can cache the prefix.
+  Real token counts are read from the provider. There is a per-reply budget
+  (`awino.turnTokenBudget`) and a live token meter in the chat.
+- **Optional model tiers** (`awino.models.best/medium/basic`): best plans and
+  reviews, medium builds, basic runs worker steps, and failures escalate.
+- **Tutor practice loop** (skill + Tutor mode); session auto-approval after the
+  plan is approved (`awino.autoApproveAfterPlan`); the brag board shows task,
+  date and result.
+
 - **Autopilot after plan approval**: once you approve the plan and its
   files, writes to those files and workspace-only commands run without a
   card, each journaled as `auto_approved`. Deleting, `sudo`, force flags,
