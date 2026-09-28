@@ -43,7 +43,6 @@ py-modules = [
     "rigor",
     "secret_redaction",
     "setup_autopilot",
-    "skills",
     "stances",
     "state",
     "story",
