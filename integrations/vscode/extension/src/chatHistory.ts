@@ -32,6 +32,11 @@ export class ChatHistory {
     }
   }
 
+  /** New chat: drop the whole transcript (the next replay is empty). */
+  clear(): void {
+    this.items = [];
+  }
+
   get size(): number {
     return this.items.length;
   }

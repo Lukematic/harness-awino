@@ -749,6 +749,9 @@ async function handleChatMessage(
     case "newMission":
       void vscode.commands.executeCommand("awino.newMission");
       break;
+    case "newChat":
+      void vscode.commands.executeCommand("awino.newChat");
+      break;
     case "invokeModeSelect":
       void invokeModeFlow(typeof m.mode === "string" ? m.mode : undefined);
       break;
@@ -2119,6 +2122,34 @@ function registerCommands(context: vscode.ExtensionContext): void {
   reg("awino.sessionResume", async () => {
     mustSession();
     await postSessionResume();
+  });
+
+  // New chat (Kilo "New Task", Claude Code /clear): a fresh conversation
+  // over the same project. The sidecar starts a new conversation id and
+  // history window; the transcript is cleared here and in the view. The
+  // mission, plan, tasks and learnings are project state and stay — the
+  // view offers "New mission" when one is active.
+  reg("awino.newChat", async () => {
+    mustSession();
+    // A running turn finishes first: the sidecar defers commands until the
+    // turn ends, so its result lands in the old transcript before the clear.
+    let r: Record<string, unknown>;
+    try {
+      r = (await query("session_new")) as Record<string, unknown>;
+    } catch (e) {
+      vscode.window.showErrorMessage(
+        `Awino: could not start a new chat — ${e instanceof Error ? e.message : String(e)}`
+      );
+      return;
+    }
+    if (r["status"] !== "ok") {
+      vscode.window.showWarningMessage(`Awino: ${String(r["said"] ?? "could not start a new chat")}`);
+      return;
+    }
+    chatHistory.clear();
+    postToChat({ type: "clearTranscript", mission: r["mission"] ?? null, phase: r["phase"] ?? null }, false);
+    postChatState();
+    refreshViews();
   });
 
   reg("awino.newMission", async () => {

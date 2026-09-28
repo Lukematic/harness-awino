@@ -247,6 +247,21 @@ def apply_event(snap: dict, ev: dict) -> None:
     elif t == "operator_resumed":
         snap["awaiting_operator"] = False
         snap["retries"] = 0
+    elif t == "session_started":
+        # New chat: fresh conversation over the same project. The mission,
+        # plan, tasks, approvals and learnings are project state and stay;
+        # the conversational residue (open questions, stall counters, an
+        # operator pause) goes. The model's history window starts here.
+        snap["conversation_id"] = d["conversation_id"]
+        # PROGRESS in the contract shows this chat's entries only.
+        snap["session_progress_start"] = len(snap.get("progress", []))
+        snap["open_questions"] = []
+        snap["awaiting_operator"] = False
+        snap["awaiting_operator_reason"] = None
+        snap["awaiting_operator_round"] = None
+        snap["consecutive_stalls"] = 0
+        snap["last_progress_sig"] = None
+        snap["retries"] = 0
     elif t == "stalled":
         snap["awaiting_operator"] = True
     elif t == "judge_failed":

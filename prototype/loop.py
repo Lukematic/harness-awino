@@ -28,7 +28,7 @@ from contract import (
 import modes as _modes
 from skills import SkillIntegrityError
 from synthesis import synthesize_learning as _synthesize_learning
-from stances import (evaluate_chain, route_triple, FLOORS,
+from stances import (evaluate_chain, route_triple, FLOORS, is_direct_ask,
                      resolve_declared_stance)
 from tools import (Sandbox, TOOL_DEFS, _parse_unified_diff, _apply_hunks,
                     PatchRefusal)
@@ -404,9 +404,42 @@ class Loop:
         return errs
 
     # ---------------------------------------------------------------- history
+    def _session_events(self) -> list[dict]:
+        """Events since the last `session_started` (the whole journal when
+        no new chat was ever started)."""
+        evs = self.state.events
+        for i in range(len(evs) - 1, -1, -1):
+            if evs[i]["type"] == "session_started":
+                return evs[i + 1:]
+        return evs
+
+    def new_session(self) -> dict:
+        """Start a fresh chat over the same project (Kilo "New Task",
+        Claude Code /clear). Refused while an approval or an unknown-effect
+        inspection is pending: those must be settled, not forgotten."""
+        s = self.state.snapshot
+        if s.get("awaiting_approval"):
+            return {"status": "refused",
+                    "said": "Decide the pending approval first, then start "
+                            "a new chat."}
+        if s.get("awaiting_inspection"):
+            return {"status": "refused",
+                    "said": "Settle the interrupted tool call first "
+                            "('applied' or 'not applied'), then start a "
+                            "new chat."}
+        cid = _uid()
+        self.state.record("session_started", {"conversation_id": cid,
+                                              "previous": s.get("conversation_id")})
+        self.state.persist_snapshot()
+        self._rebuild_history()
+        m = self.state.snapshot.get("mission")
+        return {"status": "ok", "conversation_id": cid,
+                "mission": ({"id": m["id"], "text": m["text"]} if m else None),
+                "phase": self.state.snapshot.get("phase")}
+
     def _rebuild_history(self) -> None:
         self.history = []
-        for e in self.state.events[-40:]:
+        for e in self._session_events()[-40:]:
             t, d = e["type"], e["data"]
             if t == "user_message":
                 self.history.append({"role": "user", "text": d["text"][:500]})
@@ -766,8 +799,11 @@ class Loop:
             # survive a scope change — even a paused turn's (the reducer
             # clears active_turn).
             self.state.record("scope_changed", {"text": text})
-        elif s["open_questions"] and kind in ("info", "question"):
+        elif (s["open_questions"] and kind in ("info", "question")
+              and not is_direct_ask(text)):
             # Heuristic: user text while questions are open resolves them.
+            # A direct aside ("what time is it?") is answered and leaves
+            # the open questions standing.
             resolved = list(s["open_questions"])
             self.state.record("questions_resolved",
                               {"resolved": resolved, "answer": text})
@@ -1063,7 +1099,8 @@ class Loop:
                 if not errs and declared:
                     chain, err = resolve_declared_stance(
                         self.state.snapshot.get("phase"), declared,
-                        raw.get("stance_why", ""))
+                        raw.get("stance_why", ""),
+                        apply_floor=routing.get("intent") != "ask")
                     if err:
                         errs = [err]
                 if not errs and chain != ["advisor"]:

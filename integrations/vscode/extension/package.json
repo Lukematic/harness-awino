@@ -10,6 +10,11 @@
   "contributes": {
     "commands": [
       {
+        "command": "awino.newChat",
+        "title": "Awino: New Chat",
+        "icon": "$(add)"
+      },
+      {
         "command": "awino.newMission",
         "title": "Awino: New Mission"
       },
@@ -362,6 +367,11 @@
     ],
     "menus": {
       "view/title": [
+        {
+          "command": "awino.newChat",
+          "when": "view == awino.chat && awino:connected",
+          "group": "navigation"
+        },
         {
           "command": "awino.startStory",
           "when": "view == awino.stories",

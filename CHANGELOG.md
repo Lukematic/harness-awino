@@ -2,6 +2,21 @@
 
 ## Unreleased — Receipts and lessons
 
+- **New chat** (`Awino: New Chat`, the **+** button): clears the transcript
+  and starts a fresh conversation over the same project, like Kilo's New
+  Task or Claude Code's `/clear`. The model's history window, open
+  questions and PROGRESS start empty; the mission, plan, tasks and
+  learnings stay, and the chat offers **Start a new mission**. Refused
+  while an approval or an interrupted tool call is pending. Sidecar
+  command `session_new`, journal event `session_started`.
+- **Direct questions get direct answers.** Short questions and small talk
+  ("what time is it", "thanks") route to the advisor stance with read-only
+  tools instead of the phase default, so DEFINE no longer turns every
+  message into another mission question. An aside leaves the open mission
+  questions open instead of counting as their answer.
+- **The model knows the time:** every contract ends with a `## NOW` line
+  (local time and UTC offset).
+
 - **Tokens:** skill text moved into a stable, cached system prompt and the
   per-round header moved to the end, so providers can cache the prefix.
   Real token counts are read from the provider. There is a per-reply budget

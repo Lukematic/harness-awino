@@ -509,6 +509,22 @@ def skill_context_text(names: list[str]) -> str:
     return "\n".join(parts)
 
 
+def _now() -> "datetime.datetime":
+    """Local wall-clock time with its UTC offset. A seam: tests patch it."""
+    import datetime
+    return datetime.datetime.now().astimezone()
+
+
+def now_line() -> str:
+    """One line so the model can answer "what time/day is it" instead of
+    claiming it has no clock. Minute resolution; it sits at the end of the
+    contract so the cached prefix is unaffected."""
+    n = _now()
+    return (f"Local time: {n.strftime('%A %Y-%m-%d %H:%M')} "
+            f"({n.tzname() or 'local'}, UTC{n.strftime('%z')[:3]}:"
+            f"{n.strftime('%z')[3:]}). Use it for any date or time question.")
+
+
 def compile_contract(state, turn_no: int | None = None,
                      knowledge: tuple[int, int] | None = None,
                      round_no: int | None = None,
@@ -693,9 +709,10 @@ def compile_contract(state, turn_no: int | None = None,
         A("(none yet)")
     A("")
     A("## PROGRESS (last 3)")
-    for p in s.get("progress", [])[-3:]:
+    session_progress = s.get("progress", [])[s.get("session_progress_start", 0):]
+    for p in session_progress[-3:]:
         A(f"- {p['turn']}: {p['delta']}")
-    if not s.get("progress"):
+    if not session_progress:
         A("(none yet)")
     A("")
     A("## TASKS (harness-owned TODO list — the authoritative in-turn plan)")
@@ -736,6 +753,9 @@ def compile_contract(state, turn_no: int | None = None,
       '"objective": str, "plan": [str], "tool_calls": [{name, args}], '
       '"questions": [str], "assumptions": [str], '
       '"progress_delta": str (required, non-empty), "done_claim": bool}')
+    A("")
+    A("## NOW")
+    A(now_line())
     A("")
     A(next_action_line(s))
     if round_no is not None:

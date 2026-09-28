@@ -49,6 +49,7 @@ All commands are in the Command Palette. Titles match `package.json`.
 
 | Command | What it does |
 |---|---|
+| `Awino: New Chat` | Clear the chat and start a fresh conversation (the **+** in the chat header and title bar). The mission, plan and tasks stay; the note offers **Start a new mission**. |
 | `Awino: New Mission` | Start a mission: objective, then done criteria. |
 | `Awino: New Mission from Seed` | Start a mission from a saved seed (template). |
 | `Awino: Save Current Mission as Seed` | Save the current mission as a reusable seed. |
