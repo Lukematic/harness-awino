@@ -1126,6 +1126,19 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     st.thinkDetails.hidden = !thinking;
   }
 
+  // A mission that ENDED is recovered by a new mission, not by typing:
+  // offer the button right on the reply. Only on the engine's explicit
+  // mission_ended flag — a per-turn pause also says "budget_exhausted" but
+  // continues with "continue", and must not push a new mission.
+  function appendNewMissionAction(card, r) {
+    if (r.mission_ended !== true) return;
+    var b = mk("button", "secondary new-mission-action", "Start a new mission");
+    b.addEventListener("click", function () {
+      vscode.postMessage({ type: "newMission" });
+    });
+    card.appendChild(b);
+  }
+
   function finalizeStream(st, r) {
     if (st.finalized) return;
     st.finalized = true;
@@ -1148,6 +1161,7 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     if (r.status === "awaiting_approval") {
       st.card.appendChild(mk("div", "", "<i>Waiting for your approval \u2014 decide on the card below.</i>"));
     }
+    appendNewMissionAction(st.card, r);
     turnInFlight = false;
     setBead("turn", "", "turn: idle");
     refreshInput();
@@ -1212,6 +1226,7 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     if (r.status === "awaiting_approval") {
       card.appendChild(mk("div", "", "<i>Waiting for your approval \u2014 decide on the card below.</i>"));
     }
+    appendNewMissionAction(card, r);
     messages.appendChild(card);
     turnInFlight = false;
     refreshInput();

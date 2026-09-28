@@ -509,7 +509,7 @@ def skill_context_text(names: list[str]) -> str:
     return "\n".join(parts)
 
 
-def _now() -> "datetime.datetime":
+def _now():
     """Local wall-clock time with its UTC offset. A seam: tests patch it."""
     import datetime
     return datetime.datetime.now().astimezone()

@@ -241,6 +241,28 @@ const legacy = messages.children[messages.children.length - 1];
 ok(subtreeHtml(legacy).indexOf("<strong>body</strong>") >= 0, "legacy body rendered as markdown");
 ok(subtreeHtml(legacy).indexOf("tool-line") >= 0, "legacy tool results render as one-line summaries");
 
+// 11b. an ended mission (closed / budget_exhausted) offers Start a new
+// mission on the reply itself; a normal reply does not.
+function newMissionButtons(root) { return byClass(root, "new-mission-action"); }
+ok(newMissionButtons(legacy).length === 0, "ok reply has no Start a new mission button");
+fire({ event: "turn_result", result: { said: 'Mission "testing" has ended.', status: "closed", mission_ended: true } });
+const closedCard = messages.children[messages.children.length - 1];
+ok(newMissionButtons(closedCard).length === 1, "closed reply offers Start a new mission");
+const postedBeforeNM = posted.length;
+newMissionButtons(closedCard)[0].fire("click", {});
+ok(posted.length === postedBeforeNM + 1 && posted[posted.length - 1].type === "newMission",
+  "Start a new mission posts {type:newMission}");
+fire({ event: "turn_start", turn_id: "t11", phase: "DEFINE", mode: { id: "plan", source: "stage" }, persona: null });
+const card11 = messages.children[messages.children.length - 1];
+fire({ event: "turn_result", turn_id: "t11", result: { said: "Turn budget exhausted (50).", thinking: null, checks: [], status: "budget_exhausted", mission_ended: true } });
+ok(newMissionButtons(card11).length === 1, "mission-ending budget reply offers Start a new mission");
+// A per-turn pause ("say 'continue'") is budget_exhausted too, but the
+// mission goes on: no Start a new mission button there.
+fire({ event: "turn_start", turn_id: "t12", phase: "BUILD", mode: { id: "build", source: "stage" }, persona: null });
+const card12 = messages.children[messages.children.length - 1];
+fire({ event: "turn_result", turn_id: "t12", result: { said: "Turn paused at round 4: say 'continue' to keep going.", thinking: null, checks: [], status: "budget_exhausted" } });
+ok(newMissionButtons(card12).length === 0, "per-turn pause does not offer Start a new mission");
+
 // 12. stop posts the stop verb
 const postedBeforeStop = posted.length;
 ids["stop"].fire("click", {});
