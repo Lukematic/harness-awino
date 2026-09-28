@@ -1,7 +1,9 @@
 # hooks
 
-A.W.I.N.O. integration component.
+`awino_gate.py` is a Claude Code PreToolUse hook. It forwards to
+`prototype/awino_gate.py`, which checks each tool call against the project's
+Awino state. The hook does nothing until a project opts in by having an
+`.awino/` folder.
 
-See the parent README and EXTENSION_SPEC.md for architecture.
-Scope #5 (housekeeping/compaction/FAIR) applies: this directory is part
-of the standardized layout with manifest discipline.
+Wire it in with the snippet in `../settings.json`. Tests:
+`prototype/tests/test_awino_gate.py`. See [../README.md](../README.md).

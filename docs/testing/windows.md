@@ -22,7 +22,7 @@ python -m unittest discover -s prototype/tests -t prototype
 
 - The last line reads `OK` (unittest) or `N passed` (pytest), with **zero
   failures and zero errors**.
-- `prototype/tests/test_windows_compat.py` (12 tests) passes — these are the
+- `prototype/tests/test_windows_compat.py` passes — these are the
   Windows-specific ones: venv resolution picks `Scripts\` + `python.exe`,
   the scaffolded justfile has no Unix-only shell syntax, and `run_command`
   prepends the venv `Scripts` dir to `PATH`.
@@ -50,8 +50,10 @@ starts the full loop-owner session and runs the same auto-init on start —
 
 ## Known remaining risks (honest)
 
-- **No real-Windows run has happened yet.** The Linux suite fakes Windows
-  with mocks; subtle differences (path case-insensitivity, file locking,
+- **The engine suite is not run on Windows in CI.** The
+  `windows-gui-test` workflow proves the extension installs and the
+  bundled sidecar starts on real Windows, but the Linux suite fakes Windows
+  for everything else. Subtle differences (path case-insensitivity, file locking,
   antivirus holding `.venv` files, `MAX_PATH`) can only be found on your
   machine. If anything fails, paste the traceback — that's the next fix.
 - **`just` on Windows is best-effort.** The bootstrap tries `cargo install

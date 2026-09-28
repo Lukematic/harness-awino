@@ -12,7 +12,7 @@
  *
  * This module needs the vscode API and is therefore compiled-not-run in
  * Node tests; the Windows GUI workflow proves it live
- * (NATIVE_APPLY_GUI_ASSERTIONS.md). Pure helpers live in
+ * (docs/history/NATIVE_APPLY_GUI_ASSERTIONS.md). Pure helpers live in
  * delegatedPure.ts and are unit-tested.
  */
 import * as vscode from "vscode";

@@ -1,7 +1,7 @@
 # commands
 
-A.W.I.N.O. integration component.
+`awino.md` is a Claude Code slash command. `/awino [objective]` starts the
+loop-owner discipline in the current session.
 
-See the parent README and EXTENSION_SPEC.md for architecture.
-Scope #5 (housekeeping/compaction/FAIR) applies: this directory is part
-of the standardized layout with manifest discipline.
+Install: copy it to `~/.claude/commands/` or `<project>/.claude/commands/`.
+See [../README.md](../README.md) for the full Claude Code setup.

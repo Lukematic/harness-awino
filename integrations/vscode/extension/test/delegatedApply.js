@@ -20,7 +20,7 @@
  *
  * The vscode-dependent half (WorkspaceEdit, vscode.diff, terminal shell
  * integration) cannot run headless; it is proven by the Windows GUI
- * workflow (NATIVE_APPLY_GUI_ASSERTIONS.md).
+ * workflow (docs/history/NATIVE_APPLY_GUI_ASSERTIONS.md).
  */
 "use strict";
 const assert = require("assert");
