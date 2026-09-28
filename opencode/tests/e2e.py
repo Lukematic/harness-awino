@@ -47,6 +47,7 @@ class Ctx:
         self.out.mkdir(parents=True, exist_ok=True)
         self.transcript: list[str] = []
         self.checks: list[tuple[str, bool, str]] = []
+        self.notes: list[str] = []
         self.log_start = self._log_len()
 
     def _log_len(self) -> int:
@@ -59,6 +60,7 @@ class Ctx:
     def env(self, key="test-key", model="fake-model", base=None) -> dict:
         e = dict(os.environ)
         e.update({
+            "PWD": str(self.dir),  # opencode takes the project dir from $PWD
             "OPENCODE_CONFIG_DIR": str(BUNDLE),
             "AWINO_BASE_URL": base or f"http://127.0.0.1:{self.port}/v1",
             "AWINO_API_KEY": key,
@@ -72,9 +74,12 @@ class Ctx:
 
     def run(self, message: str, *args, env=None) -> tuple[int, str]:
         cmd = [OPENCODE, "run", "--title", self.name, *args, message]
+        if os.environ.get("E2E_LOGS"):
+            cmd[2:2] = ["--print-logs", "--log-level", "INFO"]
         t0 = time.time()
         try:
             p = subprocess.run(cmd, cwd=self.dir, env=env or self.env(),
+                               stdin=subprocess.DEVNULL,
                                capture_output=True, text=True,
                                timeout=RUN_TIMEOUT)
             code, out = p.returncode, p.stdout + "\n--- stderr ---\n" + p.stderr
@@ -99,7 +104,7 @@ class Ctx:
         return {"name": self.name, "passed": all(ok for _, ok, _ in self.checks)
                 and bool(self.checks),
                 "checks": [{"check": c, "ok": ok, "detail": d}
-                           for c, ok, d in self.checks]}
+                           for c, ok, d in self.checks], "notes": self.notes}
 
 
 def read(p: Path) -> str:
@@ -234,7 +239,9 @@ def s_interviewer(c: Ctx):
 
 
 def u_a_stance_injection(c: Ctx):
-    """Unknown (a): routed stance in the prompt on every model call."""
+    """Unknown (a): routed stance in the prompt on every model call.
+    A mission exists: without one, stances.py routes "fix" to the grill."""
+    write_mission(c.dir)
     (c.dir / "notes.txt").write_text("notes\n")
     turns = [
         ("should we use postgres vs sqlite?", "steel-man", []),
@@ -258,32 +265,78 @@ def u_a_stance_injection(c: Ctx):
             len(per_turn[2][2]) >= 2, f"{len(per_turn[2][2])} calls")
 
 
+def _http(method, url, body=None, timeout=90):
+    import urllib.request
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method,
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        raw = r.read()
+    return json.loads(raw) if raw else None
+
+
+def _assistant_texts(msgs):
+    return ["".join(p.get("text", "") for p in m.get("parts", [])
+                    if p.get("type") == "text" and not p.get("synthetic"))
+            for m in msgs if m.get("info", {}).get("role") == "assistant"]
+
+
 def u_b_redo(c: Ctx):
-    """Unknown (b): a reply that breaks a rule gets caught and redone."""
-    code, out = c.run("let's build a todo app\n" + directive(
+    """Unknown (b): a reply that breaks a rule gets caught and redone.
+    Long-lived session: `opencode serve` (what the TUI runs), driven over
+    its HTTP API. One-shot `opencode run` is recorded too: it exits at the
+    first idle, before a follow-up can land."""
+    msg = "let's build a todo app\n" + directive(
         reply="What is the deadline? Who are the users? What platform?",
-        on_correction="Who are the users?"))
-    reqs = c.requests()
+        on_correction="Who are the users?")
+    code, out = c.run(msg)
+    oneshot = [r for r in c.requests() if "[A.W.I.N.O. correction]" in r["last_user"]]
+    c.notes.append(f"opencode run (one-shot): {len(oneshot)} correction request(s); "
+                   "the process exits at the first session.idle")
+    before = len(c.requests())
+    port = 4700 + os.getpid() % 200
+    log = open(c.out / "serve.log", "w")
+    srv = subprocess.Popen([OPENCODE, "serve", "--port", str(port),
+                            "--print-logs", "--log-level", "INFO"],
+                           cwd=c.dir, env=c.env(), stdin=subprocess.DEVNULL,
+                           stdout=log, stderr=subprocess.STDOUT)
+    base = f"http://127.0.0.1:{port}"
+    try:
+        for _ in range(120):
+            try:
+                _http("GET", base + "/session", timeout=5)
+                break
+            except Exception:  # noqa: BLE001
+                time.sleep(0.5)
+        sid = _http("POST", base + "/session", {"title": c.name})["id"]
+        _http("POST", f"{base}/session/{sid}/message",
+              {"parts": [{"type": "text", "text": msg}]}, timeout=RUN_TIMEOUT)
+        texts, stable, deadline = [], 0, time.time() + 60
+        while time.time() < deadline and stable < 8:
+            now = _assistant_texts(_http("GET", f"{base}/session/{sid}/message"))
+            stable = stable + 1 if now == texts else 0
+            texts = now
+            time.sleep(0.5)
+        (c.out / "serve-messages.json").write_text(json.dumps(
+            _http("GET", f"{base}/session/{sid}/message"), indent=1))
+    finally:
+        srv.terminate()
+        try:
+            srv.wait(10)
+        except subprocess.TimeoutExpired:
+            srv.kill()
+        log.close()
+    reqs = c.requests()[before:]
     corr = [r for r in reqs if "[A.W.I.N.O. correction]" in r["last_user"]]
-    c.check("grill stance routed", any(any("planning-grill" in s for s in r["stance"])
-                                       for r in reqs), "")
+    c.check("grill stance routed",
+            any(any("planning-grill" in s for s in r["stance"]) for r in reqs), "")
+    c.check("first reply broke the rule (3 questions)",
+            texts and texts[0].count("?") == 3, json.dumps(texts))
     c.check("plugin sent a correction follow-up to the model", len(corr) >= 1,
             f"{len(corr)} correction requests")
-    exp = subprocess.run([OPENCODE, "export"], cwd=c.dir, env=c.env(),
-                         capture_output=True, text=True, timeout=60)
-    (c.out / "export.json").write_text(exp.stdout)
-    texts = []
-    try:
-        data = json.loads(exp.stdout[exp.stdout.index("{"):])
-        for m in data.get("messages", []):
-            if m.get("info", {}).get("role") == "assistant":
-                texts.append("".join(p.get("text", "") for p in m.get("parts", [])
-                                     if p.get("type") == "text"))
-    except Exception as ex:  # noqa: BLE001
-        texts = [f"export parse failed: {ex}"]
     c.check("final assistant reply is the redone one (one question)",
             texts and texts[-1].strip() == "Who are the users?", json.dumps(texts))
-    c.check("no redo loop (<=2 corrections)", len(corr) <= 2, "")
+    c.check("no redo loop (exactly one correction)", len(corr) == 1, str(len(corr)))
 
 
 def s5_real_model(c: Ctx):
@@ -347,6 +400,8 @@ def main():
         for ch in r["checks"]:
             print(f"   [{'x' if ch['ok'] else ' '}] {ch['check']}"
                   + ("" if ch["ok"] else f"  -- {ch['detail'][:300]}"), flush=True)
+        for n in r.get("notes", []):
+            print(f"   note: {n}", flush=True)
     srv.shutdown()
     ver = subprocess.run([OPENCODE, "--version"], capture_output=True, text=True)
     (out / "results.json").write_text(json.dumps(
@@ -362,6 +417,8 @@ def main():
         lines += ["", f"## {r['name']}", ""]
         for ch in r["checks"]:
             lines.append(f"- [{'x' if ch['ok'] else ' '}] {ch['check']}")
+        for n in r.get("notes", []):
+            lines.append(f"- note: {n}")
     (out / "summary.md").write_text("\n".join(lines) + "\n")
     failed = [r for r in results if r["passed"] is False]
     sys.exit(1 if failed else 0)

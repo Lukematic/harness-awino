@@ -1,0 +1,22 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "autoupdate": false,
+  "share": "disabled",
+  "default_agent": "awino",
+  "enabled_providers": ["awino"],
+  "provider": {
+    "awino": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "A.W.I.N.O. (OpenAI-compatible)",
+      "options": {
+        "baseURL": "{env:AWINO_BASE_URL}",
+        "apiKey": "{env:AWINO_API_KEY}"
+      },
+      "models": {
+        "{env:AWINO_MODEL}": { "name": "{env:AWINO_MODEL}", "tool_call": true }
+      }
+    }
+  },
+  "model": "awino/{env:AWINO_MODEL}",
+  "small_model": "awino/{env:AWINO_MODEL}"
+}
