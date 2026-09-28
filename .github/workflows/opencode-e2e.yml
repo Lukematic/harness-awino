@@ -1,0 +1,114 @@
+# opencode-e2e — the A.W.I.N.O. OpenCode bundle, proven headless.
+#
+# Installs OpenCode from npm, points OPENCODE_CONFIG_DIR at opencode/, and
+# runs opencode/tests/e2e.py: every scenario is a real `opencode run` against
+# prototype/tests/fake_gateway.py (a keyed, scripted OpenAI-compatible model
+# with tool calling + streaming). Assertions are on files, CLI output and the
+# gateway's request log.
+#
+# Real model (scenario 5): runs when the AWINO_API_KEY secret exists.
+# Endpoint/model come from repo variables AWINO_BASE_URL / AWINO_MODEL
+# (defaults: OpenRouter, openai/gpt-4o-mini).
+#
+# Output: the "opencode-e2e" artifact (per-scenario transcript, gateway log,
+# the project files left behind) and summary.md committed to branch
+# ci-results under opencode-e2e/.
+
+name: opencode-e2e
+
+on:
+  push:
+    branches-ignore: [ci-results]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  OPENCODE_VERSION: "1.18.33"
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install OpenCode from npm
+        run: |
+          npm install -g "opencode-ai@${OPENCODE_VERSION}"
+          opencode --version
+
+      - name: Scenarios against the keyed fake gateway
+        id: fake
+        run: python opencode/tests/e2e.py --out e2e-out/fake
+
+      - name: Scenario 5 — real model (repo secret)
+        id: real
+        if: always()
+        env:
+          REAL_API_KEY: ${{ secrets.AWINO_API_KEY }}
+          REAL_BASE_URL: ${{ vars.AWINO_BASE_URL || 'https://openrouter.ai/api/v1' }}
+          REAL_MODEL: ${{ vars.AWINO_MODEL || 'openai/gpt-4o-mini' }}
+        run: |
+          if [ -z "$REAL_API_KEY" ]; then unset REAL_MODEL; fi
+          python opencode/tests/e2e.py --out e2e-out/real --real --only 5-
+
+      - name: Job summary
+        if: always()
+        run: |
+          cat e2e-out/fake/summary.md >> "$GITHUB_STEP_SUMMARY" || echo "no fake summary" >> "$GITHUB_STEP_SUMMARY"
+          cat e2e-out/real/summary.md >> "$GITHUB_STEP_SUMMARY" || echo "no real summary" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: opencode-e2e
+          path: e2e-out/
+          include-hidden-files: true
+
+      - name: Commit results summary to ci-results
+        if: always()
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FAKE: ${{ steps.fake.outcome }}
+          REAL: ${{ steps.real.outcome }}
+        run: |
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          REMOTE="https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          R="$RUNNER_TEMP/ci-results"
+          if git clone -q --depth 1 --branch ci-results "$REMOTE" "$R"; then :; else
+            git init -q "$R" && git -C "$R" checkout -q -b ci-results && git -C "$R" remote add origin "$REMOTE"
+          fi
+          D="$R/opencode-e2e"; mkdir -p "$D/runs"
+          {
+            echo "# opencode-e2e run ${GITHUB_RUN_ID}"
+            echo
+            echo "- run: ${RUN_URL}"
+            echo "- branch: ${GITHUB_REF_NAME}  commit: ${GITHUB_SHA}"
+            echo "- fake-gateway scenarios: ${FAKE}  real model: ${REAL}"
+            echo
+            cat e2e-out/fake/summary.md 2>/dev/null || echo "(no fake summary)"
+            echo
+            cat e2e-out/real/summary.md 2>/dev/null || echo "(no real summary)"
+          } > "$D/runs/${GITHUB_RUN_ID}.md"
+          cp "$D/runs/${GITHUB_RUN_ID}.md" "$D/latest.md"
+          cp e2e-out/fake/results.json "$D/runs/${GITHUB_RUN_ID}-fake.json" 2>/dev/null || true
+          cp e2e-out/real/results.json "$D/runs/${GITHUB_RUN_ID}-real.json" 2>/dev/null || true
+          cd "$R"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A && git commit -q -m "opencode-e2e ${GITHUB_RUN_ID}: fake=${FAKE} real=${REAL}"
+          for i in 1 2 3 4; do
+            git push -q origin ci-results && break
+            git pull -q --rebase origin ci-results || true
+            sleep $((i * 2))
+          done
