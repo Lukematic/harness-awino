@@ -19,9 +19,10 @@ validators, the judge panel, and the skill-synthesis pipeline.
 1. **Install the harness** (stdlib only, zero dependencies):
    ```sh
    git clone <your Lukematic/harness-awino remote>
-   cd harness-awino && pip install .
+   cd harness-awino && pip install ./prototype
    ```
-   Verify: `cd prototype && ./run_tests.sh` (295 tests, all green).
+   Verify: `cd prototype && ./run_tests.sh`. The MCP server's own tests are
+   in `prototype/tests/test_mcp.py`.
 
 2. **Register the MCP server.** Merge `mcp.json` into your client's MCP
    settings (the `mcpServers` object), replacing

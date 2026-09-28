@@ -39,8 +39,13 @@ Replies can be long: output is capped at 8,192 tokens by default. Set the
 2. It proposes a plan: the smallest version that works first (the "Honda"),
    plus a bigger idea pitched but not built (the "Bugatti"). Approve the plan
    and the files it may touch.
-3. Each file write shows a card with the diff. Choose **Approve**, **View
-   diff**, **Always allow** (for this session) or **Deny**.
+3. After you approve the plan, writes to those files and commands that stay
+   in your workspace run without asking (autopilot). Each one is logged.
+   Risky actions still show a card with the diff or command: deleting,
+   `sudo`, force flags, `git push`/`reset`, installs, network tools, and
+   anything outside the workspace. Choose **Approve**, **View diff**,
+   **Always allow** (for this session) or **Deny**. To be asked every time,
+   turn off the `awino.autoApproveAfterPlan` setting.
 4. When code changes, Awino runs your project's `test` and `lint` recipes
    itself. A failure goes back to building, and a passing run goes to an
    independent verifier. The model's own "it works" is never enough.
@@ -62,7 +67,8 @@ It never writes these without a yes and never overwrites a file. Choose
 
 Each piece of work is a **story**: a problem, a plan, done criteria and a
 branch. The *Stories* panel lists them with time spent. Closing a story puts
-it on the **brag board** and produces a **receipt**:
+it on the **brag board** (the task, the day it closed, the result and its
+proof label) and produces a **receipt**:
 
 - **Promise:** the done criteria and the planned steps, with time forecasts.
 - **Proof:** commands and exit codes, the verifier's verdict, the files
@@ -86,14 +92,21 @@ you. After three clean stories it is marked learned and drops out.
 
 | Word | Meaning |
 |---|---|
-| Phase | Where the work is: Define → Plan → Build → Verify → Review → Ship. Each step has a gate. |
-| Mode | What Awino may do right now (read only, plan, write, verify, ship). Shown in the header. |
-| Stance | How the model is reasoning this turn (e.g. challenge, first principles, premortem). |
-| Floor | A check that always runs in a phase, whatever the model chooses. |
+| Phase | Where the work is: Define → Plan → Build → Verify → Review → Ship. Each move has a gate. |
+| Permission level | What Awino may do right now: observe (read only), plan, build (write), verify, ship. Chosen in code, never by the model. |
+| Mode | A working style in the Modes view, such as Interview, Architect or Code. Each phase has a default. It never adds permissions. |
+| Stance | How the model is reasoning this turn (e.g. steel-man, first principles, premortem). |
+| Floor | A check that always runs in a phase, whatever stance the model chooses. |
+| Skill | A pinned piece of know-how (e.g. TDD, debugging) added to the model's instructions. |
 | Honda / Bugatti | The smallest version that works / the ambitious idea, pitched but not built. |
+| Story | One piece of work: problem, plan, done criteria, branch. |
+| Brag board | Closed stories, with date, outcome and time spent. |
 | Receipt | Promise → proof → lesson for a closed story. |
 | Lesson | Something a receipt taught, carried into later turns. |
 | Approval | A card asking before any write or command with side effects. |
+
+The full glossary and every command and setting are in the
+[extension README](../integrations/vscode/extension/README.md).
 
 ## 8. Where your data lives
 
@@ -107,6 +120,7 @@ don't edit it by hand. API keys live only in VS Code SecretStorage.
 | You see | Do this |
 |---|---|
 | Replies are canned or say "echo" | You're on the Echo demo provider. Connect a model (step 2). |
+| "not connected" | Check the **Awino** output channel. If Python is missing, choose **Locate Python...** or set `awino.pythonPath`. |
 | "HTTP 401" / "unauthorized" | The key is missing or wrong. Run **Awino: Set API Key**, then reconnect. |
 | "The last session stopped in the middle of write_file …" | Check the file, then reply `applied` or `not applied` (not applied re-runs it). |
 | "The session journal had a corrupt line …" | Awino kept everything before that line and saved the full file next to it. Nothing else is needed. |
@@ -118,9 +132,24 @@ don't edit it by hand. API keys live only in VS Code SecretStorage.
 pip install ./prototype        # installs the `awino` command
 awino init                     # set up the current folder
 awino status                   # mission, phase, next action
+awino plan                     # task list: what's next, what's blocked
 awino stories                  # stories and the brag board
-python prototype/chat.py       # interactive chat (echo, or AWINO_BACKEND=local for Ollama)
+awino rigor                    # rigor score for the latest mission
+awino chat                     # interactive chat; /help lists commands
 ```
 
-The command line connects to Echo or a local Ollama model. Hosted providers
-are configured in the VS Code extension.
+Without installing, run `python prototype/cli.py <command>` instead.
+
+`awino init` is more eager than the extension. Besides `.awino/`, it creates
+a `.venv`, a `justfile`, `README.md`, `lessons.md`, `spec/`, `docs/research/`
+and `docs/archive/` if they are missing. Existing files are kept.
+
+The command line talks to Echo (the default) or a local Ollama model:
+
+```sh
+AWINO_BACKEND=local OLLAMA_MODEL=qwen2.5:7b awino chat
+```
+
+`OLLAMA_HOST` sets the Ollama address. The default model is `qwen2.5:1.5b`.
+Hosted providers (OpenAI-compatible, Anthropic, Bedrock) work only through
+the VS Code extension.

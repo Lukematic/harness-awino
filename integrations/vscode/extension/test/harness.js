@@ -15,7 +15,7 @@
  *
  * This exercises the exact SidecarClient class the extension uses. The GUI
  * half (webview rendering, modals) is compiled-not-run — a headless VS Code
- * run is out of scope in this environment (see EXTENSION_SPEC.md §11).
+ * run is out of scope in this environment (see docs/history/EXTENSION_SPEC.md §11).
  */
 "use strict";
 const assert = require("assert");

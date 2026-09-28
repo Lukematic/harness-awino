@@ -5,7 +5,7 @@ translates between that and each provider's native tool-calling dialect:
 
 - to_provider(provider, schemas): schemas -> provider-native definitions
 - from_provider(provider, raw_calls): native calls -> normalized ToolCalls
-- results_to_provider(provider, calls): normalized results -> native messages
+- merge_native_calls(turn, native, offered): merge normalized calls into a turn
 
 Providers: "openai" | "ollama" (OpenAI-compatible), "anthropic", "bedrock".
 
@@ -117,49 +117,6 @@ def from_provider(provider: str, raw_calls: list) -> list[tuple[str, dict]]:
             except KeyError as ex:
                 raise NormalizationError(f"bad bedrock toolUse block: {ex}") from ex
             out.append((name, _coerce_args(args)))
-    return out
-
-
-def native_ids(provider: str, raw_calls: list) -> list[str | None]:
-    """Recover provider-native call ids parallel to from_provider's output."""
-    p = _require_provider(provider)
-    ids: list[str | None] = []
-    if p in ("openai", "ollama"):
-        for c in raw_calls or []:
-            ids.append(c.get("id") if isinstance(c, dict) else None)
-    elif p == "anthropic":
-        for b in raw_calls or []:
-            ids.append(b.get("id") if isinstance(b, dict)
-                       and b.get("type") == "tool_use" else None)
-    else:  # bedrock
-        for b in raw_calls or []:
-            tu = b.get("toolUse") if isinstance(b, dict) else None
-            ids.append(tu.get("toolUseId") if isinstance(tu, dict) else None)
-    return ids
-
-
-def results_to_provider(provider: str,
-                        calls: list[tuple[str | None, str, dict]]) -> list[dict]:
-    """(native_call_id, tool_name, normalized_result_summary) -> native messages.
-
-    The summary is the harness-rendered tool-result text (already truncated
-    by the loop). Tool output is untrusted data: it travels in tool messages
-    only, never inside the contract block.
-    """
-    p = _require_provider(provider)
-    out = []
-    for nid, _name, summary in calls:
-        text = summary if isinstance(summary, str) else json.dumps(summary, default=str)
-        if p in ("openai", "ollama"):
-            out.append({"role": "tool", "tool_call_id": nid, "content": text})
-        elif p == "anthropic":
-            out.append({"role": "user",
-                        "content": [{"type": "tool_result", "tool_use_id": nid,
-                                     "content": text}]})
-        else:  # bedrock
-            out.append({"role": "user",
-                        "content": [{"toolResult": {"toolUseId": nid,
-                                                   "content": {"text": text}}}]})
     return out
 
 

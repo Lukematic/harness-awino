@@ -11,6 +11,10 @@ not a mode.
 
 ## Modes (5) — prototype `contract.py::MODES`
 
+User docs call these **permission levels**, to keep them apart from the
+working modes in the VS Code Modes view (interview, planner, architect, …)
+and the role lenses in `modes.py`.
+
 | Mode | Tools granted | Consequential | Routed when |
 |---|---|---|---|
 | observe | reads + search/symbols/git/diagnostics + set_mission, story_plan, stretch_goal | — | teach intent (Feynman); IDLE default |
@@ -45,7 +49,7 @@ runs too. The triggers below are the fallback when nothing is declared.
 ## Skills (53) — prototype `contract.py::SKILLS` (harness-injected bodies)
 
 Pinned by sha256 in `prototype/skills/manifest.json` and verified at load by
-`prototype/skills.py::SkillStore`. The model never fetches them; the router
+`prototype/skills/__init__.py::SkillStore`. The model never fetches them; the router
 injects full bodies into the contract block.
 
 **Core loop skills (11):** mission-definition, discovery, decision-analysis,
@@ -97,7 +101,7 @@ ship → ship/premortem; new-task → plan/planning-grill; else floor default.
 
 ## The contract loop — prototype `contract_loop.py` (enforcement, not capability)
 
-Two nested loops (BUILD_SPEC §4). The outer loop is the mission elevator
+Two nested loops (docs/history/BUILD_SPEC.md §4). The outer loop is the mission elevator
 (DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP; phase gates in `loop.py`).
 The inner loop is per-turn compile → validate → execute: every turn compiles
 the objective→mission→tools→progress contract from code-owned state, checks
@@ -176,7 +180,7 @@ model this rebuild replaces. Mapping to the loop-owner:
 | awino-rpi | `rpi` skill (loop-owner multi-file workflow) | **done (2026-09-25)** — file set named in SCOPE, sequenced edits, verify each file, integrate; works through the contract/mission machinery, never around it |
 | awino-delegate | `Loop.fanout` — parallel workers, atomic overlap/budget preflight, fail-closed synthesis barrier | **done (merged)** |
 | awino-ralph | the harness loop itself | superseded |
-| awino-memory | durable-memory skill + `prototype/memory_store.py` (MemPalace cherry-pick: local-first JSONL, chunking, content-hash dedup) | **done (2026-09-25)** |
+| awino-memory | durable-memory skill + `prototype/memory_store.py` (MemPalace cherry-pick: local-first JSONL, chunking, content-hash dedup) | **built, not wired (2026-09-25)**: no tool or loop code calls `MemoryStore` yet |
 | awino-visualize | — | gap |
 | awino-reproducibility | — | gap |
 | awino-self-update | — | gap |

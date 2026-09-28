@@ -272,8 +272,3 @@ def schemas_for(names: list[str]) -> list[dict]:
         out.append({"name": n, "description": s["description"],
                     "parameters": s["parameters"]})
     return out
-
-
-def check_schema_coverage() -> list[str]:
-    """Tools in TOOL_DEFS with no schema entry (dev-time invariant check)."""
-    return [n for n in TOOL_DEFS if n not in TOOL_SCHEMAS]

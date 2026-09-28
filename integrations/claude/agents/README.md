@@ -1,7 +1,7 @@
 # agents
 
-A.W.I.N.O. integration component.
+`awino-loop-owner.md` is a Claude Code subagent definition. It wires in the
+Awino MCP tools so Claude Code can hand a mission to a loop-owner subagent.
 
-See the parent README and EXTENSION_SPEC.md for architecture.
-Scope #5 (housekeeping/compaction/FAIR) applies: this directory is part
-of the standardized layout with manifest discipline.
+Install: copy it to `~/.claude/agents/` or `<project>/.claude/agents/`.
+See [../README.md](../README.md) for the full Claude Code setup.

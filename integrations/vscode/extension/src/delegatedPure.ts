@@ -4,7 +4,7 @@
  * Kept free of the vscode module so the Node test suite can exercise
  * them without an extension host. The vscode-dependent application
  * itself lives in nativeApply.ts / awinoTerminal.ts and is proven by
- * the Windows GUI workflow (see NATIVE_APPLY_GUI_ASSERTIONS.md).
+ * the Windows GUI workflow (see docs/history/NATIVE_APPLY_GUI_ASSERTIONS.md).
  */
 import * as crypto from "crypto";
 import * as path from "path";

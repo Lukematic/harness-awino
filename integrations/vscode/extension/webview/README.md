@@ -1,18 +1,19 @@
 # webview
 
-Unbundled webview UIs — plain HTML + JS, no build step, no framework.
+The extension's web UIs. Plain HTML and JavaScript: no build step, no
+framework. The extension host serves them with a strict Content Security
+Policy.
 
-- `chat.html` / `chat.js` — the mission chat. Renders every §4 sidecar event:
-  turn results (said text, phase/mode/persona chips, tool results), approval
-  cards (tool, args, unified diff for `write_file`, cwd-resolved shell
-  targets with an out-of-workspace flag for `run_command`, Approve/Deny), compaction
-  proposals, errors, warnings. Sends only the §4 command verbs
-  (`user_message`, `approve`, `stop`) back to the extension host. With no
-  active mission it shows the interview banner instead of a blank chat.
-- `models.html` / `models.js` — the Models & Providers panel: provider
-  dropdown (echo/ollama/openai-compatible/anthropic), endpoint, model,
-  timeout, API-key fields (SecretStorage only, never logged), Save &
-  Reconnect, and the per-project environment switcher.
+| File | What it does |
+|---|---|
+| `chat.html`, `chat.js` | Mission Chat. Renders sidecar events: replies (with a small built-in markdown renderer), streaming text, tool results as one plain line, approval cards with diffs and shell targets, receipt cards, errors. Also the first-run setup card. Sends your messages, approval decisions and Stop to the extension host. |
+| `models.html`, `models.js` | Models & Providers panel: provider (echo, ollama, openai, anthropic, bedrock), endpoint, model with "Fetch models", timeout, key status and the environment switcher. Keys go to SecretStorage through the extension host. |
+| `setup-shared.js` | Shared by both: the provider list (docs and key links), which providers need a key, and model hints. Holds no secrets. |
 
-The webview never constructs turns, never calls tools, never edits files —
-the harness loop runs in the Python sidecar, not here.
+The webview never builds turns, calls tools or edits files. The loop runs
+in the Python sidecar.
+
+Tests: `../test/chatSetup.js`, `streaming.js`, `markdown.js`,
+`receiptCard.js`, `toolSummary.js`, `harnessReply.js`, `modelsPanel.js`,
+`setupShared.js` and `cspPlaceholders.js` run these files against a small
+DOM shim in node.

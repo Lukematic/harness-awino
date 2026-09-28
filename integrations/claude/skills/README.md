@@ -1,7 +1,7 @@
 # skills
 
-A.W.I.N.O. integration component.
+Claude Code Agent Skills. `awino-loop-owner/SKILL.md` teaches the loop-owner
+discipline: contract, validation, approvals and evidence-based completion.
 
-See the parent README and EXTENSION_SPEC.md for architecture.
-Scope #5 (housekeeping/compaction/FAIR) applies: this directory is part
-of the standardized layout with manifest discipline.
+Install: copy `awino-loop-owner/` to `~/.claude/skills/` or
+`<project>/.claude/skills/`. See [../README.md](../README.md).

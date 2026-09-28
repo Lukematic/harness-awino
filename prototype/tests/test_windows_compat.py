@@ -9,7 +9,7 @@ ensure_venv returning Scripts/ on nt, scaffolded justfile recipes containing
 no Unix-only shell syntax, and run_command prepending the venv Scripts dir
 to PATH with the Windows separator.
 
-NOT proven here: a real Windows run. See WINDOWS_TEST.md for the one-command
+NOT proven here: a real Windows run. See docs/testing/windows.md for the one-command
 check the user runs on their own machine.
 """
 import os
@@ -174,7 +174,7 @@ class CwdIndependenceTest(unittest.TestCase):
 
     Regression: several verifier tests resolved evidence links against ".",
     so they passed from prototype/ but failed from the repo root — exactly
-    how a Windows user runs the suite (see WINDOWS_TEST.md)."""
+    how a Windows user runs the suite (see docs/testing/windows.md)."""
 
     def test_verdict_evidence_resolves_without_cwd(self):
         from verify import compute_verdict

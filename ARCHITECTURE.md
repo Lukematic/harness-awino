@@ -33,9 +33,10 @@ while not state.done:
                                                # mode, open questions, progress
 
     # --- ROUTING: mode x stance x skill (code, not model choice) ---
-    mode   = route_mode(contract)               # permission profile
-    stance = route_stance(user_input, floor)    # reasoning procedure + rubric
-    skills = route_skills(contract)             # injected bodies, SHA-256 pinned
+    # stances.route_triple(snapshot, text, kind) returns all three:
+    mode   = ...   # permission profile, capped by the phase
+    stance = ...   # reasoning procedure + rubric (model may pick within limits)
+    skills = ...   # injected bodies, SHA-256 pinned
 
     # --- MODEL CALL: contract injected fresh, output typed ---
     turn = backend.call(system=base + render(contract), messages=history,
@@ -80,21 +81,24 @@ Full inventory: `CAPABILITY_REGISTRY.md`.
 ## 5. Beyond the single turn
 
 - **Mission lifecycle** (DEFINE → PLAN → BUILD → VERIFY → REVIEW → SHIP) is graph topology in `loop.py` — a turn cannot skip verification because verification *is* the path. `done_claim=true` with unverified criteria never terminates the loop.
-- **Approvals** (`loop.py`: `approve`, `deny`, `_has_valid_approval`): a consequential call pauses the turn; its approval is bound to the exact arguments, the mission revision and the scope epoch, and a scope change marks pending approvals stale. Not yet bound to file content hashes (plan T21).
+- **Approvals** (`loop.py`: `approve`, `deny`, `_has_valid_approval`): a consequential call pauses the turn; its approval is bound to the exact arguments, the mission revision and the scope epoch, and a scope change marks pending approvals stale. Not yet bound to file content hashes (plan T21). **Session autopilot**: after the plan is approved with its scope, writes inside the scope and workspace-only commands are auto-approved and journaled as `auto_approved`; anything `approval_targets.destructive_reason` flags (deletes, sudo, force flags, git history changes, installs, network, redirects, expansion, out-of-workspace paths) still asks. Off after a new mission or scope change; the engine default is off, the sidecar turns it on (`awino.autoApproveAfterPlan`).
+- **Setup autopilot** (`setup_autopilot.py`): proposes a justfile, `.gitignore` lines, `.env.example` and `.editorconfig`; writes outside `.awino/` only with consent and never overwrites.
+- **Crash recovery** (`state.py`, `loop.py`): the journal is hash-chained and lock-protected; interrupted reads re-run, interrupted writes ask "applied / not applied", a corrupt tail is set aside and the valid prefix kept.
 - **Repair loop** (`loop.py::_check_elevator_gates`): a write on BUILD moves to VERIFY; the newest test run on VERIFY decides — non-zero routes back to BUILD (`verify_failed`, three identical failures trip the three-strike breaker), zero spawns the independent verifier, whose pass unlocks REVIEW. `task_update` closes plan tasks only with an existing evidence file. Proven end to end in `tests/test_e2e_mission.py` and `proof/demo-agentic-learning/`.
 - **Stories** (`story.py`): one story per session's issue; `story_plan` (model tool) writes the Honda-first six-part plan and seeds the task DAG; the BUILD gate needs the story's problem, approach and done criteria; closing is the user's call and lands it on the brag board. `stretch_goal` parks a Need/Approach/Benefits/Competition pitch with a revisit date.
 - **Receipts** (`receipt.py`): on `story_close`, promise → proof → lesson is assembled from the story, its DAG tasks and the journal events inside the story's window; written to `registry/receipts/`. `calibration_history` feeds past forecast accuracy back into `story_plan`.
 - **Lessons** (`lessons.py`): receipts → lessons keyed by scenario (merged, ledgered) → `## LESSONS` in every turn contract via the journaled `lessons_offered` event → judged by later receipts (escalate on recurrence after shown; learned after 3 clean closes).
 - **Project memory**: session journals, stories and the registry live in `<project>/.awino/`, shared by the CLI and the extension; journals are gitignored.
 - **Fan-out** (`loop.py`): parallel workers with atomic overlap/budget checks, a fail-closed synthesis barrier, and per-worker model routing (code-owned routing map per request; unknown backend name → `UnknownBackendError` before any worker spawns). Known limits: no tournament, no loop-until-done (roadmap as of 2026-09-25: not implemented).
-- **Skill synthesis** (`synthesis.py`): learnings graduate to skills only through sandbox verification → SHA-256 pin → admit-on-pass. Injected learnings are refused; tampered skills raise at load.
+- **Skill synthesis** (`synthesis.py`): learnings graduate to skills only through sandbox verification → SHA-256 pin → admit-on-pass. Injected learnings are refused; tampered skills raise at load. Admitted skills go to a project registry and can be assumed as personas; the router does not pick them automatically.
+- **Not wired in**: `memory_store.py` (durable JSONL memory) has tests but no caller, and no tool exposes it, although the `durable-memory` skill describes it.
 - **Discovery interview**: fires on new tasks; the planning grill enforces one-question-at-a-time and ask-XOR-advance, and rejects question-drips and plan-rushes.
 
 ## 6. Surfaces (adapters, not separate loops)
 
 One enforced loop lives in the Python sidecar. Surfaces are adapters:
 
-- **VS Code extension** (`integrations/vscode/extension/`): the product surface — chat, contract view, journal, skills, modes, providers. Spawns the sidecar; cannot bypass the harness. The 0.5.x line bundles the Python runtime (zero setup).
+- **VS Code extension** (`integrations/vscode/extension/`): the product surface — chat, contract view, journal, skills, modes, providers. Spawns the sidecar; cannot bypass the harness. The extension bundles a Python runtime for Windows x64, Linux x64 and Apple silicon; Intel Macs need Python 3.10+.
 - **MCP server** (`integrations/mcp-server/`): standalone, client-agnostic — contract compiler, turn validator, judge panel, skill synthesis.
 - **Kilo / Claude Code integrations**: discipline-grade. Kilo owns its loop (the model could skip the harness tools); the Claude PreToolUse hook is inert until a project opts in via `.awino/`. `awino chat` remains the only full no-bypass guarantee.
 - **Operator console**: the CLI inspects state, replays the event log, approves/denies gated actions, switches backends.
@@ -114,4 +118,4 @@ Conformance ladder: Context → Interactive → Autonomous-local → Hosted. See
 
 ## 8. Verification
 
-`prototype/run_tests.sh` — 909 tests (as of 0.7): routing, enforcement, judges, approvals, recovery, skills, rigor, osmani, fan-out (incl. per-worker routing), synthesis, adversarial proof, patch_file (20: strict apply, named refusals, atomicity, mode gating, journaling), secret redaction (24), approval-target visibility (20), SigV4 (26: 20 stdlib + 6 botocore cross-validation), durable memory (14), debug+rpi (10), sidecar temp-dir cleanup (4). `proof/proof_session.py` drives a hostile model through a full mission and writes `TRANSCRIPT.md` with the event-log evidence for every blocked attack. `proof/demo-agentic-learning/run_mission.py` drives the real sidecar through a literature-review mission (scripted model) and reports which concepts fired; `record_video.js` replays it into the real chat UI.
+`prototype/run_tests.sh` — about 1,000 tests, under 2 minutes (CI runs them on every push): routing, enforcement, judges, approvals, recovery, skills, rigor, osmani, fan-out (incl. per-worker routing), synthesis, adversarial proof, patch_file (20: strict apply, named refusals, atomicity, mode gating, journaling), secret redaction (24), approval-target visibility (20), SigV4 (26: 20 stdlib + 6 botocore cross-validation), durable memory (14), debug+rpi (10), sidecar temp-dir cleanup (4), plus model I/O, crash recovery, VERIFY recipes, setup autopilot, session autopilot policy, receipts and lessons. `proof/TRANSCRIPT.md` records an earlier run of a hostile model through a full mission, with the event-log evidence for every blocked attack (`proof/proof_session.py` no longer runs against the current flow; see `proof/README.md`). `proof/demo-agentic-learning/run_mission.py` drives the real sidecar through a literature-review mission (scripted model) and reports which concepts fired; `record_video.js` replays it into the real chat UI.

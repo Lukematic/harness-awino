@@ -2,6 +2,24 @@
 
 ## Unreleased — Receipts and lessons
 
+- **Autopilot after plan approval**: once you approve the plan and its
+  files, writes to those files and workspace-only commands run without a
+  card, each journaled as `auto_approved`. Deleting, `sudo`, force flags,
+  git history changes, installs, publishes, network tools, redirects,
+  shell expansion and out-of-workspace paths still ask
+  (`approval_targets.destructive_reason`). Off after a new mission or a
+  scope change. VS Code setting `awino.autoApproveAfterPlan` (default on).
+- **Brag board** entries are the task, the day it closed, the result and
+  the receipt's proof label. The six-part plan lives in the receipt, not
+  in `STORY.md`.
+- **Docs and cleanup**: specs, plans and hotfix notes moved to
+  `docs/history/`; the Windows checklist to `docs/testing/windows.md`.
+  Every code folder has a README. The extension README lists every
+  command and setting and adds troubleshooting and a glossary. Removed
+  dead code: `prototype/demo.py` (crashed on run), `prototype/skills.py`
+  (shadowed by the `skills/` package), and unused helpers in `rigor.py`,
+  `provider_tools.py`, `tool_schema.py` and `tools.py`.
+
 - **Team review 09-27** (docs/TEAM_REVIEW_2026-09-27.md): the model now
   sees tool output and can write past 1,024 tokens, and Anthropic tool calls
   authenticate; the journal is thread-safe and repairs itself; a crash

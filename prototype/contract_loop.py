@@ -1,6 +1,6 @@
 """The per-turn contract loop: compile -> check -> refuse.
 
-Two nested loops (BUILD_SPEC section 4, "The loop"):
+Two nested loops (docs/history/BUILD_SPEC.md section 4, "The loop"):
 
   OUTER LOOP = the mission elevator: DEFINE -> PLAN -> BUILD -> VERIFY
                -> REVIEW -> SHIP. Enforced by the phase gates in

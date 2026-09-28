@@ -16,7 +16,7 @@
  *   serializes tool calls.
  *
  * Needs the vscode API: compiled-not-run in Node tests, proven live by
- * the Windows GUI workflow (NATIVE_APPLY_GUI_ASSERTIONS.md).
+ * the Windows GUI workflow (docs/history/NATIVE_APPLY_GUI_ASSERTIONS.md).
  */
 import * as vscode from "vscode";
 import { stripAnsi } from "./delegatedPure";
