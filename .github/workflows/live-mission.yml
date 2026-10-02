@@ -56,6 +56,18 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Probe the endpoint (status and headers only)
+        if: inputs.provider == 'openai' && startsWith(inputs.endpoint, 'https://models.github.ai/')
+        env:
+          GH_MODELS_TOKEN: ${{ github.token }}
+          IN_ENDPOINT: ${{ inputs.endpoint }}
+          IN_MODEL: ${{ inputs.model }}
+        run: |
+          curl -sS -o /tmp/probe-body -D - -X POST "$IN_ENDPOINT" \
+            -H "Authorization: Bearer $GH_MODELS_TOKEN" -H "Content-Type: application/json" \
+            -d "{\"model\":\"$IN_MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"Say ok\"}],\"max_tokens\":5}" || true
+          head -c 400 /tmp/probe-body; echo
+
       - name: Run the mission against the live model
         env:
           AWINO_API_KEY: ${{ secrets.AWINO_API_KEY }}

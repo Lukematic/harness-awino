@@ -904,6 +904,7 @@ class OpenAICompatibleBackend(OllamaBackend):
                 raw = resp.read()
                 ctype = resp.headers.get("Content-Type", "")
                 status = resp.status
+                final_url = resp.geturl()
         except urllib.error.HTTPError as e:
             # The provider's own reason (rate limit, unknown model, too many
             # tokens); response bodies never carry our key.
@@ -922,7 +923,9 @@ class OpenAICompatibleBackend(OllamaBackend):
         except ValueError:
             raise RuntimeError(
                 f"endpoint HTTP {status} sent a non-JSON reply "
-                f"({ctype or 'no content type'}, {len(raw)} bytes): "
+                f"({ctype or 'no content type'}, {len(raw)} bytes"
+                + (f", redirected to {final_url}" if final_url != self.chat_url else "")
+                + "): "
                 + raw.decode(errors="replace").strip()[:300]) from None
 
     def _signed_headers(self, body: bytes) -> dict:
