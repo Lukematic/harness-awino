@@ -6,9 +6,10 @@
 # extension runs. The report records what fired and what did not — it never
 # forces a pass.
 #
-# Setup (once): Settings -> Secrets and variables -> Actions -> New secret
-#   AWINO_API_KEY      for provider "openai" (any OpenAI-compatible endpoint:
-#                      OpenRouter, OpenAI, your gateway)
+# No key needed by default: the endpoint defaults to GitHub Models, which
+# this workflow calls with its own GITHUB_TOKEN (permissions: models: read).
+# Other providers need a secret (Settings -> Secrets and variables -> Actions):
+#   AWINO_API_KEY      for provider "openai" (OpenRouter, OpenAI, your gateway)
 #   ANTHROPIC_API_KEY  for provider "anthropic"
 # Run: Actions -> live-mission -> Run workflow -> fill provider/endpoint/model.
 # Output: the "live-mission" artifact (report.md, the files the model wrote,
@@ -26,18 +27,23 @@ on:
         type: choice
         options: [openai, anthropic]
       endpoint:
-        description: "Base URL (openai provider), e.g. https://openrouter.ai/api/v1"
+        description: "Base URL (openai provider). Default: GitHub Models (free, no key)"
         required: false
-        default: https://openrouter.ai/api/v1
+        default: https://models.github.ai/inference/chat/completions
       model:
         description: "Model id at that endpoint"
         required: true
+        default: openai/gpt-4.1-mini
       flow:
         description: "quick (Quick path + a worktree agent), mission (the agentic-learning mission), or both"
         required: true
         default: quick
         type: choice
         options: [quick, mission, both]
+
+permissions:
+  contents: read
+  models: read
 
 jobs:
   live-mission:
@@ -58,7 +64,13 @@ jobs:
           IN_ENDPOINT: ${{ inputs.endpoint }}
           IN_MODEL: ${{ inputs.model }}
           IN_FLOW: ${{ inputs.flow }}
+          GH_MODELS_TOKEN: ${{ github.token }}
         run: |
+          # GitHub Models: the workflow token is the key (it is only ever
+          # sent to models.github.ai). Its per-request output cap is 4000.
+          if [ "$IN_PROVIDER" = "openai" ] && [[ "$IN_ENDPOINT" == https://models.github.ai/* ]]; then
+            export AWINO_API_KEY="$GH_MODELS_TOKEN" AWINO_MAX_TOKENS=4000
+          fi
           ARGS=(--provider "$IN_PROVIDER" --model "$IN_MODEL" --out live-out)
           if [ "$IN_PROVIDER" = "openai" ]; then ARGS+=(--endpoint "$IN_ENDPOINT"); fi
           if [ "$IN_FLOW" != "mission" ]; then

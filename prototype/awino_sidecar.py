@@ -903,7 +903,13 @@ class OpenAICompatibleBackend(OllamaBackend):
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 raw = resp.read()
         except urllib.error.HTTPError as e:
-            raise RuntimeError(f"endpoint HTTP {e.code}")
+            # The provider's own reason (rate limit, unknown model, too many
+            # tokens); response bodies never carry our key.
+            try:
+                why = e.read().decode(errors="replace").strip()[:300]
+            except Exception:  # noqa: BLE001
+                why = ""
+            raise RuntimeError(f"endpoint HTTP {e.code}" + (f": {why}" if why else ""))
         self.last_egress = {"destination": self.chat_url,
                             "bytes_out": len(data), "bytes_in": len(raw)}
         return json.loads(raw.decode())
