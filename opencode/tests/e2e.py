@@ -162,6 +162,11 @@ def s2_blocked_before_mission(c: Ctx):
 
 
 def s3_allowed_after_mission(c: Ctx):
+    code, out = c.run("empty criteria\n" + directive(calls=[
+        {"name": "set_mission", "args": {"objective": "Vague", "done_criteria": []}}],
+        reply="EMPTY"))
+    c.check("set_mission with no done criteria is refused",
+            not (c.dir / ".awino" / "mission.json").exists(), out[-400:])
     code, out = c.run("define then build\n" + directive(calls=[
         {"name": "set_mission", "args": {
             "objective": "Create hi.txt saying hello",

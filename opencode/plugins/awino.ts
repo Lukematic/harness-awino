@@ -143,7 +143,7 @@ export const Awino: Plugin = async ({ client, directory }) => {
 
     "experimental.chat.system.transform": async (input, output) => {
       const r = (input.sessionID && routes.get(input.sessionID)) || route("", hasMission())
-      output.system.push(stanceBlock(r))
+      output.system.push(`${stanceBlock(r)}\n- project directory: ${root} (create and edit files inside it; relative paths resolve here)`)
     },
 
     event: async ({ event }) => {
@@ -173,6 +173,11 @@ export const Awino: Plugin = async ({ client, directory }) => {
           done_criteria: tool.schema.array(tool.schema.string().min(1)).min(1).describe("Checkable criteria that prove the objective is met"),
         },
         async execute(args) {
+          // The schema's min(1) is not enforced at runtime (qwen2.5:3b sent [] and it went through).
+          const criteria = (args.done_criteria ?? []).map((c) => c.trim()).filter(Boolean)
+          if (!args.objective?.trim() || !criteria.length)
+            throw new Error("A.W.I.N.O.: a mission needs an objective and at least one checkable done criterion (e.g. \"hello.txt contains hello\"). Call set_mission again with them.")
+          args.done_criteria = criteria
           fs.mkdirSync(awinoDir, { recursive: true })
           const m = { objective: args.objective, done_criteria: args.done_criteria, created: new Date().toISOString() }
           fs.writeFileSync(missionFile, JSON.stringify(m, null, 2) + "\n")
