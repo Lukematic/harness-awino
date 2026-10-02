@@ -18,6 +18,7 @@ see it. Bigger work ("plan this") uses the mission flow instead.
 from __future__ import annotations
 
 import json
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -30,6 +31,15 @@ MAX_STEPS = 40
 MAX_TEST_FIXES = 2
 RESULT_CHARS = 12000
 PARALLEL = 6
+# A reply that shows code or promises an edit, with no edit made: weaker
+# models narrate changes instead of calling the tools. One nudge, like
+# Cline's "you did not use a tool".
+_CLAIMS_EDIT = re.compile(
+    r"```|\bI (?:will|'ll|have) (?:now )?(?:create|write|add|update|modif|chang|fix)"
+    r"|review the diffs?\b", re.I)
+NUDGE = ("You described file changes but did not make them: nothing was "
+         "written. Make the edits now with write_file or patch_file. If no "
+         "change is needed, say so plainly without code blocks.")
 
 SYSTEM = """You are Awino, a coding agent working inside the user's project in VS Code.
 Workspace: {root}
@@ -182,6 +192,7 @@ class QuickSession:
         self.messages.append({"role": "user", "text": user_text})
         tools = self._tools()
         fixes = 0
+        nudged = False
         tests_note = ""
         final = ""
         steps = 0
@@ -211,6 +222,12 @@ class QuickSession:
                            "text": text + ("\n\n" if calls else "")})
             if not calls:
                 final = text
+                if (not nudged and _CLAIMS_EDIT.search(text)
+                        and not self._changed_files(turn_id)):
+                    nudged = True
+                    self.loop.state.record("quick_nudged", {"turn_id": turn_id})
+                    self.messages.append({"role": "user", "text": NUDGE})
+                    continue
                 if self._changed_files(turn_id) and not tests_note:
                     res = self._run_tests(turn_id)
                     if res is None:

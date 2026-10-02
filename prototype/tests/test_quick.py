@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from backends import ScriptedBackend  # noqa: E402
 from common import make_loop  # noqa: E402
-from quick import QuickSession, project_rules  # noqa: E402
+from quick import NUDGE, QuickSession, project_rules  # noqa: E402
 
 
 def session(script, decisions=None):
@@ -111,6 +111,23 @@ class QuickLoopTest(unittest.TestCase):
         self.assertIn("FAIL want 2", feedback[0])
         self.assertTrue(r["said"].startswith("Fixed."))
         self.assertIn("Tests passed: make test", r["said"])
+
+    def test_narrated_edit_gets_one_nudge(self):
+        q, loop, events, asked = session([
+            {"text": "I will create greet.py:\n```python\ndef greet(): ...\n```"},
+            {"tool_calls": [call("write_file", path="greet.py", content="def greet():\n    pass\n")]},
+            {"text": "Created greet.py."}])
+        r = q.run("add greet.py", "q1")
+        self.assertTrue((loop.sandbox.root / "greet.py").is_file())
+        self.assertTrue(r["said"].startswith("Created greet.py."))
+        self.assertEqual(sum(1 for m in q.messages if m.get("text") == NUDGE), 1)
+
+    def test_nudge_happens_at_most_once(self):
+        q, loop, events, asked = session([
+            {"text": "```python\nx = 1\n```"}, {"text": "```python\nx = 1\n```"}])
+        r = q.run("show me x", "q1")
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(sum(1 for m in q.messages if m.get("text") == NUDGE), 1)
 
     def test_model_error_is_explained_not_crashed(self):
         class Boom:
