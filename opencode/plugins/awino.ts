@@ -177,7 +177,7 @@ export const Awino: Plugin = async ({ client, directory }) => {
           const m = { objective: args.objective, done_criteria: args.done_criteria, created: new Date().toISOString() }
           fs.writeFileSync(missionFile, JSON.stringify(m, null, 2) + "\n")
           journal({ kind: "mission", objective: args.objective })
-          return `Mission set: ${args.objective}\nDone when:\n${args.done_criteria.map((c) => `- ${c}`).join("\n")}\nFile edits are now allowed.`
+          return `Mission set: ${args.objective}\nDone when:\n${args.done_criteria.map((c) => `- ${c}`).join("\n")}\nFile edits are now allowed. Continue with the task now: make the changes, then check them against the done criteria.`
         },
       }),
 

@@ -402,6 +402,9 @@ def main():
                   + ("" if ch["ok"] else f"  -- {ch['detail'][:300]}"), flush=True)
         for n in r.get("notes", []):
             print(f"   note: {n}", flush=True)
+        if not r["passed"]:
+            t = (c.out / "transcript.txt").read_text()
+            print(f"   --- transcript tail ({name}) ---\n{t[-6000:]}\n   --- end ---", flush=True)
     srv.shutdown()
     ver = subprocess.run([OPENCODE, "--version"], capture_output=True, text=True)
     (out / "results.json").write_text(json.dumps(
