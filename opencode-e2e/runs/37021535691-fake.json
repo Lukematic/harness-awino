@@ -1,0 +1,236 @@
+{
+  "opencode": "1.18.33",
+  "results": [
+    {
+      "name": "1-bearer-key",
+      "passed": true,
+      "checks": [
+        {
+          "check": "run exits 0",
+          "ok": true,
+          "detail": "exit 0"
+        },
+        {
+          "check": "model was called",
+          "ok": true,
+          "detail": "1 POSTs"
+        },
+        {
+          "check": "every request carried Bearer test-key",
+          "ok": true,
+          "detail": "[true]"
+        },
+        {
+          "check": "requests streamed",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "check": "reply reached the CLI",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "check": "wrong key: gateway saw unauthenticated requests",
+          "ok": true,
+          "detail": "[false]"
+        },
+        {
+          "check": "wrong key: no reply reached the CLI",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "2-write-blocked-before-mission",
+      "passed": true,
+      "checks": [
+        {
+          "check": "write tool was offered to the model",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "check": "hi.txt NOT written",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "check": "block reason returned to the model",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "check": ".awino/mission.json NOT forged via write",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "3-write-allowed-after-set_mission",
+      "passed": true,
+      "checks": [
+        {
+          "check": "set_mission with no done criteria is refused",
+          "ok": true,
+          "detail": "and at least one checkable done criterion (e.g. \"hello.txt contains hello\"). Call set_mission again with them.\n\n--- stderr ---\n\u001b[0m\n> awino \u00b7 fake-model\n\u001b[0m\n\u001b[0m\u2717 \u001b[0mset_mission {\"objective\":\"Vague\",\"done_criteria\":[]} failed\n\u001b[91m\u001b[1mError: \u001b[0mA.W.I.N.O.: a mission needs an objective and at least one checkable done criterion (e.g. \"hello.txt contains hello\"). Call set_mission again with them.\n"
+        },
+        {
+          "check": "set_mission offered as a tool",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "check": ".awino/mission.json written by set_mission",
+          "ok": true,
+          "detail": "{\n  \"objective\": \"Create hi.txt saying hello\",\n  \"done_criteria\": [\n    \"hi.txt exists\",\n    \"hi.txt contains hello\"\n  ],\n  \"created\": \"2026-10-02T14:41:25.584Z\"\n}\n"
+        },
+        {
+          "check": "mission holds objective + done criteria",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "check": "hi.txt written after mission",
+          "ok": true,
+          "detail": "hello"
+        },
+        {
+          "check": "run exits 0",
+          "ok": true,
+          "detail": "exit 0"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "4-story_close-receipt-and-brag",
+      "passed": true,
+      "checks": [
+        {
+          "check": "story_close offered as a tool",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "check": "receipt .md written",
+          "ok": true,
+          "detail": "2026-10-02-say-hello-mur2mrxo.md"
+        },
+        {
+          "check": "receipt has promise + proof",
+          "ok": true,
+          "detail": "# Receipt: Say hello\n\nClosed 2026-10-02 \u00b7 EVIDENCE LISTED (not re-run by the harness)\n\n## Promise\n\n**Objective:** fixture mission\n\nDone criteria:\n- hi.txt exists\n\n## Proof\n\nEvidence:\n- cat hi.txt -> hello\n\nFiles written during the mission:\n- (none recorded)\n\n## Outcome\n\nhi.txt now greets the user\n"
+        },
+        {
+          "check": "brag board has the entry",
+          "ok": true,
+          "detail": "# Brag board\n\nFinished work: what, when, and the result. The promise and proof are in each receipt.\n\n### \u2713 Say hello \u2014 2026-10-02\nhi.txt now greets the user\n<sub>EVIDENCE LISTED (not re-run by the harness) \u00b7 receipt: .awino/receipts/2026-10-02-say-hello-mur2mrxo.md</sub>\n"
+        },
+        {
+          "check": "direct write to BRAG.md denied",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "check": "direct edit of the receipt denied",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "check": "second close appends (both entries present)",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "interviewer-cannot-edit",
+      "passed": true,
+      "checks": [
+        {
+          "check": "interviewer model calls happened",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "check": "write/edit/patch not offered to interviewer",
+          "ok": true,
+          "detail": "bash, glob, grep, read, set_mission, skill, story_close, task, todowrite, webfetch"
+        },
+        {
+          "check": "hi.txt NOT written by interviewer",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "unknown-a-stance-every-message",
+      "passed": true,
+      "checks": [
+        {
+          "check": "'should we use postgres vs sqlite?': every call (1) carries stance steel-man",
+          "ok": true,
+          "detail": "[[\"...\", \"steel-man \\u2192 premortem | intent: decide | mode: plan | intent: decide\"]]"
+        },
+        {
+          "check": "'teach me how does indexing work': every call (1) carries stance feynman",
+          "ok": true,
+          "detail": "[[\"...\", \"feynman | intent: teach | mode: observe | intent: teach\"]]"
+        },
+        {
+          "check": "'fix the bug in notes': every call (2) carries stance first-principles",
+          "ok": true,
+          "detail": "[[\"...\", \"first-principles | intent: fix | mode: build | intent: fix\"], [\"...\", \"first-principles | intent: fix | mode: build | intent: fix\"]]"
+        },
+        {
+          "check": "tool round-trip turn made >1 model call",
+          "ok": true,
+          "detail": "2 calls"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "unknown-b-redo-on-rule-break",
+      "passed": true,
+      "checks": [
+        {
+          "check": "grill stance routed",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "check": "first reply broke the rule (3 questions)",
+          "ok": true,
+          "detail": "[\"What is the deadline? Who are the users? What platform?\", \"Who are the users?\"]"
+        },
+        {
+          "check": "plugin sent a correction follow-up to the model",
+          "ok": true,
+          "detail": "1 correction requests"
+        },
+        {
+          "check": "final assistant reply is the redone one (one question)",
+          "ok": true,
+          "detail": "[\"What is the deadline? Who are the users? What platform?\", \"Who are the users?\"]"
+        },
+        {
+          "check": "no redo loop (exactly one correction)",
+          "ok": true,
+          "detail": "1"
+        }
+      ],
+      "notes": [
+        "opencode run (one-shot): 0 correction request(s); the process exits at the first session.idle"
+      ]
+    }
+  ]
+}

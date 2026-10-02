@@ -1,0 +1,11 @@
+{
+  "opencode": "1.18.33",
+  "results": [
+    {
+      "name": "5-real-model",
+      "passed": null,
+      "checks": [],
+      "skipped": "REAL_API_KEY / REAL_MODEL not set (no repo secret)"
+    }
+  ]
+}
