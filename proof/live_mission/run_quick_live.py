@@ -143,6 +143,8 @@ def main():
     (out / "quick-events.jsonl").write_text("\n".join(json.dumps(e) for e in log))
     subprocess.run(["cp", "-r", str(ws), str(out / "quick-workspace")])
     print("\n".join(lines))
+    if not all(checks.values()):
+        raise SystemExit(1)  # the job goes red; the report is still uploaded
 
 
 if __name__ == "__main__":
