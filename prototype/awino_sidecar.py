@@ -2056,14 +2056,20 @@ _FOLDER_READMES = {
 }
 
 
+_EMIT_LOCK = threading.Lock()
+
+
 def _emit(obj: dict) -> None:
     # Log/output boundary: stdout is the sidecar's protocol stream and the
     # extension host logs it. High-confidence secrets are redacted here so
     # they never persist in cleartext in host logs. Key material is never
     # in these payloads anyway (resolved server-side via _lookup_key_material),
     # so redaction cannot break provider auth.
-    sys.stdout.write(json.dumps(redact(obj), default=str) + "\n")
-    sys.stdout.flush()
+    # One line per event, even with parallel agents writing at once.
+    line = json.dumps(redact(obj), default=str) + "\n"
+    with _EMIT_LOCK:
+        sys.stdout.write(line)
+        sys.stdout.flush()
 
 
 def _err(message: str) -> None:
@@ -2547,7 +2553,8 @@ class Sidecar:
             elif name == "user_message":
                 self._do_user_message(cmd)
             elif name == "approve":
-                self._do_approve(cmd)
+                if not self._route_quick_approval(cmd):
+                    self._do_approve(cmd)
             elif name == "command":
                 self._do_command(cmd)
             elif name == "cancel":
@@ -2678,6 +2685,15 @@ class Sidecar:
                               else "quick")
         self._quick = None
         self._quick_waits = {}
+        self._agent_binding = (dict(binding), dict(env_cmd))
+        from agents import AgentManager
+        self._agents = AgentManager(
+            wsp, home, str(project),
+            make_backend=lambda: self._apply_binding(*self._agent_binding)[0],
+            emit=_emit,
+            approve=self._agent_approve,
+            judge_factory=build_judge_panel,
+            sandbox_factory=WorkspaceSandbox)
         self._bind_tiers(binding, env_cmd, backend)
         # Native tool application (extension builder): the extension
         # advertises delegated apply/terminal capability in hello. When
@@ -4215,17 +4231,23 @@ class Sidecar:
                           "quick")
         return q.run(text, turn_id)
 
-    def _quick_approve(self, item: dict) -> str:
-        """Emit one approval card and block this (turn) thread until the
-        user decides. The stdin pump routes the matching approve command
-        here (see _route_quick_approval). Cancel denies."""
+    def _quick_approve(self, item: dict, cancel="turn",
+                       sandbox=None) -> str:
+        """Emit one approval card and block this thread until the user
+        decides. The stdin pump (or the idle dispatcher) routes the
+        matching approve command here (see _route_quick_approval). The
+        main turn's cancel denies; agents pass their own token or None."""
+        token = self._turn_token if cancel == "turn" else cancel
+        sandbox = sandbox or self.loop.sandbox
         aid = "qa-" + uuid.uuid4().hex[:8]
         tool, args = item["tool"], item.get("args") or {}
         card = {"id": aid, "tool": tool, "args": args,
                 "reason": item.get("reason")}
+        if item.get("agent"):
+            card["agent"] = item["agent"]
         try:
             if tool == "write_file":
-                diff, old_exists = _write_diff(self.loop.sandbox,
+                diff, old_exists = _write_diff(sandbox,
                                                args.get("path", ""),
                                                args.get("content", ""))
                 card["diff"], card["old_exists"] = diff, old_exists
@@ -4237,7 +4259,7 @@ class Sidecar:
             elif tool == "run_command":
                 from approval_targets import resolve_shell_targets
                 card["shell_targets"] = resolve_shell_targets(
-                    str(args.get("cmd") or ""), str(self.loop.sandbox.root))
+                    str(args.get("cmd") or ""), str(sandbox.root))
         except Exception:  # noqa: BLE001 - the card still shows the args
             traceback.print_exc(file=sys.stderr)
         waiter = {"event": threading.Event(), "decision": None}
@@ -4248,7 +4270,7 @@ class Sidecar:
                "approvals": [card]})
         try:
             while not waiter["event"].wait(0.2):
-                if self._turn_token is not None and self._turn_token.is_set():
+                if token is not None and token.is_set():
                     return "deny"
             return waiter["decision"] or "deny"
         finally:
@@ -4417,6 +4439,11 @@ class Sidecar:
             # arriving mid-turn are deferred by the pump, so this never
             # races a running turn.
             "session_new": self._cmd_session_new,
+            "agent_start": self._cmd_agent_start,
+            "agent_list": self._cmd_agent_list,
+            "agent_diff": self._cmd_agent_diff,
+            "agent_merge": self._cmd_agent_merge,
+            "agent_remove": self._cmd_agent_remove,
             "mode_list": self._cmd_mode_list,
             "mode_invoke": self._cmd_mode_invoke,
             "mode_dismiss": self._cmd_mode_dismiss,
@@ -4923,6 +4950,27 @@ class Sidecar:
         return {"status": "ok",
                 "said": ("Won't ask again." if args.get("never")
                          else "Skipped for now.")}
+
+    def _agent_approve(self, item: dict, name: str) -> str:
+        agent = self._agents.agents.get(name) or {}
+        sandbox = getattr(agent.get("loop"), "sandbox", None)
+        return self._quick_approve(item, cancel=None, sandbox=sandbox)
+
+    # Parallel agents in worktrees (agents.py)
+    def _cmd_agent_start(self, args: dict) -> dict:
+        return self._agents.start(args.get("task", ""), args.get("name"))
+
+    def _cmd_agent_list(self, args: dict) -> dict:
+        return {"status": "ok", "agents": self._agents.list()}
+
+    def _cmd_agent_diff(self, args: dict) -> dict:
+        return self._agents.diff(args.get("name", ""))
+
+    def _cmd_agent_merge(self, args: dict) -> dict:
+        return self._agents.merge(args.get("name", ""))
+
+    def _cmd_agent_remove(self, args: dict) -> dict:
+        return self._agents.remove(args.get("name", ""))
 
     def _cmd_session_new(self, args: dict) -> dict:
         self._quick = None  # the Quick conversation starts fresh too

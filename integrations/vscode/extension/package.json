@@ -138,6 +138,14 @@
         "icon": "$(check)"
       },
       {
+        "command": "awino.newAgent",
+        "title": "Awino: New Agent (own worktree, runs in parallel)"
+      },
+      {
+        "command": "awino.listAgents",
+        "title": "Awino: Show Agents"
+      },
+      {
         "command": "awino.projectSetup",
         "title": "Awino: Set Up Project (justfile, .gitignore, …)"
       },

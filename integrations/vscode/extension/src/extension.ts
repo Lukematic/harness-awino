@@ -949,6 +949,12 @@ async function onSidecarEvent(ev: SidecarEvent): Promise<void> {
     case "approval_requested":
       await handleApprovalRequested(ev);
       break;
+    case "agent_event":
+      logAgentEvent(String(ev["agent"] ?? "agent"), (ev["payload"] ?? {}) as Record<string, unknown>);
+      break;
+    case "agent_done":
+      void onAgentDone(ev);
+      break;
     case "apply_requested":
       // Native tool application: the sidecar delegated this drain's
       // writes. Apply them in one WorkspaceEdit, then answer with
@@ -1292,6 +1298,101 @@ async function offerProjectSetup(explicit: boolean): Promise<void> {
   if (!chosen.length) return;
   const r = (await query("setup_apply", { ids: chosen })) as Record<string, unknown>;
   postToChat({ type: "event", payload: { event: "say", kind: "setup", message: String(r["said"] ?? "Done.") } });
+}
+
+// ------------------------------------------------ parallel agents (worktrees)
+// Each agent works in its own git worktree beside the repo; the main chat
+// stays free. Progress goes to the "Awino Agents" output channel; when an
+// agent finishes you review its diff, then merge or discard.
+let agentChannel: vscode.OutputChannel | undefined;
+function agentLog(): vscode.OutputChannel {
+  agentChannel ??= vscode.window.createOutputChannel("Awino Agents");
+  return agentChannel;
+}
+
+export function agentEventLine(agent: string, p: Record<string, unknown>): string | undefined {
+  const ev = String(p["event"] ?? "");
+  if (ev === "said_delta") return `[${agent}] ${String(p["text"] ?? "").trim()}`;
+  if (ev === "tool_progress" && p["phase"] === "start") return `[${agent}] ▸ ${p["tool"]} ${String(p["summary"] ?? "")}`;
+  if (ev === "token_meter") return undefined;
+  return undefined;
+}
+
+function logAgentEvent(agent: string, p: Record<string, unknown>): void {
+  const line = agentEventLine(agent, p);
+  if (line) agentLog().appendLine(line);
+}
+
+async function showAgentDiff(name: string): Promise<void> {
+  const r = (await query("agent_diff", { name })) as Record<string, unknown>;
+  if (r["status"] !== "ok") {
+    vscode.window.showErrorMessage(`Awino: ${String(r["said"] ?? "no diff")}`);
+    return;
+  }
+  const doc = await vscode.workspace.openTextDocument({ language: "diff", content: String(r["diff"] || "(no changes)") });
+  await vscode.window.showTextDocument(doc, { preview: true });
+}
+
+async function agentAction(name: string, choice: string | undefined): Promise<void> {
+  if (choice === "View diff") {
+    await showAgentDiff(name);
+    const next = await vscode.window.showInformationMessage(`Awino agent ${name}: merge it?`, "Merge", "Discard", "Later");
+    return agentAction(name, next);
+  }
+  if (choice === "Merge" || choice === "Discard") {
+    const r = (await query(choice === "Merge" ? "agent_merge" : "agent_remove", { name })) as Record<string, unknown>;
+    const said = String(r["said"] ?? "");
+    if (r["status"] === "ok") {
+      vscode.window.showInformationMessage(`Awino: ${said}`);
+      if (choice === "Merge") await query("agent_remove", { name });
+    } else {
+      vscode.window.showWarningMessage(`Awino: ${said}`);
+    }
+  }
+}
+
+async function onAgentDone(ev: Record<string, unknown>): Promise<void> {
+  const name = String(ev["agent"] ?? "");
+  const changes = (ev["changes"] ?? []) as string[];
+  agentLog().appendLine(`[${name}] finished (${String(ev["status"])}): ${String(ev["said"] ?? "")}`);
+  const choice = await vscode.window.showInformationMessage(
+    `Awino agent ${name} finished — ${changes.length} file(s) changed.`,
+    ...(changes.length ? ["View diff", "Merge", "Discard"] : ["Discard"]));
+  await agentAction(name, choice);
+}
+
+async function newAgentFlow(): Promise<void> {
+  const task = await vscode.window.showInputBox({
+    prompt: "Task for a new agent (it works in its own git worktree; the chat stays free)",
+    placeHolder: "e.g. add unit tests for utils.py",
+  });
+  if (!task?.trim()) return;
+  const r = (await query("agent_start", { task: task.trim() })) as Record<string, unknown>;
+  if (r["status"] !== "ok") {
+    vscode.window.showErrorMessage(`Awino: ${String(r["said"] ?? "agent failed to start")}`);
+    return;
+  }
+  agentLog().show(true);
+  agentLog().appendLine(String(r["said"] ?? ""));
+}
+
+async function listAgentsFlow(): Promise<void> {
+  const r = (await query("agent_list", {})) as { agents?: Array<Record<string, unknown>> };
+  const rows = r.agents ?? [];
+  if (!rows.length) {
+    vscode.window.showInformationMessage("Awino: no agents. Run 'Awino: New Agent' to start one.");
+    return;
+  }
+  const pick = await vscode.window.showQuickPick(
+    rows.map((a) => ({
+      label: String(a["name"]),
+      description: `${String(a["status"])} · ${((a["changes"] as string[]) ?? []).length} changed`,
+      detail: String(a["task"] ?? ""),
+    })),
+    { placeHolder: "Agents" });
+  if (!pick) return;
+  const choice = await vscode.window.showQuickPick(["View diff", "Merge", "Discard"], { placeHolder: pick.label });
+  await agentAction(pick.label, choice);
 }
 
 // Receipt: promise -> proof -> lesson. Closed stories show the stored
@@ -2068,6 +2169,8 @@ function registerCommands(context: vscode.ExtensionContext): void {
   reg("awino.closeStory", async (arg: unknown) => closeStoryFlow(storyFromArg(arg)));
   reg("awino.showReceipt", async (arg: unknown) => showReceiptFlow(storyFromArg(arg)));
   reg("awino.projectSetup", async () => offerProjectSetup(true));
+  reg("awino.newAgent", async () => newAgentFlow());
+  reg("awino.listAgents", async () => listAgentsFlow());
   reg("awino.refreshStories", () => storiesView?.refresh());
   // Native tool application: revert the workspace to the last git
   // checkpoint taken before a delegated build-mode write batch. The

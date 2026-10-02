@@ -1238,7 +1238,8 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     setBead("approval", "alert", "approval: pending");
     approvals.forEach(function (a) {
       const d = addMsg("warn", "");
-      let html = '<div class="approval"><h4>Approval requested: <code>' + esc(a.tool) + "</code></h4>";
+      let html = '<div class="approval"><h4>Approval requested' +
+        (a.agent ? " (agent " + esc(a.agent) + ")" : "") + ': <code>' + esc(a.tool) + "</code></h4>";
       // With a diff, the diff IS the content: show the target, not the
       // raw args (which repeat the whole file). Commands show their args.
       if (a.diff && a.args && a.args.path) {
