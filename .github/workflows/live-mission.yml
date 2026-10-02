@@ -32,6 +32,12 @@ on:
       model:
         description: "Model id at that endpoint"
         required: true
+      flow:
+        description: "quick (Quick path + a worktree agent), mission (the agentic-learning mission), or both"
+        required: true
+        default: quick
+        type: choice
+        options: [quick, mission, both]
 
 jobs:
   live-mission:
@@ -51,14 +57,22 @@ jobs:
           IN_PROVIDER: ${{ inputs.provider }}
           IN_ENDPOINT: ${{ inputs.endpoint }}
           IN_MODEL: ${{ inputs.model }}
+          IN_FLOW: ${{ inputs.flow }}
         run: |
           ARGS=(--provider "$IN_PROVIDER" --model "$IN_MODEL" --out live-out)
           if [ "$IN_PROVIDER" = "openai" ]; then ARGS+=(--endpoint "$IN_ENDPOINT"); fi
-          python proof/live_mission/run_live.py "${ARGS[@]}"
+          if [ "$IN_FLOW" != "mission" ]; then
+            python proof/live_mission/run_quick_live.py "${ARGS[@]}"
+          fi
+          if [ "$IN_FLOW" != "quick" ]; then
+            python proof/live_mission/run_live.py "${ARGS[@]}"
+          fi
 
       - name: Job summary
         if: always()
-        run: cat live-out/report.md >> "$GITHUB_STEP_SUMMARY" || echo "no report" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          cat live-out/quick-report.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          cat live-out/report.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
 
       - uses: actions/setup-node@v4
         if: always()

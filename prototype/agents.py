@@ -159,7 +159,7 @@ class AgentManager:
             return {"status": "conflict",
                     "said": ("The agent's branch conflicts with your checkout; "
                              f"nothing was changed. Merge {a['branch']} by hand. "
-                             + m.stdout.strip()[-300:])}
+                             + (m.stdout + m.stderr).strip()[-300:])}
         a["status"] = "merged"
         return {"status": "ok", "said": f"Merged {a['branch']} into your checkout."}
 
