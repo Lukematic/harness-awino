@@ -11,7 +11,7 @@
 # (defaults: OpenRouter, openai/gpt-4o-mini).
 #
 # Local model (job local-model): Ollama on the runner serves an open model
-# (default qwen2.5:3b) at its OpenAI-compatible /v1; scenario 5 runs against
+# (default qwen2.5:7b) at its OpenAI-compatible /v1; scenario 5 runs against
 # it. No key needed: Ollama ignores the Bearer token.
 #
 # Output: the "opencode-e2e" artifact (per-scenario transcript, gateway log,
@@ -28,7 +28,7 @@ on:
       local_model:
         description: "Ollama model for the local-model job"
         required: false
-        default: "qwen2.5:3b"
+        default: "qwen2.5:7b"
 
 permissions:
   contents: write
@@ -126,7 +126,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 50
     env:
-      LOCAL_MODEL: ${{ inputs.local_model || 'qwen2.5:3b' }}
+      LOCAL_MODEL: ${{ inputs.local_model || 'qwen2.5:7b' }}
     steps:
       - uses: actions/checkout@v4
 
