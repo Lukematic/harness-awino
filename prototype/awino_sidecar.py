@@ -2589,8 +2589,21 @@ class Sidecar:
         # extension can turn it off (awino.autoApproveAfterPlan).
         loop.config["autopilot"] = cmd.get("auto_approve_after_plan", True) \
             is not False
-        if isinstance(cmd.get("turn_token_budget"), int):
-            loop.config["turn_token_budget"] = cmd["turn_token_budget"]
+        # Product limits (09-28/10-02): the engine's defaults are tight on
+        # purpose for tests (50 messages per project, 1 hour and 200k
+        # tokens per mission, each FINAL). In the editor those killed real
+        # sessions. Here they are generous; the token meter shows usage and
+        # the per-reply budget pauses (never ends) a runaway reply.
+        loop.config.update({
+            "max_turns": 100_000,
+            "max_seconds": 30 * 24 * 3600,
+            "token_budget": 20_000_000,
+            "max_rounds_per_turn": 60,
+            "turn_token_budget": 200_000,
+            "strict_rubric": False,
+        })
+        if isinstance(cmd.get("turn_token_budget"), (int, float)):
+            loop.config["turn_token_budget"] = int(cmd["turn_token_budget"])
         self.loop = loop
         self._model_tiers = dict(cmd.get("model_tiers") or {})
         self._bind_tiers(binding, env_cmd, backend)

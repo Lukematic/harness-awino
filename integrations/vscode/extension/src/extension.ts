@@ -1847,7 +1847,7 @@ async function doConnectInner(
         medium: vscode.workspace.getConfiguration("awino").get<string>("models.medium", ""),
         basic: vscode.workspace.getConfiguration("awino").get<string>("models.basic", ""),
       },
-      turnTokenBudget: vscode.workspace.getConfiguration("awino").get<number>("turnTokenBudget", 60000),
+      turnTokenBudget: vscode.workspace.getConfiguration("awino").get<number>("turnTokenBudget", 200000),
     });
     lastConnectError = null;
     log(

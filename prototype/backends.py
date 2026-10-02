@@ -396,6 +396,18 @@ HISTORY_ENTRIES = 12
 HISTORY_BUDGET_CHARS = 60000
 
 
+def natural_turn(text: str, expected_header: str) -> dict:
+    """Turn a plain model reply into the harness's turn shape. The reply
+    text is what the user reads; native tool calls are merged afterwards.
+    Marked _natural so stance rubrics advise instead of rejecting (a
+    plain reply never fills 'assumptions')."""
+    said = (text or "").strip()
+    return {"header": expected_header, "objective": "", "plan": [],
+            "tool_calls": [], "questions": [], "assumptions": [],
+            "progress_delta": said[:6000] or "Working on it.",
+            "done_claim": False, "_natural": True}
+
+
 def usage_from_payload(payload: dict) -> dict | None:
     """Real token counts from a provider response (Anthropic or
     OpenAI-compatible): {input, output, cached, cache_write}. None when
@@ -521,8 +533,14 @@ class OllamaBackend(ModelBackend):
             return self._fallback(expected_header,
                                   f"backend error: {type(e).__name__}: {e}")
         turn = _extract_json(text)
-        if not isinstance(turn, dict):
-            return self._fallback(expected_header, "model output was not a JSON object")
+        if not isinstance(turn, dict) or "header" not in turn:
+            if not raw_tool_calls and not (text or "").strip():
+                return self._fallback(expected_header,
+                                      "model output was not a JSON object")
+            # A normal model reply — prose and/or native tool calls, the
+            # way Claude/GPT answer in Cline or Kilo — is a turn, not an
+            # error. The harness supplies the bookkeeping fields itself.
+            turn = natural_turn(text, expected_header)
         turn = self._normalize(turn, expected_header)
         if raw_tool_calls:
             # Merge native calls into the turn's tool_calls as

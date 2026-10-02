@@ -204,7 +204,7 @@
           "type": "string"
         },
         "awino.turnTokenBudget": {
-          "default": 60000,
+          "default": 200000,
           "description": "Tokens one reply may use across its rounds before Awino pauses and asks you to continue. 0 turns the limit off.",
           "type": "number"
         },

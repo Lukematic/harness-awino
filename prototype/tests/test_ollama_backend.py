@@ -67,17 +67,25 @@ class TestOllamaBackend(unittest.TestCase):
             turn = b.generate(HEADER + "\ncontract", [], None)
         self.assertEqual(turn["objective"], "Summarize the project layout")
 
-    def test_unparseable_output_returns_safe_fallback(self):
+    def test_plain_prose_is_the_reply_not_an_error(self):
+        # 10-02: a plain answer is a normal reply (it used to be thrown
+        # away as "no JSON turn"). Still safe: header filled by the
+        # harness, no invented tool calls, never a done claim.
         b, p = _backend_with("I am a teapot, not JSON at all")
         with p:
             turn = b.generate(HEADER + "\ncontract", [], None)
-        # Safe fallback: schema-valid, header echoed, zero tool calls,
-        # carries a question instead of acting.
         self.assertEqual(turn["header"], HEADER)
+        self.assertEqual(turn["tool_calls"], [])
+        self.assertFalse(turn["done_claim"])
+        self.assertEqual(turn["progress_delta"], "I am a teapot, not JSON at all")
+
+    def test_empty_output_returns_safe_fallback(self):
+        b, p = _backend_with("   ")
+        with p:
+            turn = b.generate(HEADER + "\ncontract", [], None)
         self.assertEqual(turn["tool_calls"], [])
         self.assertTrue(turn["questions"])
         self.assertFalse(turn["done_claim"])
-        self.assertTrue(turn["progress_delta"].strip())
 
     def test_backend_error_returns_safe_fallback(self):
         b = OllamaBackend(model="test-model", host="http://127.0.0.1:9")

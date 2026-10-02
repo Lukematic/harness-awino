@@ -207,3 +207,58 @@ class WrapperForwardsTurnStateTest(unittest.TestCase):
         w.last_usage = None
         self.assertIsNone(inner.last_usage)
         self.assertTrue(w.supports_skill_context)
+
+
+class NaturalReplyTest(unittest.TestCase):
+    """10-02: a normal model reply (prose + native tool calls, no JSON
+    envelope) was thrown away as 'answered without the required JSON
+    turn. Nothing was run.' — the reason the extension never worked with
+    a real model."""
+
+    def setUp(self):
+        _Anthropic.seen = []
+        self.srv = socketserver.TCPServer(("127.0.0.1", 0), _Natural)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.addCleanup(self.srv.server_close)
+        self.addCleanup(self.srv.shutdown)
+        self.b = s.AnthropicBackend(
+            model="claude-haiku-4-5", api_key="k",
+            endpoint=f"http://127.0.0.1:{self.srv.server_address[1]}")
+
+    def test_prose_and_tool_call_become_a_turn(self):
+        turn = self.b.generate(CONTRACT, [], tools=TOOLS)
+        self.assertEqual(turn["header"], "HEADER-1")
+        self.assertEqual(turn["progress_delta"], "Let me read it.")
+        self.assertEqual([c["name"] for c in turn["tool_calls"]], ["read_file"])
+        self.assertTrue(turn.get("_natural"))
+        from contract import validate_schema
+        self.assertEqual(validate_schema(turn), [])
+
+    def test_empty_reply_still_falls_back(self):
+        _Natural.empty = True
+        try:
+            turn = self.b.generate(CONTRACT, [], tools=TOOLS)
+        finally:
+            _Natural.empty = False
+        self.assertNotIn("_natural", turn)
+        self.assertEqual(turn["tool_calls"], [])
+
+
+class _Natural(http.server.BaseHTTPRequestHandler):
+    empty = False
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        content = [] if _Natural.empty else [
+            {"type": "text", "text": "Let me read it."},
+            {"type": "tool_use", "id": "t1", "name": "read_file",
+             "input": {"path": "a.txt"}}]
+        out = json.dumps({"content": content}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+    def log_message(self, *a):
+        pass

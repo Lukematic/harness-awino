@@ -1084,8 +1084,18 @@ class Loop:
                                           {"turn_id": turn_id,
                                            "stance": "->".join(chain),
                                            "failures": failures})
-                        errs = [f"stance rubric FAIL ({'->'.join(chain)}): "
-                                + "; ".join(failures)]
+                        if raw.get("_natural") or not cfg.get(
+                                "strict_rubric", True):
+                            # Advise, don't block: the user sees the
+                            # check; the work continues.
+                            if stream is not None:
+                                stream.harness_check(
+                                    "stance_rubric", "warn",
+                                    "; ".join(failures)[:300])
+                        else:
+                            errs = [f"stance rubric FAIL "
+                                    f"({'->'.join(chain)}): "
+                                    + "; ".join(failures)]
                 if not errs and declared:
                     self.state.record("stance_routed", {
                         "stance": declared, "chain": chain,
