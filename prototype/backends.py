@@ -137,6 +137,25 @@ class ScriptedBackend(ModelBackend):
                     stream_cb("said", said)
         return turn
 
+    def chat(self, system: str, messages: list[dict], tools=None,
+             cancel=None) -> dict:
+        """Quick path for tests: a script entry is either {"text",
+        "tool_calls": [{"name","args"}]} or an old-style turn (its
+        progress_delta is the text, its tool_calls the calls)."""
+        if cancel is not None and cancel.is_set():
+            from cancel import Cancelled
+            raise Cancelled("cancelled before model call")
+        self.calls.append({"system": system, "messages": len(messages),
+                           "tools": [t.get("name") for t in (tools or [])]})
+        if not self.script:
+            return {"text": "Done.", "tool_calls": []}
+        entry = copy.deepcopy(self.script.pop(0))
+        text = entry.get("text", entry.get("progress_delta", ""))
+        calls = [{"id": c.get("id") or f"s{len(self.calls)}_{i}",
+                  "name": c["name"], "args": c.get("args") or {}}
+                 for i, c in enumerate(entry.get("tool_calls") or [])]
+        return {"text": text, "tool_calls": calls}
+
     @staticmethod
     def _iter_chunks(chunks):
         for pair in chunks or []:
@@ -272,6 +291,15 @@ class EchoBackend(ModelBackend):
     """Minimal interactive planner for the chat REPL. Reads a few markers out
     of the contract block; never calls consequential tools on its own."""
 
+    def chat(self, system: str, messages: list[dict], tools=None,
+             cancel=None) -> dict:
+        last = next((m.get("text", "") for m in reversed(messages)
+                     if m["role"] == "user"), "")
+        return {"text": ("Echo (demo provider, no model connected): "
+                         f"{last[:300]}\n\nConnect a model in Models & "
+                         "Providers to get real answers."),
+                "tool_calls": []}
+
     def generate(self, contract_block, history, feedback=None,
                  temperature=None, stream_cb=None, tools=None, cancel=None):
         # temperature accepted and ignored: the echo planner is deterministic.
@@ -394,6 +422,87 @@ def _extract_json(text: str):
 # over ~3 KB mid-JSON.
 HISTORY_ENTRIES = 12
 HISTORY_BUDGET_CHARS = 60000
+
+
+# ---------------------------------------------------------------------------
+# Native conversation (Quick path): the plain agent loop Cline/Kilo use.
+# A neutral message list is translated per provider:
+#   {"role": "user", "text": str}
+#   {"role": "assistant", "text": str, "tool_calls": [{"id","name","args"}]}
+#   {"role": "tool", "id": str, "name": str, "content": str}
+# chat() returns {"text": str, "tool_calls": [{"id","name","args"}]}.
+# ---------------------------------------------------------------------------
+def to_openai_messages(system: str, messages: list[dict]) -> list[dict]:
+    out = [{"role": "system", "content": system}] if system else []
+    for m in messages:
+        if m["role"] == "user":
+            out.append({"role": "user", "content": m.get("text", "")})
+        elif m["role"] == "assistant":
+            msg = {"role": "assistant", "content": m.get("text") or None}
+            if m.get("tool_calls"):
+                msg["tool_calls"] = [
+                    {"id": c["id"], "type": "function",
+                     "function": {"name": c["name"],
+                                  "arguments": json.dumps(c.get("args") or {})}}
+                    for c in m["tool_calls"]]
+            out.append(msg)
+        elif m["role"] == "tool":
+            out.append({"role": "tool", "tool_call_id": m["id"],
+                        "content": m.get("content", "")})
+    return out
+
+
+def to_anthropic_messages(messages: list[dict]) -> list[dict]:
+    """Anthropic needs alternating user/assistant turns; tool results are
+    user-side tool_result blocks. Consecutive user-side items merge."""
+    out: list[dict] = []
+
+    def add(role, blocks):
+        if out and out[-1]["role"] == role:
+            out[-1]["content"].extend(blocks)
+        else:
+            out.append({"role": role, "content": list(blocks)})
+
+    for m in messages:
+        if m["role"] == "user":
+            add("user", [{"type": "text", "text": m.get("text") or "(empty)"}])
+        elif m["role"] == "assistant":
+            blocks = ([{"type": "text", "text": m["text"]}]
+                      if m.get("text") else [])
+            blocks += [{"type": "tool_use", "id": c["id"], "name": c["name"],
+                        "input": c.get("args") or {}}
+                       for c in m.get("tool_calls") or []]
+            add("assistant", blocks or [{"type": "text", "text": "(no reply)"}])
+        elif m["role"] == "tool":
+            add("user", [{"type": "tool_result", "tool_use_id": m["id"],
+                          "content": m.get("content", "")}])
+    return out
+
+
+def parse_openai_reply(payload: dict) -> dict:
+    msg = (payload.get("choices") or [{}])[0].get("message") or {}
+    calls = []
+    for i, c in enumerate(msg.get("tool_calls") or []):
+        fn = c.get("function") or {}
+        raw = fn.get("arguments") or "{}"
+        try:
+            args = json.loads(raw) if isinstance(raw, str) else dict(raw)
+        except (ValueError, TypeError):
+            args = {"_unparsed": str(raw)[:500]}
+        calls.append({"id": c.get("id") or f"call_{i}",
+                      "name": fn.get("name") or "?",
+                      "args": args if isinstance(args, dict) else {}})
+    return {"text": msg.get("content") or "", "tool_calls": calls}
+
+
+def parse_anthropic_reply(payload: dict) -> dict:
+    blocks = payload.get("content") or []
+    text = "".join(b.get("text", "") for b in blocks
+                   if isinstance(b, dict) and b.get("type") == "text")
+    calls = [{"id": b.get("id"), "name": b.get("name"),
+              "args": b.get("input") if isinstance(b.get("input"), dict) else {}}
+             for b in blocks if isinstance(b, dict) and b.get("type") == "tool_use"]
+    return {"text": text, "tool_calls": calls}
 
 
 def natural_turn(text: str, expected_header: str) -> dict:
@@ -557,6 +666,35 @@ class OllamaBackend(ModelBackend):
                 if errs:
                     turn["_native_tool_errors"] = errs
         return turn
+
+    # -- Quick path: native multi-turn conversation ------------------------
+    def _post_chat(self, body: dict) -> dict:
+        data = json.dumps(body).encode()
+        url = self.host + "/v1/chat/completions"
+        req = urllib.request.Request(url, data=data,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            raw = resp.read()
+        self.last_egress = {"destination": url, "bytes_out": len(data),
+                            "bytes_in": len(raw)}
+        return json.loads(raw.decode())
+
+    def chat(self, system: str, messages: list[dict], tools=None,
+             cancel=None) -> dict:
+        if cancel is not None and cancel.is_set():
+            from cancel import Cancelled
+            raise Cancelled("cancelled before model call")
+        body = {"model": self.model,
+                "messages": to_openai_messages(system, messages),
+                "max_tokens": self.num_predict, "stream": False,
+                "temperature": getattr(self, "temperature", 0.2)}
+        if tools:
+            from provider_tools import to_provider
+            body["tools"] = to_provider("openai", tools)
+            body["tool_choice"] = "auto"
+        payload = self._post_chat(body)
+        self.last_usage = usage_from_payload(payload)
+        return parse_openai_reply(payload)
 
     def _chat_tools(self, prompt: str, system: str, native_defs: list,
                     temperature: float | None = None,

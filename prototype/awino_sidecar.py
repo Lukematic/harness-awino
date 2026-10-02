@@ -32,6 +32,7 @@ import re
 import subprocess
 import sys
 import threading
+import uuid
 import time
 import traceback
 import urllib.error
@@ -892,6 +893,21 @@ class OpenAICompatibleBackend(OllamaBackend):
         message = payload["choices"][0]["message"]
         return message.get("content") or "", message.get("tool_calls") or []
 
+    def _post_chat(self, body: dict) -> dict:
+        """Quick path: one native chat-completions call on chat_url with
+        the same auth as every other call (Bearer, or SigV4 for Bedrock)."""
+        data = json.dumps(body).encode()
+        req = urllib.request.Request(self.chat_url, data=data,
+                                     headers=self._signed_headers(data))
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(f"endpoint HTTP {e.code}")
+        self.last_egress = {"destination": self.chat_url,
+                            "bytes_out": len(data), "bytes_in": len(raw)}
+        return json.loads(raw.decode())
+
     def _signed_headers(self, body: bytes) -> dict:
         """Auth headers for one request. Subclasses override: the Bedrock
         SigV4 backend signs here instead of sending a Bearer key."""
@@ -1032,6 +1048,39 @@ class AnthropicBackend(OllamaBackend):
     """Anthropic Messages API. Key from ANTHROPIC_API_KEY (env only)."""
 
     tool_dialect = "anthropic"
+
+    def chat(self, system: str, messages: list[dict], tools=None,
+             cancel=None) -> dict:
+        """Quick path: native Messages API conversation with tool_use /
+        tool_result blocks; the system prompt is one cached block."""
+        if cancel is not None and cancel.is_set():
+            from cancel import Cancelled
+            raise Cancelled("cancelled before model call")
+        body = {"model": self.model, "max_tokens": self.num_predict,
+                "system": self._system_blocks(system),
+                "messages": backends.to_anthropic_messages(messages),
+                "temperature": self.temperature}
+        if tools:
+            from provider_tools import to_provider
+            body["tools"] = to_provider("anthropic", tools)
+        data = json.dumps(body).encode()
+        req = urllib.request.Request(self.messages_url, data=data,
+                                     headers=self._headers())
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.read().decode("utf-8", "replace")[:300]
+            except Exception:  # noqa: BLE001
+                pass
+            raise RuntimeError(f"anthropic HTTP {e.code} {detail}".strip())
+        self.last_egress = {"destination": self.messages_url,
+                            "bytes_out": len(data), "bytes_in": len(raw)}
+        payload = json.loads(raw.decode())
+        self.last_usage = backends.usage_from_payload(payload)
+        return backends.parse_anthropic_reply(payload)
 
     @staticmethod
     def _system_blocks(system: str) -> list:
@@ -1815,6 +1864,18 @@ class _ModeAwareBackend:
         else:
             object.__setattr__(self, name, value)
 
+    def chat(self, system, messages, tools=None, cancel=None):
+        """Quick path: the native conversation goes straight through; the
+        active mode's temperature applies when the backend has one."""
+        inner = self._inner
+        if not hasattr(inner, "chat"):
+            raise RuntimeError("this provider does not support the Quick "
+                               "path yet")
+        t = self._sidecar._active_temperature() if self._sidecar else None
+        if t is not None and hasattr(inner, "temperature"):
+            inner.temperature = t
+        return inner.chat(system, messages, tools=tools, cancel=cancel)
+
     def generate(self, contract_block, history, feedback=None,
                  stream_cb=None, tools=None, cancel=None, temperature=None):
         """stream_cb(kind, text): optional streaming sink for the sidecar
@@ -2225,6 +2286,9 @@ class Sidecar:
         self.deferred: collections.deque = collections.deque()
         self.loop: Loop | None = None
         self.workspace: Path | None = None
+        self._quick = None          # Quick path conversation (quick.py)
+        self._quick_waits: dict = {}  # approval id -> waiter
+        self._default_flow = "quick"
         self.provider = "echo"
         self.model_desc = ""
         self.alive = True
@@ -2306,6 +2370,8 @@ class Sidecar:
             if (isinstance(cmd, dict) and cmd.get("cmd") == cmd_name
                     and str(cmd.get("request_id")) == request_id):
                 return cmd
+            if self._route_quick_approval(cmd):
+                continue
             consumed = False
             if on_other is not None:
                 try:
@@ -2606,6 +2672,12 @@ class Sidecar:
             loop.config["turn_token_budget"] = int(cmd["turn_token_budget"])
         self.loop = loop
         self._model_tiers = dict(cmd.get("model_tiers") or {})
+        # Direct asks use the Quick path unless the user chose the mission
+        # flow as the default (awino.defaultFlow).
+        self._default_flow = ("mission" if cmd.get("default_flow") == "mission"
+                              else "quick")
+        self._quick = None
+        self._quick_waits = {}
         self._bind_tiers(binding, env_cmd, backend)
         # Native tool application (extension builder): the extension
         # advertises delegated apply/terminal capability in hello. When
@@ -4027,6 +4099,8 @@ class Sidecar:
                 self._cancel.set()
                 if self._turn_token is not None:
                     self._turn_token.set("operator stop")
+            elif self._route_quick_approval(inner):
+                pass
             else:
                 self.deferred.append(inner)
         result = self._turn_out.get()
@@ -4101,10 +4175,104 @@ class Sidecar:
         # Scope #5: automatic housekeeping on stage transitions.
         self._maybe_housekeep_on_phase(result)
 
+    # ------------------------------------------------------- Quick path
+    # Direct asks run in the plain agent loop (quick.py). The mission flow
+    # takes over when a mission is active or the user asks to plan.
+    _PLAN_INTENT = re.compile(
+        r"^\s*/(mission|plan)\b|\bplan (this|it|that|the|out)\b|"
+        r"\b(set|start|define|create|new) (up )?(a |the )?mission\b|"
+        r"\blet'?s plan\b|\bmake a plan\b|\bstory plan\b|"
+        r"\bhonda\b|\bbugatti\b", re.I)
+
+    def _use_quick(self, text: str) -> bool:
+        if getattr(self, "_default_flow", "quick") != "quick":
+            return False
+        s = self.loop.state.snapshot
+        if s.get("mission") and not s.get("done") and not s.get("terminal"):
+            return False
+        if s.get("awaiting_approval") or s.get("awaiting_inspection"):
+            return False
+        return not self._PLAN_INTENT.search(text or "")
+
+    def _quick_backend(self):
+        tiers = getattr(self.loop, "tier_backends", {}) or {}
+        return tiers.get("medium") or self.loop.backend
+
+    def _run_quick(self, text: str) -> dict:
+        from quick import QuickSession
+        from loop import _SidecarStream
+        if getattr(self, "_quick", None) is None:
+            self._quick = QuickSession(self.loop, self._quick_backend(),
+                                       _emit, self._quick_approve)
+        q = self._quick
+        q.backend = self._quick_backend()  # env switch / tiers may change
+        q.cancel = self._turn_token
+        self.loop._cancel_token = self._turn_token
+        turn_id = "q" + uuid.uuid4().hex[:8]
+        stream = _SidecarStream(_emit, turn_id)
+        self.loop._turn_stream = stream
+        stream.turn_start(self.loop.state.snapshot.get("phase") or "IDLE",
+                          "quick")
+        return q.run(text, turn_id)
+
+    def _quick_approve(self, item: dict) -> str:
+        """Emit one approval card and block this (turn) thread until the
+        user decides. The stdin pump routes the matching approve command
+        here (see _route_quick_approval). Cancel denies."""
+        aid = "qa-" + uuid.uuid4().hex[:8]
+        tool, args = item["tool"], item.get("args") or {}
+        card = {"id": aid, "tool": tool, "args": args,
+                "reason": item.get("reason")}
+        try:
+            if tool == "write_file":
+                diff, old_exists = _write_diff(self.loop.sandbox,
+                                               args.get("path", ""),
+                                               args.get("content", ""))
+                card["diff"], card["old_exists"] = diff, old_exists
+            elif tool == "patch_file":
+                card["diff"], card["old_exists"] = args.get("diff", ""), True
+                edit = self.loop._compute_delegated_edit("patch_file", args)
+                if not edit.get("error"):
+                    card["proposed_content"] = edit["content"]
+            elif tool == "run_command":
+                from approval_targets import resolve_shell_targets
+                card["shell_targets"] = resolve_shell_targets(
+                    str(args.get("cmd") or ""), str(self.loop.sandbox.root))
+        except Exception:  # noqa: BLE001 - the card still shows the args
+            traceback.print_exc(file=sys.stderr)
+        waiter = {"event": threading.Event(), "decision": None}
+        self._quick_waits[aid] = waiter
+        self.loop.state.record("approval_requested_quick",
+                               {"id": aid, "tool": tool, "args": args})
+        _emit({"event": "approval_requested", "turn_id": item.get("turn_id"),
+               "approvals": [card]})
+        try:
+            while not waiter["event"].wait(0.2):
+                if self._turn_token is not None and self._turn_token.is_set():
+                    return "deny"
+            return waiter["decision"] or "deny"
+        finally:
+            self._quick_waits.pop(aid, None)
+            self.loop.state.record("approval_decided_quick",
+                                   {"id": aid, "decision": waiter["decision"]})
+
+    def _route_quick_approval(self, cmd) -> bool:
+        """True when cmd answered a pending Quick approval card."""
+        if (isinstance(cmd, dict) and cmd.get("cmd") == "approve"
+                and cmd.get("id") in getattr(self, "_quick_waits", {})):
+            w = self._quick_waits[cmd["id"]]
+            w["decision"] = cmd.get("decision") or "deny"
+            w["event"].set()
+            return True
+        return False
+
     def _run_turn_thread(self, text: str) -> None:
         try:
-            result = self.loop.run_user_turn(text,
-                                             cancel_token=self._turn_token)
+            if self._use_quick(text):
+                result = self._run_quick(text)
+            else:
+                result = self.loop.run_user_turn(
+                    text, cancel_token=self._turn_token)
         except Exception as e:  # noqa: BLE001 - fail-closed turn result
             traceback.print_exc(file=sys.stderr)
             result = {"status": "error",
@@ -4248,7 +4416,7 @@ class Sidecar:
             # New chat: fresh conversation, same project/mission. Commands
             # arriving mid-turn are deferred by the pump, so this never
             # races a running turn.
-            "session_new": lambda a: self.loop.new_session(),
+            "session_new": self._cmd_session_new,
             "mode_list": self._cmd_mode_list,
             "mode_invoke": self._cmd_mode_invoke,
             "mode_dismiss": self._cmd_mode_dismiss,
@@ -4755,6 +4923,10 @@ class Sidecar:
         return {"status": "ok",
                 "said": ("Won't ask again." if args.get("never")
                          else "Skipped for now.")}
+
+    def _cmd_session_new(self, args: dict) -> dict:
+        self._quick = None  # the Quick conversation starts fresh too
+        return self.loop.new_session()
 
     def _cmd_resolve_inspection(self, args: dict) -> dict:
         """After a crash mid-effect: the user says whether it took effect."""

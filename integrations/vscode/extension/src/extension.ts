@@ -1613,6 +1613,7 @@ const SIDECAR_SETTINGS = [
   "awino.models.medium",
   "awino.models.basic",
   "awino.turnTokenBudget",
+  "awino.defaultFlow",
   "awino.autoApproveAfterPlan",
 ] as const;
 
@@ -1851,6 +1852,7 @@ async function doConnectInner(
         basic: vscode.workspace.getConfiguration("awino").get<string>("models.basic", ""),
       },
       turnTokenBudget: vscode.workspace.getConfiguration("awino").get<number>("turnTokenBudget", 200000),
+      defaultFlow: vscode.workspace.getConfiguration("awino").get<"quick" | "mission">("defaultFlow", "quick"),
     });
     lastConnectError = null;
     log(

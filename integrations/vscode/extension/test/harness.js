@@ -138,6 +138,7 @@ async function main() {
     provider: "scripted",
     // this test drives the approval card; session autopilot off
     autoApproveAfterPlan: false,
+    defaultFlow: "mission", // these tests drive the mission engine
     script,
     home,
   }, 60000);

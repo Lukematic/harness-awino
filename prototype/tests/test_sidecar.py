@@ -125,6 +125,9 @@ class SidecarClient:
         return not r
 
     def hello(self, provider="echo", **kw):
+        # These tests exercise the mission engine; direct asks default to
+        # the Quick path in the product (tests/test_quick.py covers it).
+        kw.setdefault("default_flow", "mission")
         self.send({"cmd": "hello", "workspace": self.ws,
                    "provider": provider, **kw})
         return self.recv()

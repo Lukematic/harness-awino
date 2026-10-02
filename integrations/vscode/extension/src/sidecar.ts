@@ -57,6 +57,8 @@ export interface StartOptions {
   modelTiers?: { best?: string; medium?: string; basic?: string };
   /** Token budget per reply/turn (awino.turnTokenBudget); 0 = off. */
   turnTokenBudget?: number;
+  /** "quick" (default): direct asks run the plain agent loop; "mission": always the mission flow. */
+  defaultFlow?: "quick" | "mission";
   /**
    * AWS profile name for provider "bedrock" (SigV4 mode). Forwarded to the
    * sidecar as `aws_profile` in hello; the Python side resolves it from
@@ -216,6 +218,9 @@ export class SidecarClient extends EventEmitter {
       }
       if (typeof opts.turnTokenBudget === "number") {
         hello["turn_token_budget"] = opts.turnTokenBudget;
+      }
+      if (opts.defaultFlow) {
+        hello["default_flow"] = opts.defaultFlow;
       }
       if (opts.model) {
         hello["model"] = opts.model;

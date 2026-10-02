@@ -38,6 +38,7 @@ py-modules = [
     "memory_store",
     "modes",
     "provider_tools",
+    "quick",
     "receipt",
     "registry",
     "rigor",

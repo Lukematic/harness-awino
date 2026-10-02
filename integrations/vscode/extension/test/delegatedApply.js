@@ -164,6 +164,7 @@ async function main() {
       workspace: ws,
       provider: "scripted",
       autoApproveAfterPlan: false, // exercises the approval card path
+      defaultFlow: "mission",
       script,
       home,
       capabilities: { delegated_apply: true, terminal_stream: true },
