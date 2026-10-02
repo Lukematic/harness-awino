@@ -10,6 +10,10 @@
 # Endpoint/model come from repo variables AWINO_BASE_URL / AWINO_MODEL
 # (defaults: OpenRouter, openai/gpt-4o-mini).
 #
+# Local model (job local-model): Ollama on the runner serves an open model
+# (default qwen2.5:3b) at its OpenAI-compatible /v1; scenario 5 runs against
+# it. No key needed: Ollama ignores the Bearer token.
+#
 # Output: the "opencode-e2e" artifact (per-scenario transcript, gateway log,
 # the project files left behind) and summary.md committed to branch
 # ci-results under opencode-e2e/.
@@ -20,6 +24,11 @@ on:
   push:
     branches-ignore: [ci-results]
   workflow_dispatch:
+    inputs:
+      local_model:
+        description: "Ollama model for the local-model job"
+        required: false
+        default: "qwen2.5:3b"
 
 permissions:
   contents: write
@@ -111,4 +120,93 @@ jobs:
             git push -q origin ci-results && break
             git pull -q --rebase origin ci-results || true
             sleep $((i * 2))
+          done
+
+  local-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      LOCAL_MODEL: ${{ inputs.local_model || 'qwen2.5:3b' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install OpenCode from npm
+        run: |
+          npm install -g "opencode-ai@${OPENCODE_VERSION}"
+          opencode --version
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.ollama/models
+          key: ollama-${{ env.LOCAL_MODEL }}
+
+      - name: Start Ollama and pull the model
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          sudo systemctl stop ollama || true
+          # OpenCode's system prompt + tool schemas exceed Ollama's default context.
+          OLLAMA_CONTEXT_LENGTH=32768 OLLAMA_MODELS="$HOME/.ollama/models" nohup ollama serve > ollama.log 2>&1 &
+          for i in $(seq 60); do curl -fs http://127.0.0.1:11434/api/version && break; sleep 1; done
+          OLLAMA_MODELS="$HOME/.ollama/models" ollama pull "$LOCAL_MODEL"
+          ollama list
+
+      - name: Scenario 5 — local model (Ollama)
+        id: local
+        env:
+          REAL_API_KEY: ollama-ignores-keys
+          REAL_BASE_URL: http://127.0.0.1:11434/v1
+          REAL_MODEL: ${{ env.LOCAL_MODEL }}
+          E2E_RUN_TIMEOUT: "1500"
+        run: python opencode/tests/e2e.py --out e2e-out/local --real --only 5-
+
+      - name: Job summary
+        if: always()
+        run: |
+          echo "## Local model: ${LOCAL_MODEL} (Ollama, CPU runner)" >> "$GITHUB_STEP_SUMMARY"
+          cat e2e-out/local/summary.md >> "$GITHUB_STEP_SUMMARY" || echo "no local summary" >> "$GITHUB_STEP_SUMMARY"
+          cp ollama.log e2e-out/local/ 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: opencode-e2e-local-model
+          path: e2e-out/
+          include-hidden-files: true
+
+      - name: Commit local-model summary to ci-results
+        if: always()
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LOCAL: ${{ steps.local.outcome }}
+        run: |
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          REMOTE="https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          R="$RUNNER_TEMP/ci-results"
+          for i in 1 2 3 4; do
+            rm -rf "$R"
+            git clone -q --depth 1 --branch ci-results "$REMOTE" "$R" || { git init -q "$R"; git -C "$R" checkout -q -b ci-results; git -C "$R" remote add origin "$REMOTE"; }
+            D="$R/opencode-e2e"; mkdir -p "$D/runs"
+            {
+              echo "# opencode-e2e local model, run ${GITHUB_RUN_ID}"
+              echo
+              echo "- run: ${RUN_URL}"
+              echo "- commit: ${GITHUB_SHA}  model: ${LOCAL_MODEL} (Ollama)  outcome: ${LOCAL}"
+              echo
+              cat e2e-out/local/summary.md 2>/dev/null || echo "(no summary)"
+            } > "$D/runs/${GITHUB_RUN_ID}-local.md"
+            cp "$D/runs/${GITHUB_RUN_ID}-local.md" "$D/latest-local.md"
+            cd "$R"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add -A && git commit -q -m "opencode-e2e ${GITHUB_RUN_ID}: local=${LOCAL}"
+            git push -q origin ci-results && break
+            cd - >/dev/null; sleep $((i * 3))
           done
