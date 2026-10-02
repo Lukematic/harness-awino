@@ -33,13 +33,13 @@ def git(cwd, *a):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--provider", required=True, choices=["openai", "anthropic"])
+    ap.add_argument("--provider", required=True, choices=["ollama", "openai", "anthropic"])
     ap.add_argument("--endpoint", default="")
     ap.add_argument("--model", required=True)
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
     key = "ANTHROPIC_API_KEY" if a.provider == "anthropic" else "AWINO_API_KEY"
-    if not os.environ.get(key):
+    if a.provider != "ollama" and not os.environ.get(key):
         raise SystemExit(f"{key} is not set — add it as a repository secret.")
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -61,7 +61,7 @@ def main():
         p.stdin.write(json.dumps(o) + "\n")
         p.stdin.flush()
 
-    def until(pred, timeout=600):
+    def until(pred, timeout=1800):  # CPU models in CI are slow
         end = time.time() + timeout
         while time.time() < end:
             line = p.stdout.readline()

@@ -6,8 +6,9 @@
 # extension runs. The report records what fired and what did not — it never
 # forces a pass.
 #
-# No key needed by default: the endpoint defaults to GitHub Models, which
-# this workflow calls with its own GITHUB_TOKEN (permissions: models: read).
+# No key needed by default: provider "ollama" runs an open model (default
+# qwen2.5:3b) inside the runner. GitHub Models (openai provider, endpoint
+# https://models.github.ai/...) uses the workflow's own token.
 # Other providers need a secret (Settings -> Secrets and variables -> Actions):
 #   AWINO_API_KEY      for provider "openai" (OpenRouter, OpenAI, your gateway)
 #   ANTHROPIC_API_KEY  for provider "anthropic"
@@ -23,9 +24,9 @@ on:
       provider:
         description: "openai (any OpenAI-compatible endpoint) or anthropic"
         required: true
-        default: openai
+        default: ollama
         type: choice
-        options: [openai, anthropic]
+        options: [ollama, openai, anthropic]
       endpoint:
         description: "Base URL (openai provider). Default: GitHub Models (free, no key)"
         required: false
@@ -33,7 +34,7 @@ on:
       model:
         description: "Model id at that endpoint"
         required: true
-        default: openai/gpt-4.1-mini
+        default: qwen2.5:3b
       flow:
         description: "quick (Quick path + a worktree agent), mission (the agentic-learning mission), or both"
         required: true
@@ -68,6 +69,17 @@ jobs:
             -d "{\"model\":\"$IN_MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"Say ok\"}],\"max_tokens\":5}" || true
           head -c 400 /tmp/probe-body; echo
 
+      - name: Start Ollama and pull the model (provider ollama)
+        if: inputs.provider == 'ollama'
+        env:
+          IN_MODEL: ${{ inputs.model }}
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          # Room for the system prompt + tool schemas (the default is 4k).
+          (OLLAMA_CONTEXT_LENGTH=16384 ollama serve > /tmp/ollama.log 2>&1 &)
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:11434/api/tags >/dev/null && break; sleep 1; done
+          ollama pull "$IN_MODEL"
+
       - name: Run the mission against the live model
         env:
           AWINO_API_KEY: ${{ secrets.AWINO_API_KEY }}
@@ -85,6 +97,7 @@ jobs:
           fi
           ARGS=(--provider "$IN_PROVIDER" --model "$IN_MODEL" --out live-out)
           if [ "$IN_PROVIDER" = "openai" ]; then ARGS+=(--endpoint "$IN_ENDPOINT"); fi
+          if [ "$IN_PROVIDER" = "ollama" ]; then ARGS+=(--endpoint http://127.0.0.1:11434); export AWINO_TIMEOUT=600; fi
           if [ "$IN_FLOW" != "mission" ]; then
             python proof/live_mission/run_quick_live.py "${ARGS[@]}"
           fi

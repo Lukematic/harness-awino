@@ -28,6 +28,17 @@ def _git(cwd, *args, timeout=60) -> subprocess.CompletedProcess:
                           text=True, timeout=timeout)
 
 
+# Build output the agent's test runs leave behind; never part of its work
+# (repos that already gitignore these are unaffected).
+_JUNK = (":(exclude,glob)**/__pycache__/**", ":(exclude,glob)**/*.pyc",
+         ":(exclude,glob)**/node_modules/**", ":(exclude,glob).awino/**",
+         ":(exclude,glob)**/.pytest_cache/**")
+
+
+def _add_work(path) -> None:
+    _git(path, "add", "-A", "--", ".", *_JUNK)
+
+
 def _slug(text: str) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
     return (s[:28].strip("-") or "agent") + "-" + uuid.uuid4().hex[:4]
@@ -127,7 +138,7 @@ class AgentManager:
         a = self.agents.get(name)
         if not a:
             return {"status": "error", "said": f"No agent {name!r}."}
-        _git(a["path"], "add", "-A")
+        _add_work(a["path"])
         d = _git(a["path"], "diff", "--cached", a["base"])
         _git(a["path"], "reset", "-q")
         return {"status": "ok", "diff": d.stdout, "changes": self._changed(a["path"])}
@@ -140,7 +151,8 @@ class AgentManager:
         if a["status"] == "running":
             return {"status": "error", "said": "That agent is still working."}
         if self._changed(a["path"]):
-            _git(a["path"], "add", "-A")
+            _add_work(a["path"])
+        if _git(a["path"], "diff", "--cached", "--quiet").returncode != 0:
             c = _git(a["path"], "commit", "-m",
                      f"Awino agent {name}: {a['task'][:60]}",
                      "--no-verify")

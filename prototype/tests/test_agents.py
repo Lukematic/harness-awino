@@ -77,9 +77,15 @@ class AgentsTest(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.ws, "NOTES.md")))
         d = self.cmd("agent_diff", {"name": name}, "d")
         self.assertIn("+# Notes", d["diff"])
+        # test runs leave bytecode in both checkouts; it must not be merged
+        for root in (wt, self.ws):
+            os.makedirs(os.path.join(root, "__pycache__"), exist_ok=True)
+            with open(os.path.join(root, "__pycache__", "app.cpython-312.pyc"), "w") as f:
+                f.write(root)
         m = self.cmd("agent_merge", {"name": name}, "m")
         self.assertEqual(m["status"], "ok", m)
         self.assertTrue(os.path.exists(os.path.join(self.ws, "NOTES.md")))
+        self.assertNotIn("__pycache__", git(self.ws, "ls-files").stdout)
         rm = self.cmd("agent_remove", {"name": name}, "r")
         self.assertEqual(rm["status"], "ok")
         self.assertFalse(os.path.isdir(wt))
