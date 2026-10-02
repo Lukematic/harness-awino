@@ -50,5 +50,18 @@ function ok(cond, name) {
   ok(h.size === 1, "entries() does not expose the live log");
 }
 
+// New chat: clear() drops the transcript so the next replay is empty
+{
+  const h = new ChatHistory();
+  h.push({ n: 1 });
+  h.push({ n: 2 });
+  h.clear();
+  const got = [];
+  h.replay((m) => got.push(m));
+  ok(h.size === 0 && got.length === 0, "clear() empties the transcript (New chat)");
+  h.push({ n: 3 });
+  ok(h.size === 1, "history keeps working after clear()");
+}
+
 console.log(`\nchatHistory: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

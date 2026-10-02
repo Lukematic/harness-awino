@@ -132,6 +132,11 @@ def apply_event(snap: dict, ev: dict) -> None:
                      "text": m["text"], "kind": m["kind"],
                      "done_criteria": m["done_criteria"], "ts": ev["ts"]})
         snap["mission_start_ts"] = ev["ts"]  # Phase B: wall-clock budget anchor
+        # Budgets are per mission: remember where the lifetime counters
+        # stood. turn_count itself keeps counting (it numbers the header).
+        snap["mission_turn_base"] = snap.get("turn_count", 0)
+        snap["mission_token_base"] = snap.get("tokens_used", 0)
+        snap["mission_worker_base"] = snap.get("worker_budget_allocated", 0)
         snap["phase"] = "DEFINE"
         snap["plan"] = []
         snap["open_questions"] = []
@@ -247,6 +252,21 @@ def apply_event(snap: dict, ev: dict) -> None:
     elif t == "operator_resumed":
         snap["awaiting_operator"] = False
         snap["retries"] = 0
+    elif t == "session_started":
+        # New chat: fresh conversation over the same project. The mission,
+        # plan, tasks, approvals and learnings are project state and stay;
+        # the conversational residue (open questions, stall counters, an
+        # operator pause) goes. The model's history window starts here.
+        snap["conversation_id"] = d["conversation_id"]
+        # PROGRESS in the contract shows this chat's entries only.
+        snap["session_progress_start"] = len(snap.get("progress", []))
+        snap["open_questions"] = []
+        snap["awaiting_operator"] = False
+        snap["awaiting_operator_reason"] = None
+        snap["awaiting_operator_round"] = None
+        snap["consecutive_stalls"] = 0
+        snap["last_progress_sig"] = None
+        snap["retries"] = 0
     elif t == "stalled":
         snap["awaiting_operator"] = True
     elif t == "judge_failed":
@@ -333,6 +353,11 @@ def apply_event(snap: dict, ev: dict) -> None:
     elif t == "budget_exhausted":
         snap["terminal"] = True
         snap["terminal_reason"] = d["reason"]
+    elif t == "budget_recomputed":
+        # A terminal whose budget is not spent under per-mission, active-time
+        # accounting (older versions counted lifetime totals and idle time).
+        snap["terminal"] = False
+        snap["terminal_reason"] = None
     elif t == "effect_unknown":
         snap["awaiting_inspection"] = d["call_id"]
         snap["flags"].append("unknown effect: " + d["call_id"])

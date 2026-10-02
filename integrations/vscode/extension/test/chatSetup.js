@@ -373,10 +373,28 @@ messageListeners.forEach(function (fn) {
 ok(ids["provider-pill"].textContent.indexOf("anthropic") >= 0, "bindingChanged updates the pill (Spec 4.3)");
 ok(ids["provider-pill"].textContent.indexOf("(stale)") >= 0, "bindingChanged marks the pill stale when dirty (Spec 4.4)");
 
-// 24. Spec 1.4: new-mission button posts newMission
+// 24. "+" is New chat (Kilo New Task / Claude Code /clear): posts newChat
 posted = [];
 ids["new-mission-btn"].fire("click", {});
-ok(lastPosted("newMission") !== null, "new-mission button posts 'newMission' (Spec 1.4)");
+ok(lastPosted("newChat") !== null, "'+' button posts 'newChat'");
+ok(lastPosted("newMission") === null, "'+' no longer jumps straight to a new mission");
+
+// 24b. clearTranscript empties the chat and offers a new mission when one is active
+messageListeners.forEach(function (fn) {
+  fn({ data: { type: "clearTranscript", mission: { id: "m-1", text: "testing" }, phase: "DEFINE" } });
+});
+var msgs = ids["messages"].children;
+ok(msgs.length === 1, "clearTranscript leaves only the new-chat note");
+ok(msgs[0].innerHTML.indexOf("testing") >= 0 && msgs[0].innerHTML.indexOf("still active") >= 0,
+  "new-chat note names the surviving mission");
+var nmBtn = msgs[0].children.filter(function (c) { return String(c.tagName).toLowerCase() === "button"; })[0];
+ok(!!nmBtn, "new-chat note carries a Start a new mission button");
+posted = [];
+if (nmBtn) nmBtn.fire("click", {});
+ok(lastPosted("newMission") !== null, "Start a new mission posts 'newMission'");
+messageListeners.forEach(function (fn) { fn({ data: { type: "clearTranscript", mission: null } }); });
+ok(ids["messages"].children.length === 1 && ids["messages"].children[0].innerHTML.indexOf("New chat") >= 0,
+  "clearTranscript without a mission shows a plain New chat note");
 
 // 25. Spec 1.4: mode selector change posts invokeModeSelect
 posted = [];

@@ -28,7 +28,7 @@ from contract import (
 import modes as _modes
 from skills import SkillIntegrityError
 from synthesis import synthesize_learning as _synthesize_learning
-from stances import (evaluate_chain, route_triple, FLOORS,
+from stances import (evaluate_chain, route_triple, FLOORS, is_direct_ask,
                      resolve_declared_stance)
 from tools import (Sandbox, TOOL_DEFS, _parse_unified_diff, _apply_hunks,
                     PatchRefusal)
@@ -65,6 +65,18 @@ ALLOWED_TRANSITIONS = {
     "REVIEW": ("SHIP", "BUILD", "DEFINE"),
     "SHIP": ("DEFINE",),  # new mission after ship
 }
+
+
+def _terminal_words(reason) -> str:
+    """Plain words for a terminal reason like 'max_seconds=3600'."""
+    name, _, val = str(reason or "").partition("=")
+    if name == "max_seconds" and val.isdigit():
+        return f"its {int(val) // 60}-minute time budget ran out"
+    if name == "max_turns":
+        return f"its {val}-turn budget ran out"
+    if name == "token_budget":
+        return "its token budget ran out"
+    return str(reason or "it reached a terminal state")
 
 
 def classify_user_input(text: str) -> tuple[str, str]:
@@ -325,6 +337,10 @@ class Loop:
         self.sandbox = Sandbox(sandbox_dir or (self.state.dir / "sandbox"))
         cfg = {"max_retries": 3, "max_turns": 50, "stall_limit": 5,
                "token_budget": 200_000, "max_seconds": 3600,
+               # max_turns, token_budget and max_seconds are PER MISSION.
+               # The time budget counts active time: a gap between journal
+               # events longer than this counts only up to it.
+               "idle_gap_seconds": 600,
                # Per-turn token budget (a turn = one user message and the
                # rounds it drives). 0/None disables.
                "turn_token_budget": 60_000,
@@ -333,6 +349,9 @@ class Loop:
                "max_rounds_per_turn": 25, "round_stall_limit": 3}
         cfg.update(config or {})
         self.config = cfg
+        # A project ended under older budget rules (lifetime totals, idle
+        # clock) reopens on load, so the session resume shows the truth.
+        self._lift_stale_terminal()
         # v0.6: cooperative cancellation. One token per user turn, created
         # by run_user_turn (or the sidecar) and threaded through the round
         # driver -> tool executor -> sandbox/backend.
@@ -404,9 +423,42 @@ class Loop:
         return errs
 
     # ---------------------------------------------------------------- history
+    def _session_events(self) -> list[dict]:
+        """Events since the last `session_started` (the whole journal when
+        no new chat was ever started)."""
+        evs = self.state.events
+        for i in range(len(evs) - 1, -1, -1):
+            if evs[i]["type"] == "session_started":
+                return evs[i + 1:]
+        return evs
+
+    def new_session(self) -> dict:
+        """Start a fresh chat over the same project (Kilo "New Task",
+        Claude Code /clear). Refused while an approval or an unknown-effect
+        inspection is pending: those must be settled, not forgotten."""
+        s = self.state.snapshot
+        if s.get("awaiting_approval"):
+            return {"status": "refused",
+                    "said": "Decide the pending approval first, then start "
+                            "a new chat."}
+        if s.get("awaiting_inspection"):
+            return {"status": "refused",
+                    "said": "Settle the interrupted tool call first "
+                            "('applied' or 'not applied'), then start a "
+                            "new chat."}
+        cid = _uid()
+        self.state.record("session_started", {"conversation_id": cid,
+                                              "previous": s.get("conversation_id")})
+        self.state.persist_snapshot()
+        self._rebuild_history()
+        m = self.state.snapshot.get("mission")
+        return {"status": "ok", "conversation_id": cid,
+                "mission": ({"id": m["id"], "text": m["text"]} if m else None),
+                "phase": self.state.snapshot.get("phase")}
+
     def _rebuild_history(self) -> None:
         self.history = []
-        for e in self.state.events[-40:]:
+        for e in self._session_events()[-40:]:
             t, d = e["type"], e["data"]
             if t == "user_message":
                 self.history.append({"role": "user", "text": d["text"][:500]})
@@ -701,10 +753,22 @@ class Loop:
                                cancel_token: CancelToken | None = None) -> dict:
         s = self.state.snapshot
         if s["done"]:
-            return {"status": "closed", "said": "Mission already complete (SHIP)."}
+            return {"status": "closed", "mission_ended": True,
+                    "said": "Mission already complete (SHIP)."}
+        # Re-checked per message too: the config (limits) can change between
+        # load and now.
+        if self._lift_stale_terminal():
+            s = self.state.snapshot
         if s["terminal"]:
-            return {"status": "closed",
-                    "said": f"Terminal state: {s['terminal_reason']}. Start a new project to continue."}
+            m = s.get("mission") or {}
+            what = (f'Mission "{m["text"]}"' if m.get("text")
+                    else "This mission")
+            return {"status": "closed", "mission_ended": True,
+                    "said": (f"{what} has ended "
+                             f"({_terminal_words(s['terminal_reason'])}). "
+                             "Start a new mission to continue: the Start a "
+                             "new mission button below, or the command "
+                             "Awino: New Mission.")}
         kind, payload = classify_user_input(text)
         self.state.record("user_message", {"kind": kind, "text": text})
         self._hist("user", text)
@@ -766,8 +830,11 @@ class Loop:
             # survive a scope change — even a paused turn's (the reducer
             # clears active_turn).
             self.state.record("scope_changed", {"text": text})
-        elif s["open_questions"] and kind in ("info", "question"):
+        elif (s["open_questions"] and kind in ("info", "question")
+              and not is_direct_ask(text)):
             # Heuristic: user text while questions are open resolves them.
+            # A direct aside ("what time is it?") is answered and leaves
+            # the open questions standing.
             resolved = list(s["open_questions"])
             self.state.record("questions_resolved",
                               {"resolved": resolved, "answer": text})
@@ -807,18 +874,19 @@ class Loop:
         # would discard a live token handed in by the sidecar.)
         self._cancel_token = (cancel_token if cancel_token is not None
                               else CancelToken())
-        if s["turn_count"] >= cfg["max_turns"]:
+        if self.mission_turns() >= cfg["max_turns"]:
             self.state.record("budget_exhausted", {"reason": f"max_turns={cfg['max_turns']}"})
             self.state.persist_snapshot()
-            return {"status": "budget_exhausted",
+            return {"status": "budget_exhausted", "mission_ended": True,
                     "said": f"Turn budget exhausted ({cfg['max_turns']}). Terminal."}
-        # Phase B: wall-clock budget. Never auto-increased; exhaustion is terminal.
-        start_ts = s.get("mission_start_ts")
-        if start_ts and (time.time() - start_ts) >= cfg["max_seconds"]:
+        # Phase B: time budget (active time, per mission). Never
+        # auto-increased; exhaustion is terminal for the mission.
+        if (s.get("mission_start_ts")
+                and self.mission_active_seconds() >= cfg["max_seconds"]):
             self.state.record("budget_exhausted",
                               {"reason": f"max_seconds={cfg['max_seconds']}"})
             self.state.persist_snapshot()
-            return {"status": "budget_exhausted",
+            return {"status": "budget_exhausted", "mission_ended": True,
                     "said": f"Time budget exhausted ({cfg['max_seconds']}s). Terminal."}
 
         setup_errs = self.check_setup()
@@ -1063,7 +1131,8 @@ class Loop:
                 if not errs and declared:
                     chain, err = resolve_declared_stance(
                         self.state.snapshot.get("phase"), declared,
-                        raw.get("stance_why", ""))
+                        raw.get("stance_why", ""),
+                        apply_floor=routing.get("intent") != "ask")
                     if err:
                         errs = [err]
                 if not errs and chain != ["advisor"]:
@@ -3510,9 +3579,10 @@ class Loop:
                                "reason": f"{stalls} turns without progress"})
             out["status"] = "stalled"
             out["said"] += f"\n[harness] stalled ({stalls} turns, no progress) — escalated."
-        if s["tokens_used"] >= self.config["token_budget"]:
+        if self.mission_tokens() >= self.config["token_budget"]:
             self.state.record("budget_exhausted", {"reason": "token_budget"})
             out["status"] = "budget_exhausted"
+            out["mission_ended"] = True
         self.state.persist_snapshot()
         return out
 
@@ -3616,7 +3686,7 @@ class Loop:
                 "turn_budget": self.config.get("turn_token_budget"),
                 "cached_pct": round(100 * cached / inp) if inp else 0,
                 "measured": measured,
-                "mission_tokens": self.state.snapshot.get("tokens_used", 0),
+                "mission_tokens": self.mission_tokens(),
                 "mission_budget": self.config.get("token_budget")}
 
     def _record_egress(self, turn_id: str) -> None:
@@ -3700,18 +3770,72 @@ class Loop:
         return {"status": "rejected",
                 "said": "Not done. Gaps: " + "; ".join(gaps), "gaps": gaps}
 
+    # ------------------------------------------------- per-mission budgets
+    def mission_turns(self) -> int:
+        s = self.state.snapshot
+        return s["turn_count"] - s.get("mission_turn_base", 0)
+
+    def mission_tokens(self) -> int:
+        s = self.state.snapshot
+        return s["tokens_used"] - s.get("mission_token_base", 0)
+
+    def mission_worker_allocated(self) -> int:
+        s = self.state.snapshot
+        return (s.get("worker_budget_allocated", 0)
+                - s.get("mission_worker_base", 0))
+
+    def mission_active_seconds(self, now: float | None = None) -> float:
+        """Active time since the mission started: the gaps between journal
+        events (and up to now), each capped at idle_gap_seconds. A mission
+        left open overnight costs one idle gap, not the whole budget."""
+        start = self.state.snapshot.get("mission_start_ts")
+        if not start:
+            return 0.0
+        now = time.time() if now is None else now
+        cap = float(self.config.get("idle_gap_seconds") or 0) or float("inf")
+        stamps = [start] + sorted(e["ts"] for e in self.state.events
+                                  if isinstance(e.get("ts"), (int, float))
+                                  and e["ts"] > start) + [now]
+        return sum(min(max(0.0, b - a), cap)
+                   for a, b in zip(stamps, stamps[1:]))
+
+    def _lift_stale_terminal(self) -> bool:
+        """Reopen a mission whose terminal budget is not spent under
+        per-mission, active-time accounting (older versions counted lifetime
+        totals and idle time). Journaled as budget_recomputed. Returns True
+        when it lifted."""
+        s = self.state.snapshot
+        if not s.get("terminal") or self._budget_still_spent(s.get("terminal_reason")):
+            return False
+        self.state.record("budget_recomputed", {"reason": s["terminal_reason"]})
+        self.state.persist_snapshot()
+        return True
+
+    def _budget_still_spent(self, reason) -> bool:
+        """Is the budget named by a terminal reason spent under the current
+        per-mission, active-time accounting? Unknown reasons stay spent."""
+        name = str(reason or "").partition("=")[0]
+        cfg = self.config
+        if name == "max_turns":
+            return self.mission_turns() >= cfg["max_turns"]
+        if name == "token_budget":
+            return self.mission_tokens() >= cfg["token_budget"]
+        if name == "max_seconds":
+            return self.mission_active_seconds() >= cfg["max_seconds"]
+        return True
+
     # ---------------------------------------------------------------- status
     def budgets(self) -> dict:
-        """Phase B: remaining budgets (turns, tokens, wall-clock seconds)."""
-        s = self.state.snapshot
+        """Phase B: remaining budgets for the current mission (turns,
+        tokens, active seconds)."""
         cfg = self.config
-        start_ts = s.get("mission_start_ts")
-        elapsed = (time.time() - start_ts) if start_ts else 0.0
+        elapsed = self.mission_active_seconds()
+        turns, tokens = self.mission_turns(), self.mission_tokens()
         return {
-            "turns": {"used": s["turn_count"], "limit": cfg["max_turns"],
-                      "remaining": max(0, cfg["max_turns"] - s["turn_count"])},
-            "tokens": {"used": s["tokens_used"], "limit": cfg["token_budget"],
-                       "remaining": max(0, cfg["token_budget"] - s["tokens_used"])},
+            "turns": {"used": turns, "limit": cfg["max_turns"],
+                      "remaining": max(0, cfg["max_turns"] - turns)},
+            "tokens": {"used": tokens, "limit": cfg["token_budget"],
+                       "remaining": max(0, cfg["token_budget"] - tokens)},
             "seconds": {"used": round(elapsed, 1), "limit": cfg["max_seconds"],
                         "remaining": max(0.0, round(cfg["max_seconds"] - elapsed, 1))},
         }
@@ -3854,7 +3978,7 @@ class Loop:
         """
         s = self.state.snapshot
         # shared budget: track allocated turns
-        allocated = s.get("worker_budget_allocated", 0)
+        allocated = self.mission_worker_allocated()
         requested = budget_share.get("max_turns", 0)
         limit = self.config.get("max_turns", 50)
         if allocated + requested > limit:
@@ -4017,7 +4141,7 @@ class Loop:
                     f"No worker spawned.")
             routed_backends.append(model_routes[name])
         s = self.state.snapshot
-        allocated = s.get("worker_budget_allocated", 0)
+        allocated = self.mission_worker_allocated()
         limit = self.config.get("max_turns", 50)
         total = sum(st["budget_share"].get("max_turns", 0)
                     for st in subtasks)

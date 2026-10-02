@@ -1,6 +1,46 @@
 # Changelog
 
+## 0.7.1 — A mission's end is never a dead project
+
+- **Budgets are per mission.** The turn (50), token (200,000) and worker
+  budgets counted the project's whole life, and a new mission never reset
+  them: once a project reached a limit, every later mission ended on its
+  first message. Each mission now starts fresh (journaled baselines at
+  `mission_set`; the header's turn number keeps counting).
+- **The time budget counts active time.** It counted the wall clock since
+  the mission started, so a mission left open for an hour was over with no
+  work done ("Terminal state: max_seconds=3600"). A gap longer than
+  `idle_gap_seconds` (10 minutes) now counts as 10 minutes.
+- **Projects stuck under the old rules reopen on load** when their budget is
+  not spent under the new accounting (`budget_recomputed` in the journal),
+  so the session resume no longer says "terminal".
+- **An ended mission says so and offers the way out:** "Mission "testing"
+  has ended (its 50-turn budget ran out)…" with a **Start a new mission**
+  button on the reply (not "Start a new project to continue"). The button
+  appears only for real endings (`mission_ended`), never for a per-turn
+  pause that continues with "continue".
+- **Testing:** `test/live/hostE2E.js` drives the compiled extension, its
+  real webview in Chromium, the bundled sidecar and a keyed gateway through
+  four user journeys; `tests/test_mission_budgets.py`; the Windows
+  real-VS-Code proof now runs on `main`, pull requests and release tags.
+- Lint: `contract.py` no longer fails ruff (F821).
+
 ## Unreleased — Receipts and lessons
+
+- **New chat** (`Awino: New Chat`, the **+** button): clears the transcript
+  and starts a fresh conversation over the same project, like Kilo's New
+  Task or Claude Code's `/clear`. The model's history window, open
+  questions and PROGRESS start empty; the mission, plan, tasks and
+  learnings stay, and the chat offers **Start a new mission**. Refused
+  while an approval or an interrupted tool call is pending. Sidecar
+  command `session_new`, journal event `session_started`.
+- **Direct questions get direct answers.** Short questions and small talk
+  ("what time is it", "thanks") route to the advisor stance with read-only
+  tools instead of the phase default, so DEFINE no longer turns every
+  message into another mission question. An aside leaves the open mission
+  questions open instead of counting as their answer.
+- **The model knows the time:** every contract ends with a `## NOW` line
+  (local time and UTC offset).
 
 - **Tokens:** skill text moved into a stable, cached system prompt and the
   per-round header moved to the end, so providers can cache the prefix.

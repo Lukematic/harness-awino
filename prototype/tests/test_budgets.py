@@ -89,13 +89,17 @@ class TestBudgets(unittest.TestCase):
         self.assertGreater(loop.state.snapshot["tokens_used"], 0)
 
     def test_time_budget_is_terminal(self):
-        """Phase B: wall-clock budget exhaustion is terminal."""
+        """Phase B: time budget exhaustion is terminal. The budget counts
+        ACTIVE time (idle gaps are capped), so the mission has to have been
+        worked on for two hours, not merely started two hours ago."""
         backend = ScriptedBackend([T(progress_delta="x")])
         loop, _ = make_loop(backend=backend, config={"max_seconds": 3600})
         loop.set_mission("M", ["manual"])
-        # backdate the mission start to force exhaustion
-        loop.state.snapshot["mission_start_ts"] = time.time() - 7200
-        # persist the backdated ts via a record so reload sees it
+        now = time.time()
+        loop.state.snapshot["mission_start_ts"] = now - 7200
+        for k in range(1, 24):  # activity every 5 minutes for two hours
+            loop.state.events.append({"type": "tick", "data": {},
+                                      "ts": now - 7200 + k * 300})
         r = loop.run_user_turn("hi")
         self.assertEqual(r["status"], "budget_exhausted")
         self.assertTrue(any(e["type"] == "budget_exhausted"

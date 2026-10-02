@@ -4245,6 +4245,10 @@ class Sidecar:
             "skill_add": self._cmd_skill_add,
             "tasks_list": self._cmd_tasks_list,
             "session_resume": self._cmd_session_resume,
+            # New chat: fresh conversation, same project/mission. Commands
+            # arriving mid-turn are deferred by the pump, so this never
+            # races a running turn.
+            "session_new": lambda a: self.loop.new_session(),
             "mode_list": self._cmd_mode_list,
             "mode_invoke": self._cmd_mode_invoke,
             "mode_dismiss": self._cmd_mode_dismiss,

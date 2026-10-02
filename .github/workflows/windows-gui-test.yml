@@ -20,8 +20,13 @@
 name: windows-gui-test
 
 on:
+  # Real VS Code on Windows for everything that ships: main, pull requests
+  # and release tags (it previously ran only on two retired branches, so
+  # nothing released was ever GUI-tested).
   push:
-    branches: [feature/bundled-python-050, claude/native-tools-auth-hotfix-bhsr45]
+    branches: [main]
+    tags: ['vsix-v*']
+  pull_request:
   workflow_dispatch:
 
 jobs:

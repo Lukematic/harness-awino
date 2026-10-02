@@ -210,6 +210,35 @@ INTENT_TABLE = [
 ]
 
 
+# Direct asks: short questions and small talk get a direct answer, whatever
+# the floor. Without this, "what time is it" in DEFINE routed to the
+# planning-grill floor default and came back as another mission question.
+_DIRECT_ASK_MAX_WORDS = 12
+_GREETING_RE = re.compile(
+    r"^(hi|hello|hey|yo|thanks|thank you|thx|ok|okay|cool|nice|great|"
+    r"good (morning|afternoon|evening))\b[\s!.,?]*")
+_QUESTION_START_RE = re.compile(
+    r"^(what|what's|whats|when|where|who|whose|which|why|is|are|was|were|"
+    r"do you|does|did|can you|could you|will you|would you|have you|"
+    r"how (much|many|long|old|far|big|come))\b")
+
+
+def is_direct_ask(text: str) -> bool:
+    """A short question or small talk that wants an answer, not a mission.
+
+    Only called after the intent table found nothing, so "how do I ...",
+    "should we ...", "fix ..." and the like keep their own routes."""
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    words = t.split()
+    if len(words) > _DIRECT_ASK_MAX_WORDS:
+        return False
+    if _GREETING_RE.match(t) and len(words) <= 4:
+        return True
+    return t.endswith("?") or bool(_QUESTION_START_RE.match(t))
+
+
 def route_triple(snapshot: dict, text: str,
                  kind: str) -> tuple[str | None, str, list[str], list[str], str]:
     """Code router for the per-turn triple.
@@ -251,6 +280,9 @@ def route_triple(snapshot: dict, text: str,
             return (intent, mode, list(chain),
                     list(skills) + _INTENT_RIGOR.get(intent, []),
                     f"intent pattern: {intent}")
+    if kind in ("info", "question") and is_direct_ask(t):
+        # Answer it: advisor stance, read-only tools, no mission skills.
+        return ("ask", "observe", ["advisor"], [], "direct question")
     if (not snapshot.get("mission") and kind == "info"
             and len(t.split()) > 8):
         return ("new-task", "plan", ["planning-grill"],
@@ -313,8 +345,12 @@ def allowed_stances(phase: str | None) -> list[str]:
 
 
 def resolve_declared_stance(phase: str | None, declared: str,
-                            why: str) -> tuple[list[str] | None, str | None]:
-    """The chain a model-declared stance runs under, or an error."""
+                            why: str, apply_floor: bool = True
+                            ) -> tuple[list[str] | None, str | None]:
+    """The chain a model-declared stance runs under, or an error.
+
+    apply_floor=False (a routed direct ask) leaves the phase floor's rubric
+    off: answering "what time is it" must not have to advance a plan."""
     phase = phase or "IDLE"
     if declared not in STANCE_SUMMARY:
         return None, (f"unknown stance {declared!r}; choose from "
@@ -324,7 +360,7 @@ def resolve_declared_stance(phase: str | None, declared: str,
                       f"choose from {', '.join(allowed_stances(phase))}")
     if not (why or "").strip():
         return None, "a declared stance needs a one-line stance_why"
-    floor = PHASE_FLOOR.get(phase)
+    floor = PHASE_FLOOR.get(phase) if apply_floor else None
     return [declared] + ([floor] if floor and floor != declared else []), None
 
 

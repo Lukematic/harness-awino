@@ -1126,6 +1126,19 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     st.thinkDetails.hidden = !thinking;
   }
 
+  // A mission that ENDED is recovered by a new mission, not by typing:
+  // offer the button right on the reply. Only on the engine's explicit
+  // mission_ended flag — a per-turn pause also says "budget_exhausted" but
+  // continues with "continue", and must not push a new mission.
+  function appendNewMissionAction(card, r) {
+    if (r.mission_ended !== true) return;
+    var b = mk("button", "secondary new-mission-action", "Start a new mission");
+    b.addEventListener("click", function () {
+      vscode.postMessage({ type: "newMission" });
+    });
+    card.appendChild(b);
+  }
+
   function finalizeStream(st, r) {
     if (st.finalized) return;
     st.finalized = true;
@@ -1148,6 +1161,7 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     if (r.status === "awaiting_approval") {
       st.card.appendChild(mk("div", "", "<i>Waiting for your approval \u2014 decide on the card below.</i>"));
     }
+    appendNewMissionAction(st.card, r);
     turnInFlight = false;
     setBead("turn", "", "turn: idle");
     refreshInput();
@@ -1212,6 +1226,7 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     if (r.status === "awaiting_approval") {
       card.appendChild(mk("div", "", "<i>Waiting for your approval \u2014 decide on the card below.</i>"));
     }
+    appendNewMissionAction(card, r);
     messages.appendChild(card);
     turnInFlight = false;
     refreshInput();
@@ -1514,9 +1529,35 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     // Reset to the active mode until the host confirms the switch.
     // The next state/modesList message re-renders the true active mode.
   });
+  // "+" is New chat (Kilo "New Task", Claude Code /clear): the host starts
+  // a fresh sidecar conversation and replies with clearTranscript.
   if (newMissionBtn) newMissionBtn.addEventListener("click", function () {
-    vscode.postMessage({ type: "newMission" });
+    vscode.postMessage({ type: "newChat" });
   });
+
+  // New chat: empty the transcript and reset per-turn UI state. The
+  // mission is project state and survives, so say so and offer to replace it.
+  function clearTranscript(m) {
+    streams.clear();
+    messages.innerHTML = "";
+    turnInFlight = false;
+    var tm = document.getElementById("token-meter");
+    if (tm) tm.hidden = true;
+    setBead("turn", "", "turn: idle");
+    var mission = m && m.mission;
+    var d = addMsg("new-chat", mission
+      ? "<i>New chat. Mission <b>" + esc(mission.text) + "</b> is still active" +
+        (m.phase ? " (" + esc(m.phase) + ")" : "") + ".</i> "
+      : "<i>New chat.</i>");
+    if (mission) {
+      var b = mk("button", "secondary", "Start a new mission");
+      b.addEventListener("click", function () {
+        vscode.postMessage({ type: "newMission" });
+      });
+      d.appendChild(b);
+    }
+    refreshInput();
+  }
 
   // ---------- wizard events ----------
   if (wProvider) wProvider.addEventListener("change", updateWizardForProvider);
@@ -1615,6 +1656,8 @@ if (typeof acquireVsCodeApi === "function" && typeof document !== "undefined") {
     if (!m || typeof m !== "object") return;
     if (m.type === "event" && m.payload) {
       renderEvent(m.payload);
+    } else if (m.type === "clearTranscript") {
+      clearTranscript(m);
     } else if (m.type === "wizardProveReady") {
       // Spec 2.1 Step 3: settings saved and sidecar connected — show the
       // prove-it step. The earlier steps are done; only the test message
