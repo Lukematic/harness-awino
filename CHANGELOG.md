@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased — Quick path and parallel agents
+
+- **Quick is the default for direct asks** ("add X", "fix this test",
+  "explain this"). It is the plain agent loop Cline and Kilo use: the
+  model gets read, edit and command tools natively, answers in prose, and
+  the loop runs until it replies without a tool call. No reply format, no
+  phases. Planning asks ("plan this", `/mission …`), an active mission or
+  `awino.defaultFlow: "mission"` still use the mission flow.
+- **Parallel tool calls:** read-only calls in one step run at the same
+  time (up to 6). Each edit shows one diff card; commands run unless they
+  are destructive, which ask. "Always allow" lasts the session.
+- **Tests run for you:** after Quick changes files, the project's `test`
+  recipe runs; a failure goes back to the model (up to 2 fixes).
+- **Agents in worktrees** (`Awino: New Agent`, `Awino: List Agents`): each
+  agent works in `../.awino-worktrees/<repo>/<name>` on branch
+  `awino/<name>`, with its own journal, while the main chat stays free.
+  Review its diff, merge it (a merge commit; conflicts are reported,
+  never forced) or remove it.
+- **Live check:** the `live-mission` workflow takes `flow: quick` and runs
+  `proof/live_mission/run_quick_live.py` against a real model.
+
 ## 0.7.1 — A mission's end is never a dead project
 
 - **Budgets are per mission.** The turn (50), token (200,000) and worker
