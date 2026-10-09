@@ -1,0 +1,256 @@
+{
+  "opencode": "1.18.33",
+  "results": [
+    {
+      "name": "1-bearer-key",
+      "passed": true,
+      "checks": [
+        {
+          "check": "run exits 0",
+          "ok": true,
+          "detail": "exit 0"
+        },
+        {
+          "check": "model was called",
+          "ok": true,
+          "detail": "1 POSTs"
+        },
+        {
+          "check": "every request carried Bearer test-key",
+          "ok": true,
+          "detail": "[true]"
+        },
+        {
+          "check": "requests streamed",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "check": "reply reached the CLI",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "check": "wrong key: gateway saw unauthenticated requests",
+          "ok": true,
+          "detail": "[false]"
+        },
+        {
+          "check": "wrong key: no reply reached the CLI",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "2-mission-anchored-without-tool-call",
+      "passed": true,
+      "checks": [
+        {
+          "check": "a greeting does not anchor a mission",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "check": "first real request anchored as the mission (no tool call)",
+          "ok": true,
+          "detail": "{\"objective\": \"make the file\\nAWINO_TEST_B64 eyJjYWxscyI6IFt7Im5hbWUiOiAid3JpdGUiLCAiYXJncyI6IHsiZmlsZVBhdGgiOiAiL3RtcC9hd2luby0yLW1pc3Npb24tYW5jaG9yZWQtd2l0aG91dC10b29sLWNhbGwtbXFudTVqXzIvaGkudHh0IiwgImNvbnRlbnQiOiAiaGVsbG8ifX1dLCAicmVwbHkiOiAiQUZURVJfV1JJVEUifQ==\", \"done_criteria\": [], \"created\": "
+        },
+        {
+          "check": "set_mission is not offered (no tool needed to start)",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "check": "write went through on the first request",
+          "ok": true,
+          "detail": "hello"
+        },
+        {
+          "check": "the edit is journaled under the mission",
+          "ok": true,
+          "detail": "JpdGUiLCAiYXJncyI6IHsiZmlsZVBhdGgiOiAiL3RtcC9hd2luby0yLW1pc3Npb24tYW5jaG9yZWQtd2l0aG91dC10b29sLWNhbGwtbXFudTVqXzIvaGkudHh0IiwgImNvbnRlbnQiOiAiaGVsbG8ifX1dLCAicmVwbHkiOiAiQUZURVJfV1JJVEUifQ==\",\"source\":\"first request\"}\n{\"ts\":\"2026-10-09T19:55:33.848Z\",\"kind\":\"edit\",\"tool\":\"write\",\"paths\":[\"hi.txt\"]}\n"
+        },
+        {
+          "check": "run exits 0",
+          "ok": true,
+          "detail": "exit 0"
+        },
+        {
+          "check": ".awino/mission.json NOT overwritten via write",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "3-done-criteria-from-reply",
+      "passed": true,
+      "checks": [
+        {
+          "check": "done criteria captured from the reply's 'Done when:' list",
+          "ok": true,
+          "detail": "{\"objective\": \"create hi.txt saying hello\\nAWINO_TEST_B64 eyJjYWxscyI6IFt7Im5hbWUiOiAid3JpdGUiLCAiYXJncyI6IHsiZmlsZVBhdGgiOiAiL3RtcC9hd2luby0zLWRvbmUtY3JpdGVyaWEtZnJvbS1yZXBseS1kcjN1eXM4ei9oaS50eHQiLCAiY29udGVudCI6ICJoZWxsbyJ9fV0sICJyZXBseSI6ICJNaXNzaW9uOiBDcmVhdGUgaGkudHh0IHNheWluZyBoZWxsb1xuRG9uZS"
+        },
+        {
+          "check": "hi.txt written",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "check": "a message starting with 'mission:' replaces the anchor",
+          "ok": true,
+          "detail": "{\"objective\": \"Rename hi.txt to hello.txt\\nAWINO_TEST_B64 eyJyZXBseSI6ICJPSyJ9\", \"done_criteria\": [], \"created\": \"2026-10-09T19:55:39.090Z\", \"source\": \"user\"}"
+        },
+        {
+          "check": "inline 'done when: - x' is captured too",
+          "ok": true,
+          "detail": "{\"objective\": \"Rename hi.txt to hello.txt\\nAWINO_TEST_B64 eyJyZXBseSI6ICJPSyJ9\", \"done_criteria\": [\"hello.txt exists\"], \"created\": \"2026-10-09T19:55:39.090Z\", \"source\": \"user\"}"
+        },
+        {
+          "check": "run exits 0",
+          "ok": true,
+          "detail": "exit 0"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "4-story_close-receipt-and-brag",
+      "passed": true,
+      "checks": [
+        {
+          "check": "closing archives the mission",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "check": "story_close offered as a tool",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "check": "receipt .md written",
+          "ok": true,
+          "detail": "2026-10-09-say-hello-mv1dxva2.md"
+        },
+        {
+          "check": "receipt has promise + proof",
+          "ok": true,
+          "detail": "# Receipt: Say hello\n\nClosed 2026-10-09 \u00b7 EVIDENCE LISTED (not re-run by the harness)\n\n## Promise\n\n**Objective:** fixture mission\n\nDone criteria:\n- hi.txt exists\n\n## Proof\n\nEvidence:\n- cat hi.txt -> hello\n\nFiles written during the mission:\n- (none recorded)\n\n## Outcome\n\nhi.txt now greets the user\n"
+        },
+        {
+          "check": "brag board has the entry",
+          "ok": true,
+          "detail": "# Brag board\n\nFinished work: what, when, and the result. The promise and proof are in each receipt.\n\n### \u2713 Say hello \u2014 2026-10-09\nhi.txt now greets the user\n<sub>EVIDENCE LISTED (not re-run by the harness) \u00b7 receipt: .awino/receipts/2026-10-09-say-hello-mv1dxva2.md</sub>\n"
+        },
+        {
+          "check": "direct write to BRAG.md denied",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "check": "direct edit of the receipt denied",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "check": "second close appends (both entries present)",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "interviewer-cannot-edit",
+      "passed": true,
+      "checks": [
+        {
+          "check": "interviewer model calls happened",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "check": "write/edit/patch not offered to interviewer",
+          "ok": true,
+          "detail": "bash, glob, grep, read, skill, story_close, task, todowrite, webfetch"
+        },
+        {
+          "check": "hi.txt NOT written by interviewer",
+          "ok": true,
+          "detail": ""
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "unknown-a-stance-every-message",
+      "passed": true,
+      "checks": [
+        {
+          "check": "'should we use postgres vs sqlite?': every call (1) carries stance steel-man",
+          "ok": true,
+          "detail": "[[\"...\", \"steel-man \\u2192 premortem | intent: decide | mode: plan | intent: decide\"]]"
+        },
+        {
+          "check": "'teach me how does indexing work': every call (1) carries stance feynman",
+          "ok": true,
+          "detail": "[[\"...\", \"feynman | intent: teach | mode: observe | intent: teach\"]]"
+        },
+        {
+          "check": "'fix the bug in notes': every call (2) carries stance first-principles",
+          "ok": true,
+          "detail": "[[\"...\", \"first-principles | intent: fix | mode: build | intent: fix\"], [\"...\", \"first-principles | intent: fix | mode: build | intent: fix\"]]"
+        },
+        {
+          "check": "every call (4) carries the mission anchor",
+          "ok": true,
+          "detail": "[[\"...\", \"fixture mission | done when: hi.txt exists\"], [\"...\", \"fixture mission | done when: hi.txt exists\"], [\"...\", \"fixture mission | done when: hi.txt exists\"], [\"...\", \"fixture mission | done when: hi.txt exists\"]]"
+        },
+        {
+          "check": "tool round-trip turn made >1 model call",
+          "ok": true,
+          "detail": "2 calls"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "name": "unknown-b-redo-on-rule-break",
+      "passed": true,
+      "checks": [
+        {
+          "check": "grill stance routed",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "check": "first reply broke the rule (3 questions)",
+          "ok": true,
+          "detail": "[\"What is the deadline? Who are the users? What platform?\", \"Who are the users?\"]"
+        },
+        {
+          "check": "plugin sent a correction follow-up to the model",
+          "ok": true,
+          "detail": "1 correction requests"
+        },
+        {
+          "check": "final assistant reply is the redone one (one question)",
+          "ok": true,
+          "detail": "[\"What is the deadline? Who are the users? What platform?\", \"Who are the users?\"]"
+        },
+        {
+          "check": "no redo loop (exactly one correction)",
+          "ok": true,
+          "detail": "1"
+        }
+      ],
+      "notes": [
+        "opencode run (one-shot): 0 correction request(s); the process exits at the first session.idle"
+      ]
+    }
+  ]
+}
