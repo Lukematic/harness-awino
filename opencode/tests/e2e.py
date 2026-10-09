@@ -142,50 +142,56 @@ def s1_bearer(c: Ctx):
             "SHOULD_NOT_APPEAR" not in out, "")
 
 
-def s2_blocked_before_mission(c: Ctx):
+def mission(d: Path) -> dict:
+    m = d / ".awino" / "mission.json"
+    return json.loads(m.read_text()) if m.exists() else {}
+
+
+def s2_anchor_without_tool_call(c: Ctx):
+    code, out = c.run("hi")
+    c.check("a greeting does not anchor a mission", not mission(c.dir), "")
     code, out = c.run("make the file\n" + directive(
         calls=[{"name": "write", "args": {"filePath": str(c.dir / "hi.txt"),
                                           "content": "hello"}}],
-        reply="AFTER_WRITE"))
-    c.check("write tool was offered to the model",
-            any("write" in r["tool_names"] for r in c.requests()), "")
-    c.check("hi.txt NOT written", not (c.dir / "hi.txt").exists(), "")
-    c.check("block reason returned to the model",
-            "no mission" in out.lower() and "set_mission" in out, "")
-    # A mission cannot be forged by writing the file directly.
+        reply="AFTER_WRITE"), "--continue")
+    m = mission(c.dir)
+    c.check("first real request anchored as the mission (no tool call)",
+            m.get("objective", "").startswith("make the file"), json.dumps(m)[:300])
+    c.check("set_mission is not offered (no tool needed to start)",
+            not any("set_mission" in r["tool_names"] for r in c.requests()), "")
+    c.check("write went through on the first request",
+            read(c.dir / "hi.txt") == "hello", read(c.dir / "hi.txt"))
+    c.check("the edit is journaled under the mission",
+            '"kind":"edit"' in read(c.dir / ".awino" / "journal.jsonl"),
+            read(c.dir / ".awino" / "journal.jsonl")[-300:])
+    c.check("run exits 0", code == 0, f"exit {code}")
+    # The anchor cannot be forged or edited by file tools.
+    before = read(c.dir / ".awino" / "mission.json")
     code, out = c.run("forge it\n" + directive(
         calls=[{"name": "write", "args": {
             "filePath": str(c.dir / ".awino" / "mission.json"),
-            "content": '{"objective": "forged"}'}}], reply="AFTER_FORGE"))
-    c.check(".awino/mission.json NOT forged via write",
-            not (c.dir / ".awino" / "mission.json").exists(), "")
+            "content": '{"objective": "forged"}'}}], reply="AFTER_FORGE"), "--continue")
+    c.check(".awino/mission.json NOT overwritten via write",
+            read(c.dir / ".awino" / "mission.json") == before, "")
 
 
-def s3_allowed_after_mission(c: Ctx):
-    code, out = c.run("empty criteria\n" + directive(calls=[
-        {"name": "set_mission", "args": {"objective": "Vague", "done_criteria": []}}],
-        reply="EMPTY"))
-    c.check("set_mission with no done criteria is refused",
-            not (c.dir / ".awino" / "mission.json").exists(), out[-400:])
-    code, out = c.run("define then build\n" + directive(calls=[
-        {"name": "set_mission", "args": {
-            "objective": "Create hi.txt saying hello",
-            "done_criteria": ["hi.txt exists", "hi.txt contains hello"]}},
-        {"name": "write", "args": {"filePath": str(c.dir / "hi.txt"),
-                                   "content": "hello"}}],
-        reply="BUILT"))
-    m = c.dir / ".awino" / "mission.json"
-    c.check("set_mission offered as a tool",
-            any("set_mission" in r["tool_names"] for r in c.requests()), "")
-    c.check(".awino/mission.json written by set_mission", m.exists(), read(m))
-    ok = False
-    if m.exists():
-        j = json.loads(m.read_text())
-        ok = (j.get("objective") == "Create hi.txt saying hello"
-              and len(j.get("done_criteria", [])) == 2)
-    c.check("mission holds objective + done criteria", ok, "")
-    c.check("hi.txt written after mission",
-            read(c.dir / "hi.txt") == "hello", read(c.dir / "hi.txt"))
+def s3_done_criteria_from_reply(c: Ctx):
+    code, out = c.run("create hi.txt saying hello\n" + directive(
+        calls=[{"name": "write", "args": {"filePath": str(c.dir / "hi.txt"),
+                                          "content": "hello"}}],
+        reply="Mission: Create hi.txt saying hello\nDone when:\n- hi.txt exists\n"
+              "- hi.txt contains hello\nWorking on it."))
+    m = mission(c.dir)
+    c.check("done criteria captured from the reply's 'Done when:' list",
+            m.get("done_criteria") == ["hi.txt exists", "hi.txt contains hello"],
+            json.dumps(m)[:300])
+    c.check("hi.txt written", read(c.dir / "hi.txt") == "hello", "")
+    code, out = c.run("mission: Rename hi.txt to hello.txt\n" + directive(reply="OK"),
+                      "--continue")
+    m = mission(c.dir)
+    c.check("a message starting with 'mission:' replaces the anchor",
+            m.get("objective", "").startswith("Rename hi.txt to hello.txt")
+            and not m.get("done_criteria"), json.dumps(m)[:300])
     c.check("run exits 0", code == 0, f"exit {code}")
 
 
@@ -197,6 +203,7 @@ def s4_story_close(c: Ctx):
             "evidence": ["cat hi.txt -> hello"]}}], reply="CLOSED"))
     receipts = sorted((c.dir / ".awino" / "receipts").glob("*.md"))
     brag = read(c.dir / "BRAG.md")
+    c.check("closing archives the mission", not mission(c.dir), "")
     c.check("story_close offered as a tool",
             any("story_close" in r["tool_names"] for r in c.requests()), "")
     c.check("receipt .md written", len(receipts) == 1,
@@ -266,6 +273,11 @@ def u_a_stance_injection(c: Ctx):
         c.check(f"'{text}': every call ({len(reqs)}) carries stance {want}",
                 reqs and all(any(want in s for s in st) for st in stances),
                 json.dumps(stances))
+    every = [r for _, _, reqs in per_turn for r in reqs]
+    c.check(f"every call ({len(every)}) carries the mission anchor",
+            every and all(any("fixture mission" in m for m in r.get("mission", []))
+                          for r in every),
+            json.dumps([r.get("mission") for r in every])[:300])
     c.check("tool round-trip turn made >1 model call",
             len(per_turn[2][2]) >= 2, f"{len(per_turn[2][2])} calls")
 
@@ -350,20 +362,23 @@ def s5_real_model(c: Ctx):
     model = os.environ.get("REAL_MODEL", "")
     env = c.env(key=key, model=model, base=base)
     code, out = c.run(
-        "Create a file named hello.txt containing exactly the word hello. "
-        "If a tool is blocked, read the reason and do what it says, then retry.",
-        env=env)
-    m = c.dir / ".awino" / "mission.json"
+        "Create a file named hello.txt containing exactly the word hello.", env=env)
+    m = mission(c.dir)
     c.check("run exits 0", code == 0, f"exit {code}")
-    c.check("model set a mission before writing", m.exists(), read(m)[:300])
-    c.check("hello.txt written", (c.dir / "hello.txt").exists(),
+    c.check("mission anchored from the request (no tool call)",
+            "hello.txt" in m.get("objective", ""), json.dumps(m)[:300])
+    c.check("hello.txt contains hello",
+            read(c.dir / "hello.txt").strip() == "hello",
             read(c.dir / "hello.txt")[:100])
+    c.notes.append("done criteria captured from the reply: "
+                   + (json.dumps(m.get("done_criteria")) if m.get("done_criteria")
+                      else "none (the model did not write a 'Done when:' list)"))
 
 
 SCENARIOS = [
     ("1-bearer-key", s1_bearer),
-    ("2-write-blocked-before-mission", s2_blocked_before_mission),
-    ("3-write-allowed-after-set_mission", s3_allowed_after_mission),
+    ("2-mission-anchored-without-tool-call", s2_anchor_without_tool_call),
+    ("3-done-criteria-from-reply", s3_done_criteria_from_reply),
     ("4-story_close-receipt-and-brag", s4_story_close),
     ("interviewer-cannot-edit", s_interviewer),
     ("unknown-a-stance-every-message", u_a_stance_injection),

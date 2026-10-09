@@ -16,6 +16,7 @@ KEY = os.environ.get("FAKE_GATEWAY_KEY", "test-key")
 LOG = []
 DIRECTIVE = re.compile(r"^AWINO_TEST (\{.*\})\s*$|AWINO_TEST_B64 ([A-Za-z0-9+/=]+)", re.M)
 STANCE = re.compile(r"\[A\.W\.I\.N\.O\. stance: ([^\]]+)\]")
+MISSION = re.compile(r"\[A\.W\.I\.N\.O\. mission: ([^\]]+)\]")
 CORRECTION = "[A.W.I.N.O. correction]"
 
 
@@ -121,6 +122,7 @@ class H(BaseHTTPRequestHandler):
                  "tool_names": [t.get("function", {}).get("name")
                                 for t in body.get("tools") or []],
                  "stance": STANCE.findall(system),
+                 "mission": MISSION.findall(system),
                  "last_user": (users[-1] if users else "")[:300],
                  "n_messages": len(msgs)}
         LOG.append(entry)

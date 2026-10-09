@@ -11,7 +11,7 @@
 # (defaults: OpenRouter, openai/gpt-4o-mini).
 #
 # Local model (job local-model): Ollama on the runner serves an open model
-# (default qwen2.5:7b) at its OpenAI-compatible /v1; scenario 5 runs against
+# (default: qwen2.5:3b and qwen2.5:7b, one job each) at its OpenAI-compatible /v1; scenario 5 runs against
 # it. No key needed: Ollama ignores the Bearer token.
 #
 # Output: the "opencode-e2e" artifact (per-scenario transcript, gateway log,
@@ -25,10 +25,10 @@ on:
     branches-ignore: [ci-results]
   workflow_dispatch:
     inputs:
-      local_model:
-        description: "Ollama model for the local-model job"
+      local_models:
+        description: 'JSON list of Ollama models for the local-model job, e.g. ["qwen2.5:7b"]'
         required: false
-        default: "qwen2.5:7b"
+        default: '["qwen2.5:3b", "qwen2.5:7b"]'
 
 permissions:
   contents: write
@@ -125,8 +125,12 @@ jobs:
   local-model:
     runs-on: ubuntu-latest
     timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ${{ fromJSON(inputs.local_models || '["qwen2.5:3b", "qwen2.5:7b"]') }}
     env:
-      LOCAL_MODEL: ${{ inputs.local_model || 'qwen2.5:7b' }}
+      LOCAL_MODEL: ${{ matrix.model }}
     steps:
       - uses: actions/checkout@v4
 
@@ -177,7 +181,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: opencode-e2e-local-model
+          name: opencode-e2e-local-${{ strategy.job-index }}
           path: e2e-out/
           include-hidden-files: true
 
@@ -187,6 +191,7 @@ jobs:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
           LOCAL: ${{ steps.local.outcome }}
         run: |
+          TAG=$(echo "$LOCAL_MODEL" | tr -c 'A-Za-z0-9.\n' '-')
           RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           REMOTE="https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           R="$RUNNER_TEMP/ci-results"
@@ -201,8 +206,8 @@ jobs:
               echo "- commit: ${GITHUB_SHA}  model: ${LOCAL_MODEL} (Ollama)  outcome: ${LOCAL}"
               echo
               cat e2e-out/local/summary.md 2>/dev/null || echo "(no summary)"
-            } > "$D/runs/${GITHUB_RUN_ID}-local.md"
-            cp "$D/runs/${GITHUB_RUN_ID}-local.md" "$D/latest-local.md"
+            } > "$D/runs/${GITHUB_RUN_ID}-local-${TAG}.md"
+            cp "$D/runs/${GITHUB_RUN_ID}-local-${TAG}.md" "$D/latest-local-${TAG}.md"
             cd "$R"
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
