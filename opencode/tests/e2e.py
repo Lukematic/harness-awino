@@ -192,6 +192,11 @@ def s3_done_criteria_from_reply(c: Ctx):
     c.check("a message starting with 'mission:' replaces the anchor",
             m.get("objective", "").startswith("Rename hi.txt to hello.txt")
             and not m.get("done_criteria"), json.dumps(m)[:300])
+    code, out = c.run("go\n" + directive(
+        reply="Mission: Rename hi.txt | done when: - hello.txt exists"), "--continue")
+    c.check("inline 'done when: - x' is captured too",
+            mission(c.dir).get("done_criteria") == ["hello.txt exists"],
+            json.dumps(mission(c.dir))[:300])
     c.check("run exits 0", code == 0, f"exit {code}")
 
 
@@ -356,6 +361,11 @@ def u_b_redo(c: Ctx):
     c.check("no redo loop (exactly one correction)", len(corr) == 1, str(len(corr)))
 
 
+def journal(d: Path) -> list[dict]:
+    return [json.loads(x) for x in read(d / ".awino" / "journal.jsonl").splitlines()
+            if x.strip()]
+
+
 def s5_real_model(c: Ctx):
     key = os.environ.get("REAL_API_KEY", "")
     base = os.environ.get("REAL_BASE_URL", "")
@@ -363,16 +373,25 @@ def s5_real_model(c: Ctx):
     env = c.env(key=key, model=model, base=base)
     code, out = c.run(
         "Create a file named hello.txt containing exactly the word hello.", env=env)
-    m = mission(c.dir)
+    j = journal(c.dir)
+    kinds = [e.get("kind") for e in j]
+    anchor = next((e for e in j if e.get("kind") == "mission"), {})
     c.check("run exits 0", code == 0, f"exit {code}")
     c.check("mission anchored from the request (no tool call)",
-            "hello.txt" in m.get("objective", ""), json.dumps(m)[:300])
+            "hello.txt" in anchor.get("objective", "")
+            and anchor.get("source") == "first request", json.dumps(anchor)[:300])
+    c.check("the write happened under the mission",
+            "mission" in kinds and "edit" in kinds
+            and kinds.index("mission") < kinds.index("edit"), json.dumps(kinds))
     c.check("hello.txt contains hello",
             read(c.dir / "hello.txt").strip() == "hello",
             read(c.dir / "hello.txt")[:100])
+    crit = next((e.get("criteria") for e in j if e.get("kind") == "done_criteria"), None)
     c.notes.append("done criteria captured from the reply: "
-                   + (json.dumps(m.get("done_criteria")) if m.get("done_criteria")
-                      else "none (the model did not write a 'Done when:' list)"))
+                   + (json.dumps(crit) if crit else "none"))
+    receipts = sorted((c.dir / ".awino" / "receipts").glob("*.md"))
+    c.notes.append("story closed by the model: "
+                   + (receipts[0].name if receipts else "no"))
 
 
 SCENARIOS = [

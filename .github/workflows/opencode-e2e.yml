@@ -124,7 +124,7 @@ jobs:
 
   local-model:
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
@@ -168,7 +168,8 @@ jobs:
           REAL_API_KEY: ollama-ignores-keys
           REAL_BASE_URL: http://127.0.0.1:11434/v1
           REAL_MODEL: ${{ env.LOCAL_MODEL }}
-          E2E_RUN_TIMEOUT: "1500"
+          # qwen2.5:7b on the CPU runner took 1441s for scenario 5 (run 37979328681).
+          E2E_RUN_TIMEOUT: "3600"
         run: python opencode/tests/e2e.py --out e2e-out/local --real --only 5-
 
       - name: Job summary

@@ -82,14 +82,15 @@ function textOf(parts: any[]): string {
   return (parts ?? []).filter((p) => p?.type === "text" && !p.synthetic).map((p) => p.text ?? "").join("\n")
 }
 
-// "Done when:" followed by bullet lines, as the persona asks the model to write.
+// "Done when:" then bullet lines, or inline ("Mission: x | done when: - y"), as models write it.
 function parseDoneWhen(text: string): string[] {
   const lines = (text ?? "").split("\n")
-  const i = lines.findIndex((l) => /^[\s#>*_]*done when\b/i.test(l))
+  const head = /\bdone when\b[*_\s]*:[*_\s]*/i
+  const i = lines.findIndex((l) => head.test(l))
   if (i < 0) return []
   const out: string[] = []
-  const rest = lines[i].replace(/^[\s#>*_]*done when\b[*_\s]*:?[*_\s]*/i, "").trim()
-  if (rest) out.push(rest)
+  const rest = lines[i].split(head)[1].replace(/^(?:[-*•]|\d+[.)])\s+/, "").trim()
+  if (rest && !/^not stated/i.test(rest)) out.push(rest)
   for (const l of lines.slice(i + 1)) {
     const b = l.match(/^\s*(?:[-*•]|\d+[.)])\s+(.+)$/)
     if (b) out.push(b[1].replace(/\*\*/g, "").trim())
