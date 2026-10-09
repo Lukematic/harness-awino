@@ -1,5 +1,6 @@
-// A.W.I.N.O. for OpenCode: mission gate, protected ledger, story_close,
-// routed stance on every model call, and a redo on rule-breaking replies.
+// A.W.I.N.O. for OpenCode: the mission is anchored in code (no tool call),
+// protected ledger, story_close, routed stance + mission on every model call,
+// and a redo on rule-breaking replies.
 import type { Plugin } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
 import * as fs from "node:fs"
@@ -81,6 +82,33 @@ function textOf(parts: any[]): string {
   return (parts ?? []).filter((p) => p?.type === "text" && !p.synthetic).map((p) => p.text ?? "").join("\n")
 }
 
+// "Done when:" followed by bullet lines, as the persona asks the model to write.
+function parseDoneWhen(text: string): string[] {
+  const lines = (text ?? "").split("\n")
+  const i = lines.findIndex((l) => /^[\s#>*_]*done when\b/i.test(l))
+  if (i < 0) return []
+  const out: string[] = []
+  const rest = lines[i].replace(/^[\s#>*_]*done when\b[*_\s]*:?[*_\s]*/i, "").trim()
+  if (rest) out.push(rest)
+  for (const l of lines.slice(i + 1)) {
+    const b = l.match(/^\s*(?:[-*•]|\d+[.)])\s+(.+)$/)
+    if (b) out.push(b[1].replace(/\*\*/g, "").trim())
+    else if (l.trim() || out.length) break
+  }
+  return out
+}
+
+// `opencode run "<msg>"` hands the message over wrapped in quotes.
+function cleanRequest(text: string): string {
+  const t = (text ?? "").trim()
+  return t.length > 1 && t.startsWith('"') && t.endsWith('"') ? t.slice(1, -1).replace(/\\"/g, '"').trim() : t
+}
+
+function oneLine(s: string, max = 200): string {
+  const t = (s ?? "").replace(/\s+/g, " ").replace(/\]/g, ")").trim()
+  return t.length > max ? t.slice(0, max - 1) + "…" : t
+}
+
 function slug(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "story"
 }
@@ -95,10 +123,16 @@ export const Awino: Plugin = async ({ client, directory }) => {
   const missionFile = path.join(awinoDir, "mission.json")
   const brag = path.join(root, "BRAG.md")
   const routes = new Map<string, Route>()
+  const lastUser = new Map<string, string>()
   const corrections = new Map<string, number>()
   const checked = new Set<string>()
 
   const hasMission = () => fs.existsSync(missionFile)
+  const readMission = (): any => (hasMission() ? JSON.parse(fs.readFileSync(missionFile, "utf8")) : null)
+  const writeMission = (m: object) => {
+    fs.mkdirSync(awinoDir, { recursive: true })
+    fs.writeFileSync(missionFile, JSON.stringify(m, null, 2) + "\n")
+  }
   const abs = (p: string) => path.resolve(root, p)
   const isProtected = (p: string) => {
     const a = abs(p)
@@ -107,6 +141,23 @@ export const Awino: Plugin = async ({ client, directory }) => {
   const journal = (entry: object) => {
     fs.mkdirSync(awinoDir, { recursive: true })
     fs.appendFileSync(path.join(awinoDir, "journal.jsonl"), JSON.stringify({ ts: new Date().toISOString(), ...entry }) + "\n")
+  }
+  // The anchor: the user's request becomes the mission. No tool call, nothing to get past.
+  const anchor = (objective: string, source: string) => {
+    const m = { objective: objective.trim().slice(0, 500) || "(unstated)", done_criteria: [] as string[], created: new Date().toISOString(), source }
+    writeMission(m)
+    journal({ kind: "mission", objective: m.objective, source })
+  }
+  const missionBlock = () => {
+    const m = readMission()
+    if (!m) return "[A.W.I.N.O. mission: none yet — the user's next request becomes the mission]"
+    const crit = m.done_criteria ?? []
+    return [
+      `[A.W.I.N.O. mission: ${oneLine(m.objective)} | done when: ${crit.length ? oneLine(crit.join("; "), 400) : "not stated yet"}]`,
+      crit.length
+        ? "- Work toward these done criteria and check each one before you call it done."
+        : "- Start your reply by restating it as `Mission: <one sentence>` and `Done when:` with 2-5 bullet checks, then do the work.",
+    ].join("\n")
   }
   const targets = (toolName: string, args: any): string[] => {
     if (toolName === "apply_patch" || (toolName === "patch" && args?.patchText)) return patchPaths(args.patchText)
@@ -119,9 +170,8 @@ export const Awino: Plugin = async ({ client, directory }) => {
         const paths = targets(input.tool, output.args)
         const hit = paths.find(isProtected)
         if (hit)
-          throw new Error(`A.W.I.N.O.: ${path.relative(root, abs(hit))} is written only by the harness (set_mission, story_close). Direct edits are denied.`)
-        if (!hasMission())
-          throw new Error("A.W.I.N.O.: no mission yet — file edits are blocked. Agree the objective and done criteria with the user, then call set_mission.")
+          throw new Error(`A.W.I.N.O.: ${path.relative(root, abs(hit))} is written only by the harness (the mission anchor, story_close). Direct edits are denied.`)
+        if (!hasMission()) anchor(lastUser.get(input.sessionID) ?? "", "first edit")
       }
       if (input.tool === "bash") {
         const cmd = String(output.args?.command ?? "")
@@ -136,14 +186,27 @@ export const Awino: Plugin = async ({ client, directory }) => {
     },
 
     "chat.message": async (input, output) => {
-      const text = textOf(output.parts)
+      const text = cleanRequest(textOf(output.parts))
       if (text.includes(CORRECTION) && routes.has(input.sessionID)) return
+      lastUser.set(input.sessionID, text)
+      const override = text.match(/^\s*mission:\s*([\s\S]+)/i)
+      if (override) anchor(override[1], "user")
+      else if (!hasMission() && route(text, true).intent !== "ask") anchor(text, "first request")
       routes.set(input.sessionID, route(text, hasMission()))
     },
 
     "experimental.chat.system.transform": async (input, output) => {
       const r = (input.sessionID && routes.get(input.sessionID)) || route("", hasMission())
-      output.system.push(`${stanceBlock(r)}\n- project directory: ${root} (create and edit files inside it; relative paths resolve here)`)
+      output.system.push(`${missionBlock()}\n${stanceBlock(r)}\n- project directory: ${root} (create and edit files inside it; relative paths resolve here)`)
+    },
+
+    "experimental.text.complete": async (_input, output) => {
+      const m = readMission()
+      if (!m || m.done_criteria?.length) return
+      const crit = parseDoneWhen(output.text)
+      if (!crit.length) return
+      writeMission({ ...m, done_criteria: crit })
+      journal({ kind: "done_criteria", criteria: crit })
     },
 
     event: async ({ event }) => {
@@ -166,26 +229,6 @@ export const Awino: Plugin = async ({ client, directory }) => {
     },
 
     tool: {
-      set_mission: tool({
-        description: "Record the agreed mission: one objective and the concrete done criteria that will prove it. File edits are blocked until a mission exists.",
-        args: {
-          objective: tool.schema.string().min(1).describe("What this mission creates, in one sentence"),
-          done_criteria: tool.schema.array(tool.schema.string().min(1)).min(1).describe("Checkable criteria that prove the objective is met"),
-        },
-        async execute(args) {
-          // The schema's min(1) is not enforced at runtime (qwen2.5:3b sent [] and it went through).
-          const criteria = (args.done_criteria ?? []).map((c) => c.trim()).filter(Boolean)
-          if (!args.objective?.trim() || !criteria.length)
-            throw new Error("A.W.I.N.O.: a mission needs an objective and at least one checkable done criterion (e.g. \"hello.txt contains hello\"). Call set_mission again with them.")
-          args.done_criteria = criteria
-          fs.mkdirSync(awinoDir, { recursive: true })
-          const m = { objective: args.objective, done_criteria: args.done_criteria, created: new Date().toISOString() }
-          fs.writeFileSync(missionFile, JSON.stringify(m, null, 2) + "\n")
-          journal({ kind: "mission", objective: args.objective })
-          return `Mission set: ${args.objective}\nDone when:\n${args.done_criteria.map((c) => `- ${c}`).join("\n")}\nFile edits are now allowed. Continue with the task now: make the changes, then check them against the done criteria.`
-        },
-      }),
-
       story_close: tool({
         description: "Close the current story: writes its receipt (promise -> proof) to .awino/receipts/ and appends the brag board (BRAG.md). Call when the done criteria are met.",
         args: {
@@ -193,9 +236,9 @@ export const Awino: Plugin = async ({ client, directory }) => {
           outcome: tool.schema.string().min(1).describe("The result in one sentence"),
           evidence: tool.schema.array(tool.schema.string()).optional().describe("Commands run and their results, files that show the outcome"),
         },
-        async execute(args) {
-          if (!hasMission()) throw new Error("A.W.I.N.O.: no mission to close. Call set_mission first.")
-          const mission = JSON.parse(fs.readFileSync(missionFile, "utf8"))
+        async execute(args, ctx) {
+          if (!hasMission()) anchor(lastUser.get(ctx.sessionID) ?? "", "story_close")
+          const mission = readMission()
           const now = new Date()
           const day = now.toISOString().slice(0, 10)
           const id = `${day}-${slug(args.title)}-${now.getTime().toString(36)}`
@@ -215,15 +258,16 @@ export const Awino: Plugin = async ({ client, directory }) => {
           fs.writeFileSync(path.join(dir, `${id}.md`), [
             `# Receipt: ${args.title}`, "", `Closed ${day} · ${status}`, "",
             "## Promise", "", `**Objective:** ${mission.objective}`, "", "Done criteria:",
-            ...(mission.done_criteria ?? []).map((c: string) => `- ${c}`), "",
+            ...((mission.done_criteria ?? []).length ? mission.done_criteria.map((c: string) => `- ${c}`) : ["- (none stated)"]), "",
             "## Proof", "", "Evidence:", ...(evidence.length ? evidence.map((e) => `- ${e}`) : ["- (none given)"]), "",
             "Files written during the mission:", ...(files.length ? files.map((f) => `- ${f}`) : ["- (none recorded)"]), "",
             "## Outcome", "", args.outcome, "",
           ].join("\n"))
           if (!fs.existsSync(brag)) fs.writeFileSync(brag, "# Brag board\n\nFinished work: what, when, and the result. The promise and proof are in each receipt.\n")
           fs.appendFileSync(brag, `\n### ✓ ${args.title} — ${day}\n${args.outcome}\n<sub>${status} · receipt: .awino/receipts/${id}.md</sub>\n`)
+          fs.rmSync(missionFile)
           journal({ kind: "story_close", id, title: args.title })
-          return `Story closed: ${args.title}\nReceipt: .awino/receipts/${id}.md\nBrag board: BRAG.md`
+          return `Story closed: ${args.title}\nReceipt: .awino/receipts/${id}.md\nBrag board: BRAG.md\nMission archived in the receipt; the user's next request anchors a new one.`
         },
       }),
     },
