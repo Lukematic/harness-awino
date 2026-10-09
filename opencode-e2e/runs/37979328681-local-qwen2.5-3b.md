@@ -1,0 +1,19 @@
+# opencode-e2e local model, run 37979328681
+
+- run: https://github.com/Lukematic/harness-awino/actions/runs/37979328681
+- commit: 327f6f201bdf90a85a43a62fc2a06b993b09e777  model: qwen2.5:3b (Ollama)  outcome: failure
+
+# A.W.I.N.O. OpenCode e2e
+
+opencode 1.18.33
+
+| scenario | result |
+|---|---|
+| 5-real-model | FAIL |
+
+## 5-real-model
+
+- [x] run exits 0
+- [ ] mission anchored from the request (no tool call)
+- [x] hello.txt contains hello
+- note: done criteria captured from the reply: none (the model did not write a 'Done when:' list)
